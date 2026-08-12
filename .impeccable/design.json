@@ -1,0 +1,404 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-14T17:39:59Z",
+  "title": "Design System: Caesura",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Plum Black Surround",
+        "canonical": "#17131b",
+        "tonalRamp": ["#0a080c", "#120f15", "#17131b", "#211a27", "#30273a", "#493b55", "#7d7185", "#c8c0cc"]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Aubergine Console",
+        "canonical": "#211d27",
+        "tonalRamp": ["#0c0a0f", "#17131b", "#211d27", "#2a2432", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "panel-raised": {
+        "role": "neutral",
+        "displayName": "Raised Aubergine",
+        "canonical": "#2a2432",
+        "tonalRamp": ["#0f0c12", "#1c1722", "#2a2432", "#332a3d", "#403348", "#5a4a64", "#908292", "#d6ccd4"]
+      },
+      "panel-recessed": {
+        "role": "neutral",
+        "displayName": "Recessed Plum",
+        "canonical": "#120f17",
+        "tonalRamp": ["#08070a", "#111018", "#120f17", "#1c1722", "#27212f", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "surface-0": {
+        "role": "neutral",
+        "displayName": "Recessed Surface",
+        "canonical": "#111018",
+        "tonalRamp": ["#08070a", "#111018", "#1c1722", "#27212f", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "surface-1": {
+        "role": "neutral",
+        "displayName": "Console Surface 1",
+        "canonical": "#1c1722",
+        "tonalRamp": ["#08070a", "#111018", "#1c1722", "#27212f", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Console Surface 2",
+        "canonical": "#27212f",
+        "tonalRamp": ["#08070a", "#111018", "#1c1722", "#27212f", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "surface-3": {
+        "role": "neutral",
+        "displayName": "Console Surface 3",
+        "canonical": "#332a3d",
+        "tonalRamp": ["#08070a", "#111018", "#1c1722", "#27212f", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "surface-4": {
+        "role": "neutral",
+        "displayName": "Console Surface 4",
+        "canonical": "#403348",
+        "tonalRamp": ["#08070a", "#111018", "#1c1722", "#27212f", "#332a3d", "#403348", "#74617d", "#c9bdc7"]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Instrument Hairline",
+        "canonical": "#4b4055",
+        "tonalRamp": ["#111018", "#1c1722", "#27212f", "#4b4055", "#74617d", "#908292", "#c9bdc7", "#f1ece7"]
+      },
+      "line-strong": {
+        "role": "neutral",
+        "displayName": "Strong Divider",
+        "canonical": "#74617d",
+        "tonalRamp": ["#111018", "#1c1722", "#332a3d", "#4b4055", "#74617d", "#908292", "#c9bdc7", "#f1ece7"]
+      },
+      "line-hot": {
+        "role": "primary",
+        "displayName": "Hot Line Ochre",
+        "canonical": "#d4a65a",
+        "tonalRamp": ["#211309", "#4a2d11", "#704818", "#936525", "#b98938", "#d4a65a", "#e6c682", "#f4dfb1"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Warm Text",
+        "canonical": "#f1ece7",
+        "tonalRamp": ["#17131b", "#403348", "#74617d", "#908292", "#c9bdc7", "#d6ccd4", "#e6ded8", "#f1ece7"]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "#c9bdc7",
+        "tonalRamp": ["#17131b", "#403348", "#74617d", "#908292", "#a99cad", "#c9bdc7", "#d6ccd4", "#f1ece7"]
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Faint Text",
+        "canonical": "#908292",
+        "tonalRamp": ["#17131b", "#332a3d", "#4b4055", "#74617d", "#908292", "#b0a5b2", "#d6ccd4", "#f1ece7"]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Sunset Amber",
+        "canonical": "#e0a45f",
+        "tonalRamp": ["#211309", "#4a2d11", "#704818", "#936525", "#b98938", "#e0a45f", "#f0c17c", "#f7dfb8"]
+      },
+      "accent-ink": {
+        "role": "primary",
+        "displayName": "Burnt Amber Ink",
+        "canonical": "#211309",
+        "tonalRamp": ["#0d0803", "#211309", "#3a220d", "#5a3512", "#7a4f1c", "#a97532", "#d4a65a", "#f0c17c"]
+      },
+      "accent-strong": {
+        "role": "primary",
+        "displayName": "Strong Amber",
+        "canonical": "#f0c17c",
+        "tonalRamp": ["#211309", "#4a2d11", "#704818", "#936525", "#b98938", "#e0a45f", "#f0c17c", "#f7dfb8"]
+      },
+      "selected-bg": {
+        "role": "primary",
+        "displayName": "Amber Selected Recess",
+        "canonical": "#332616",
+        "tonalRamp": ["#0d0803", "#211309", "#332616", "#5a3512", "#7a4f1c", "#a97532", "#d4a65a", "#f0c17c"]
+      },
+      "rail-rose": {
+        "role": "secondary",
+        "displayName": "Muted Rose Rail",
+        "canonical": "#d88c8d",
+        "tonalRamp": ["#1f1014", "#3f1f28", "#61323d", "#874b55", "#ab6870", "#d88c8d", "#e8b4b0", "#f4d7d2"]
+      },
+      "rail-cool": {
+        "role": "secondary",
+        "displayName": "Dusty Cyan Rail",
+        "canonical": "#77b6bd",
+        "tonalRamp": ["#0b171a", "#123137", "#1f4d55", "#336b72", "#528e95", "#77b6bd", "#a9d1d5", "#d6ebec"]
+      },
+      "rail-violet": {
+        "role": "secondary",
+        "displayName": "Lavender Rail",
+        "canonical": "#b89ed8",
+        "tonalRamp": ["#151020", "#2b1f3f", "#443060", "#614784", "#8668ad", "#b89ed8", "#d2c0e8", "#eee5f6"]
+      },
+      "live-green": {
+        "role": "tertiary",
+        "displayName": "Live Sage",
+        "canonical": "#92b889",
+        "tonalRamp": ["#0d180d", "#1e351c", "#34522f", "#51704b", "#70946b", "#92b889", "#c1d6b8", "#e4eedf"]
+      },
+      "fault-red": {
+        "role": "tertiary",
+        "displayName": "Fault Rose",
+        "canonical": "#e1776d",
+        "tonalRamp": ["#240c0b", "#4a1d19", "#723128", "#9b483c", "#c16052", "#e1776d", "#efaaa1", "#f8d2cd"]
+      },
+      "data-blue": {
+        "role": "secondary",
+        "displayName": "Dusty Cyan",
+        "canonical": "#7db8bf",
+        "tonalRamp": ["#0b171a", "#123137", "#1f4d55", "#336b72", "#528e95", "#7db8bf", "#add3d7", "#d7ecee"]
+      },
+      "data-rose": {
+        "role": "secondary",
+        "displayName": "Ratchet Rose",
+        "canonical": "#d08c9d",
+        "tonalRamp": ["#211016", "#432230", "#633648", "#884f61", "#ad6d7d", "#d08c9d", "#e3b7c2", "#f2d9df"]
+      },
+      "data-violet": {
+        "role": "secondary",
+        "displayName": "Pitch Lavender",
+        "canonical": "#b7a0d8",
+        "tonalRamp": ["#151020", "#2b1f3f", "#443060", "#614784", "#8668ad", "#b7a0d8", "#d2c0e8", "#eee5f6"]
+      },
+      "curve-orange": {
+        "role": "tertiary",
+        "displayName": "Curve Orange",
+        "canonical": "#d87942",
+        "tonalRamp": ["#211006", "#45200b", "#6b3512", "#914d1f", "#b7662e", "#d87942", "#eba771", "#f6d0ad"]
+      },
+      "gati-neutral": {
+        "role": "neutral",
+        "displayName": "Matra Olive Neutral",
+        "canonical": "#70736a",
+        "tonalRamp": ["#141511", "#2b2d25", "#45483c", "#5b5f51", "#70736a", "#92978b", "#c0c5b8", "#e6eadf"]
+      },
+      "gati-beat": {
+        "role": "primary",
+        "displayName": "Gati Beat Ochre",
+        "canonical": "#c9b46d",
+        "tonalRamp": ["#1d1809", "#3c3110", "#5c4d1d", "#7c6b2d", "#a08e45", "#c9b46d", "#decf98", "#f0e8c8"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Equipment Display",
+        "purpose": "Compact uppercase app titles, panel summaries, and dialog heads."
+      },
+      "title": {
+        "displayName": "Command Title",
+        "purpose": "High-emphasis button, tab, chip, and control titles."
+      },
+      "body": {
+        "displayName": "Instrument Body",
+        "purpose": "Default UI text and concise explanatory fragments."
+      },
+      "label": {
+        "displayName": "Instrument Label",
+        "purpose": "Small structural labels, matrix headers, timeline lanes, and status tags."
+      },
+      "mono": {
+        "displayName": "Debug Mono",
+        "purpose": "MIDI/debug tables and code-like timing data only."
+      }
+    },
+    "shadows": [
+      {
+        "name": "panel-inset",
+        "value": "inset 0 1px 0 rgba(255, 255, 255, 0.035)",
+        "purpose": "Subtle top edge on major panels."
+      },
+      {
+        "name": "input-recess",
+        "value": "inset 0 1px 0 rgba(0, 0, 0, 0.28)",
+        "purpose": "Recessed input and select fields."
+      },
+      {
+        "name": "dialog-lift",
+        "value": "0 18px 42px rgba(0, 0, 0, 0.42)",
+        "purpose": "Legacy dialog separation only."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-fast",
+        "value": "120ms ease",
+        "purpose": "Checkbox, hover, and compact state transitions."
+      },
+      {
+        "name": "product-state",
+        "value": "150ms to 250ms ease-out",
+        "purpose": "Product UI state changes only, no decorative choreography."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "app-max",
+        "value": "1360px"
+      },
+      {
+        "name": "small-screen",
+        "value": "horizontal scroll for dense timeline and matrix surfaces"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one local commit or materialize action.",
+      "html": "<button class=\"ds-btn-primary\">Apply</button>",
+      "css": ".ds-btn-primary { min-height: 28px; padding: 5px 10px; color: var(--accent-ink, #211309); background: var(--accent, #e0a45f); border: 1px solid #e0c269; border-radius: var(--radius-control, 3px); font: 800 0.86rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; transition: background 120ms ease, border-color 120ms ease; } .ds-btn-primary:hover { background: #dfbd59; border-color: #ead07a; } .ds-btn-primary:focus-visible { outline: 2px solid var(--ui-accent-line, rgba(224, 164, 95, 0.54)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Ordinary command button for dense panels.",
+      "html": "<button class=\"ds-btn-secondary\">Reset</button>",
+      "css": ".ds-btn-secondary { min-height: 28px; padding: 5px 10px; color: var(--text, #f1ece7); background: var(--surface-2, #27212f); border: 1px solid var(--line, #4b4055); border-radius: var(--radius-control, 3px); font: 800 0.86rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; transition: background 120ms ease, border-color 120ms ease; } .ds-btn-secondary:hover { background: var(--surface-3, #332a3d); border-color: var(--line-strong, #74617d); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--ui-accent-line, rgba(224, 164, 95, 0.54)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Recessed Input",
+      "kind": "input",
+      "refersTo": "input-recessed",
+      "description": "Dark recessed field for exact musical values.",
+      "html": "<label class=\"ds-field\"><span>Tempo</span><input class=\"ds-input\" value=\"120\" /></label>",
+      "css": ".ds-field { display: grid; gap: 4px; color: var(--muted, #c9bdc7); font: 800 0.72rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; } .ds-input { min-height: 28px; width: 104px; padding: 5px 7px; color: var(--text, #f1ece7); background: var(--surface-0, #111018); border: 1px solid var(--line, #4b4055); border-radius: var(--radius-control, 3px); box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.28); font: 650 0.86rem var(--font-ui, Avenir Next, sans-serif); text-align: right; font-variant-numeric: tabular-nums; } .ds-input:focus-visible { outline: 2px solid var(--ui-accent-line, rgba(224, 164, 95, 0.54)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Toggle Switch",
+      "kind": "button",
+      "description": "Compact binary feature state with amber selected cue.",
+      "html": "<button class=\"ds-toggle\" aria-pressed=\"true\"><span></span>Ratchet</button>",
+      "css": ".ds-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 4px 8px; color: var(--text, #f1ece7); background: color-mix(in srgb, var(--accent, #e0a45f) 16%, var(--surface-2, #27212f)); border: 1px solid color-mix(in srgb, var(--accent, #e0a45f) 46%, var(--line, #4b4055)); border-radius: var(--radius-control, 3px); font: 800 0.78rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; } .ds-toggle span { width: 9px; height: 9px; background: var(--accent, #e0a45f); border-radius: 999px; } .ds-toggle:hover { background: color-mix(in srgb, var(--accent, #e0a45f) 22%, var(--surface-2, #27212f)); } .ds-toggle:focus-visible { outline: 2px solid var(--ui-accent-line, rgba(224, 164, 95, 0.54)); outline-offset: 2px; }"
+    },
+    {
+      "name": "Panel Surface",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Major flat tool container.",
+      "html": "<section class=\"ds-panel\"><strong>RHYTHM</strong><p>4 matras · first order · fallback [4]</p></section>",
+      "css": ".ds-panel { display: grid; gap: 4px; width: 260px; padding: 8px; color: var(--text, #f1ece7); background: var(--panel, #211d27); border: 1px solid var(--line, #4b4055); border-radius: var(--radius, 4px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035); } .ds-panel strong { color: var(--accent, #e0a45f); font: 700 0.82rem var(--font-display, DIN Alternate, sans-serif); letter-spacing: 0; } .ds-panel p { margin: 0; color: var(--muted, #c9bdc7); font: 500 0.78rem var(--font-ui, Avenir Next, sans-serif); }"
+    },
+    {
+      "name": "Timeline Track",
+      "kind": "custom",
+      "refersTo": "timeline-track",
+      "description": "Shared musical coordinate lane.",
+      "html": "<div class=\"ds-timeline\"><span class=\"ds-lane-label\">RATCHET</span><i style=\"left: 18%; width: 22%\"></i><i style=\"left: 56%; width: 18%\"></i></div>",
+      "css": ".ds-timeline { position: relative; width: 360px; height: 32px; background: var(--surface-1, #1c1722); border: 1px solid var(--line, #4b4055); border-radius: var(--radius-control, 3px); overflow: hidden; } .ds-lane-label { position: absolute; left: 6px; top: 5px; z-index: 1; padding: 1px 5px; color: var(--muted, #c9bdc7); background: var(--surface-0, #111018); border: 1px solid var(--line, #4b4055); border-radius: var(--radius-control, 3px); font: 800 0.66rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; } .ds-timeline i { position: absolute; top: 15px; height: 8px; background: color-mix(in srgb, var(--accent, #e0a45f) 16%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #e0a45f) 62%, transparent); border-radius: var(--radius-control, 3px); }"
+    },
+    {
+      "name": "Ratchet Event Marker",
+      "kind": "custom",
+      "refersTo": "ratchet-event",
+      "description": "Ratchet event bar with visible internal hit marks.",
+      "html": "<div class=\"ds-ratchet\"><b></b><b></b><b></b><b></b></div>",
+      "css": ".ds-ratchet { display: flex; align-items: center; justify-content: space-around; width: 160px; height: 14px; padding: 0 4px; background: color-mix(in srgb, var(--accent, #e0a45f) 16%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #e0a45f) 62%, transparent); border-radius: var(--radius-control, 3px); } .ds-ratchet b { width: 7px; height: 7px; background: var(--accent, #e0a45f); border: 1px solid rgba(255, 245, 214, 0.34); border-radius: 999px; }"
+    },
+    {
+      "name": "Matrix Heat Cell",
+      "kind": "custom",
+      "description": "Probability cell with canonical heat ramp behavior.",
+      "html": "<label class=\"ds-heat-cell\"><span>7</span><input value=\"4\" /></label>",
+      "css": ".ds-heat-cell { display: grid; gap: 3px; place-items: center; width: 54px; padding: 5px; color: #111018; background: linear-gradient(180deg, rgb(241 200 122 / 0.86), rgb(155 99 39 / 0.68)), #111; border: 1px solid rgba(240, 193, 124, 0.48); box-shadow: inset 0 0 10px rgba(224, 164, 95, 0.2); border-radius: var(--radius-control, 3px); } .ds-heat-cell span { font: 800 0.7rem var(--font-ui, Avenir Next, sans-serif); } .ds-heat-cell input { width: 36px; min-height: 22px; color: var(--text, #f1ece7); background: var(--surface-1, #1c1722); border: 1px solid var(--line, #4b4055); border-radius: var(--radius-control, 3px); text-align: center; font: 700 0.75rem var(--font-ui, Avenir Next, sans-serif); }"
+    },
+    {
+      "name": "Active Tab",
+      "kind": "nav",
+      "description": "Mutually exclusive shaper view state.",
+      "html": "<button class=\"ds-tab\">Ratchet</button>",
+      "css": ".ds-tab { min-height: 46px; padding: 6px 10px; color: var(--text, #f1ece7); background: color-mix(in srgb, var(--accent, #e0a45f) 16%, var(--surface-2, #27212f)); border: 1px solid color-mix(in srgb, var(--accent, #e0a45f) 46%, var(--line, #4b4055)); border-radius: var(--radius-control, 3px); font: 800 0.72rem var(--font-ui, Avenir Next, sans-serif); letter-spacing: 0; } .ds-tab:hover { background: var(--surface-3, #332a3d); } .ds-tab:focus-visible { outline: 2px solid var(--ui-accent-line, rgba(224, 164, 95, 0.54)); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Dusk Console Instrument",
+    "overview": "Caesura is a compact musical workbench for dense rhythmic decisions. It should feel like a late-night sampler screen built for serious repeated use: plum-black chassis, small equipment labels, hard-edged lanes, and restrained data colors that always mean something.\n\nThe system is minimalist, utilitarian, and instrument-like. Visual hierarchy comes from exact geometry, tonal layers, hairline borders, and state color. Decoration is prohibited unless it carries musical information.\n\nIt explicitly rejects generic DAW piano rolls, conventional step sequencers, glossy grooveboxes, academic notation editors, marketing dashboards, cute or game-like synth toys, decorative vaporwave aesthetics, and interfaces that make the timeline feel secondary.",
+    "keyCharacteristics": [
+      "Flat, grid-led, and dense.",
+      "Timeline-first, with one shared horizontal musical coordinate frame.",
+      "Amber for active editing and commit actions.",
+      "Dusty cyan, muted rose, and lavender only as data or feature-role colors.",
+      "Small-radius surfaces, recessed controls, stable lane geometry.",
+      "Short labels, no ornamental copy, no spectacle."
+    ],
+    "rules": [
+      {
+        "name": "The Color Has a Job Rule",
+        "body": "Every saturated color must identify state, data category, selected structure, or musical role. Empty space stays neutral.",
+        "section": "colors"
+      },
+      {
+        "name": "The Amber Voice Rule",
+        "body": "Amber is the one primary command and editing voice. Do not make every control amber.",
+        "section": "colors"
+      },
+      {
+        "name": "The Vaporwave Restraint Rule",
+        "body": "Dusk Console may use plum, amber, dusty cyan, rose, and lavender. It must not become neon, glossy, gradient-heavy, or decorative.",
+        "section": "colors"
+      },
+      {
+        "name": "The No Hero Type Rule",
+        "body": "Caesura is an instrument surface. Do not use landing-page display sizes inside the app.",
+        "section": "typography"
+      },
+      {
+        "name": "The Zero Tracking Rule",
+        "body": "Letter spacing is `0`. Labels can be uppercase only when they are short and structural.",
+        "section": "typography"
+      },
+      {
+        "name": "The Mono Is Debug Rule",
+        "body": "Monospace is forbidden for ordinary controls. It is only for MIDI, timing, byte, or code-like data.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Console Rule",
+        "body": "Surfaces rest flat. Shadows must be structural, state-driven, or dialog-specific.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Glow Rule",
+        "body": "Do not use decorative glow around active timeline events, buttons, panels, headings, or cards.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the first screen as the working instrument surface.",
+      "Do reuse Dusk Console tokens for app chrome and feature panels.",
+      "Do keep the timeline visually sovereign and geometrically exact.",
+      "Do use amber for primary edit focus, selected structures, and commit actions.",
+      "Do use dusty cyan, muted rose, and lavender only for routing, tension, pitch, or feature-role data.",
+      "Do keep panel and control radii small (`4px` panels, `3px` controls).",
+      "Do use horizontal scroll for dense musical surfaces instead of hiding capability.",
+      "Do keep copy short: labels like `Tempo`, `Order`, `Fallback`, `Boundary`; commands like `Save`, `Recall`, `Apply`, `Reset`.",
+      "Do make enabled state visible with subtle tint plus stronger hairline.",
+      "Do preserve one controlling switch per playback feature."
+    ],
+    "donts": [
+      "Don't build generic DAW piano rolls.",
+      "Don't imitate conventional step sequencers.",
+      "Don't make Caesura feel like a glossy groovebox.",
+      "Don't turn it into an academic notation editor.",
+      "Don't use marketing dashboard layouts.",
+      "Don't make cute or game-like synth toy surfaces.",
+      "Don't use decorative vaporwave aesthetics.",
+      "Don't let panels, cards, or spectacle make the timeline feel secondary.",
+      "Don't use gradient text, glassmorphism, bokeh, or decorative orbs.",
+      "Don't use purple-blue gradients, neon glow, or ornamental color fields.",
+      "Don't use thick colored side-stripe borders.",
+      "Don't put cards inside cards.",
+      "Don't use large rounded icon tiles above headings.",
+      "Don't use monospace as generic technical flavor.",
+      "Don't add duplicate switches, seed inputs, or playback controls in summaries."
+    ]
+  }
+}

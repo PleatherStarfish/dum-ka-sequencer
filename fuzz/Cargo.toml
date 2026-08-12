@@ -1,0 +1,55 @@
+[package]
+name = "carnatic-seq-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = "1.4"
+libfuzzer-sys = "0.4"
+cseq-model = { path = "../crates/cseq-model" }
+cseq-persist = { path = "../crates/cseq-persist" }
+cseq-realize = { path = "../crates/cseq-realize" }
+cseq-rhythm = { path = "../crates/cseq-rhythm" }
+cseq-transport = { path = "../crates/cseq-transport", default-features = false, features = ["fuzzing"] }
+cseq-trigger = { path = "../crates/cseq-trigger" }
+cseq-transforms = { path = "../crates/cseq-transforms" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "persist_load_score"
+path = "fuzz_targets/persist_load_score.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "score_pipeline"
+path = "fuzz_targets/score_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_score_pipeline"
+path = "fuzz_targets/structured_score_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parallel_transport_queue"
+path = "fuzz_targets/parallel_transport_queue.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dumka_dsl_parse"
+path = "fuzz_targets/dumka_dsl_parse.rs"
+test = false
+doc = false

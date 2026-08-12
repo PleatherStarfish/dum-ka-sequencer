@@ -1,0 +1,190 @@
+{
+  "id": "fuzz-pipeline-minimal",
+  "name": "fuzz pipeline minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+      "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+         "ur  d ation_frac": { "numer": 0, "denom": 1 }
+          },
+          "velocity": { "spec": { "type": "fixed", "value": 96 }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "mutadata":"root",
+     "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+         "ur  d ation_frac": { "numer": 0, "denom": 1 }
+          },
+          "velocity": { "spec": { "type": "fixed", "value": 96 }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "typ!": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 1, "denom": 1 },
+  "default_gati": 4,
+  "default_jathiname": "fuzz pipeline minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+      "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+   "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+        "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+         "ur  d ation_frac": { "numer": 0, "denom": 1 }
+          },
+          "veloci": "fuzz-pipeline-minimal",
+  "name": "fuzz pipeline minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+      "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+         "ur  d ation_frac": { "numer": 0, "denom": 1 }
+          },
+          "velocity": { "spec": { "type": "fixed", "value": 96 }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "mutadata":"root",
+     "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+   ty": { "spec": { "type": "fixed", "value": 96 }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+ ": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "mutadata":"root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "mutadata": {},a_version": 3
+}

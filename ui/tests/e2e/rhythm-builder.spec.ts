@@ -1,0 +1,271 @@
+import { expect, test } from "@playwright/test";
+
+import {
+  closeMainEditor,
+  getDriverState,
+  getE2eState,
+  openCaesura,
+  openMainEditor,
+  waitForPlaying,
+} from "./support/appHarness";
+
+/**
+ * The visual rhythm builder is a front-end over the pattern text: every
+ * block edit must commit through the same path as typing, resolve through
+ * the same mock preview table (patterns pinned in mockTauri.ts), and play
+ * exactly the previewed request. This proves the GUI cannot open a second
+ * authoring path around the one generator seam.
+ */
+test("builds a tuplet visually and plays exactly the previewed request", async ({
+  page,
+}) => {
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+
+  await page.getByRole("button", { name: "Generator" }).click();
+  await page.getByLabel("Generator kind").selectOption("dumka");
+  const field = page.getByLabel("Dum-Ka pattern");
+  await field.fill("x . x .");
+  await field.blur();
+  await expect(page.getByLabel("Required structure")).toHaveText(
+    "needs 4 beats · Subdivision 1"
+  );
+
+  // Rest → note through the toolbar; the textarea mirrors the commit.
+  await page.getByRole("button", { name: "block 1: rest" }).click();
+  await page.getByRole("button", { name: "Set element to note" }).click();
+  await expect(field).toHaveValue("x x x .");
+
+  // Split the first beat into a quintuplet; structure follows.
+  await page.getByRole("button", { name: "block 0: note x" }).click();
+  const splitCount = page.getByLabel("Split count");
+  await splitCount.fill("5");
+  await splitCount.blur();
+  await page.getByRole("button", { name: "Split into tuplet" }).click();
+  await expect(field).toHaveValue("[x x x x x] x x .");
+  await expect(page.getByLabel("Required structure")).toHaveText(
+    "needs 4 beats · Subdivision 5"
+  );
+  await expect(
+    page.getByRole("button", { name: "group 0: 5 in the time of 1" })
+  ).toHaveText("5:1");
+  await expect(page.locator(".dumka-preview-error")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Apply structure" }).click();
+  await expect(
+    page.getByRole("button", { name: "Structure ready" })
+  ).toBeDisabled();
+  await page.locator("#generator-editor summary").click();
+
+  await expect
+    .poll(async () => {
+      const driver = await getDriverState(page);
+      const generator = driver.lastGeneratorPreviewRequest?.generator as
+        | { kind?: string; pattern?: string }
+        | undefined;
+      return generator?.kind === "dumka" &&
+        generator.pattern === "[x x x x x] x x .";
+    })
+    .toBe(true);
+
+  await expect(page.getByTestId("transport-play")).toBeEnabled();
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+
+  const driver = await getDriverState(page);
+  expect(driver.lastGeneratorPreviewRequest?.generator).toEqual(
+    driver.lastTrackPlaybackRequest?.generator
+  );
+});
+
+test("articulates a nested beat-2 5:2 group and recovers through playback", async ({
+  page,
+}) => {
+  const plain = "x [[x x x x x]@2]@2 x";
+  const articulated = "x [[[x .] [x .] [x .] [x .] [x .]]@2]@2 x";
+  const boundaryError =
+    "dumka structure mismatch: a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile";
+
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+  await page.getByRole("button", { name: "Generator" }).click();
+  await page.getByLabel("Generator kind").selectOption("dumka");
+  const field = page.getByLabel("Dum-Ka pattern");
+  await field.fill("x x x x");
+  await field.blur();
+
+  await page.getByRole("button", { name: "block 1: note x" }).click();
+  await page
+    .getByRole("button", { name: "block 2: note x" })
+    .click({ modifiers: ["Shift"] });
+  await page.getByRole("button", { name: "Group selection" }).click();
+  await expect(field).toHaveValue("x [x x]@2 x");
+
+  // Wrap the group once more, then edit the inner ratio. This is the nested
+  // geometry that used to hide the Articulate escape hatch.
+  await page.getByRole("button", { name: "Group selection" }).click();
+  await expect(field).toHaveValue("x [[x x]@2]@2 x");
+  await page
+    .getByRole("button", { name: "group 2: 2 in the time of 2" })
+    .click();
+
+  const count = page.getByLabel("Group count");
+  await count.fill("5");
+  await count.blur();
+  await expect(field).toHaveValue(plain);
+  await expect(page.getByLabel("Required structure")).toHaveText(
+    "needs 4 beats · Subdivision 5"
+  );
+
+  await page.getByRole("button", { name: "Apply structure" }).click();
+  await expect(
+    page.getByRole("button", { name: "Structure ready" })
+  ).toBeDisabled();
+  await expect(page.locator(".dumka-preview-error")).toContainText(
+    boundaryError
+  );
+  await expect(
+    page.getByRole("button", { name: "Articulate crossing notes" })
+  ).toBeVisible();
+
+  await page
+    .getByRole("button", { name: "Articulate crossing notes" })
+    .click();
+  await expect(field).toHaveValue(articulated);
+  await expect(page.locator(".dumka-preview-error")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Articulate crossing notes" })
+  ).toHaveCount(0);
+  await page.locator("#generator-editor summary").click();
+
+  await expect
+    .poll(async () => {
+      const driver = await getDriverState(page);
+      const generator = driver.lastGeneratorPreviewRequest?.generator as
+        | { kind?: string; pattern?: string }
+        | undefined;
+      return generator?.kind === "dumka" && generator.pattern === articulated;
+    })
+    .toBe(true);
+
+  await expect(page.getByTestId("transport-play")).toBeEnabled();
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+
+  const driver = await getDriverState(page);
+  const state = await getE2eState(page);
+  expect(driver.lastGeneratorPreviewRequest?.generator).toEqual(
+    driver.lastTrackPlaybackRequest?.generator
+  );
+  expect(driver.lastGeneratorPreviewRequest?.enabled).toBe(
+    driver.lastTrackPlaybackRequest?.generatorEnabled
+  );
+  expect(driver.lastGeneratorPreviewRequest?.automation).toEqual(
+    driver.lastTrackPlaybackRequest?.automation
+  );
+  expect(state.timelineLayerSourcesCoherent).toBe(true);
+});
+
+test("articulates against the actual Grouping fence", async ({ page }) => {
+  const plain = "[[x x x x x]@2 .]@2";
+  const articulated =
+    "[[[x .@3] [x .@3] [x .@3] [x .@3] [x .@3]]@2 .]@2";
+
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+  const generator = await openMainEditor(page, "generator");
+  await generator.getByLabel("Generator kind").selectOption("dumka");
+  const field = generator.getByLabel("Dum-Ka pattern");
+  await field.fill(plain);
+  await field.blur();
+  await expect(generator.getByLabel("Required structure")).toHaveText(
+    "needs 2 beats · Subdivision 15"
+  );
+  await generator.getByRole("button", { name: "Apply structure" }).click();
+  await expect(
+    generator.getByRole("button", { name: "Structure ready" })
+  ).toBeDisabled();
+
+  await closeMainEditor(page);
+  const sections = await openMainEditor(page, "boundaries");
+  const grouping = sections
+    .getByLabel("Section 1 inspector")
+    .getByLabel("Grouping", { exact: true });
+  await expect(grouping.locator('option[value="3"]')).toHaveCount(1);
+  await grouping.selectOption("3");
+  await page.waitForFunction(
+    () =>
+      window.__CAESURA_E2E_DRIVER__?.getState()?.lastPreviewRequest?.request
+        ?.initialJathiWeights?.[0]?.jathi === 3
+  );
+
+  await closeMainEditor(page);
+  const reopened = await openMainEditor(page, "generator");
+  await expect(reopened.locator(".dumka-preview-error")).toContainText(
+    "a note sustains across the span boundary"
+  );
+  await reopened
+    .getByRole("button", { name: "group 1: 5 in the time of 2" })
+    .click();
+  await reopened
+    .getByRole("button", { name: "Articulate", exact: true })
+    .click();
+  await expect(reopened.getByLabel("Dum-Ka pattern")).toHaveValue(articulated);
+  await expect(reopened.locator(".dumka-preview-error")).toHaveCount(0);
+
+  await closeMainEditor(page);
+  await expect(page.getByTestId("transport-play")).toBeEnabled();
+  const driver = await getDriverState(page);
+  expect(
+    (driver.lastGeneratorPreviewRequest?.generator as { pattern?: string })
+      ?.pattern
+  ).toBe(articulated);
+});
+
+test("repairs the reported mixed 5:2 tuplet crossing beat 2", async ({
+  page,
+}) => {
+  const plain =
+    "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]";
+  const articulated =
+    "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]";
+
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+  const generator = await openMainEditor(page, "generator");
+  await generator.getByLabel("Generator kind").selectOption("dumka");
+  const field = generator.getByLabel("Dum-Ka pattern");
+  await field.fill(plain);
+  await field.blur();
+  await expect(generator.getByLabel("Required structure")).toHaveText(
+    "needs 5 beats · Subdivision 20"
+  );
+  await generator.getByRole("button", { name: "Apply structure" }).click();
+  await expect(generator.locator(".dumka-preview-error")).toContainText(
+    "a note sustains across the span boundary at beat 2"
+  );
+
+  await expect(
+    generator.getByRole("button", { name: "Articulate", exact: true })
+  ).toHaveCount(0);
+  await expect(
+    generator.getByRole("button", { name: "Articulate crossing notes" })
+  ).toBeVisible();
+  await generator
+    .getByRole("button", { name: "Articulate crossing notes" })
+    .click();
+  await expect(field).toHaveValue(articulated);
+  await expect(generator.locator(".dumka-preview-error")).toHaveCount(0);
+
+  await closeMainEditor(page);
+  await expect(page.getByTestId("transport-play")).toBeEnabled();
+  const driver = await getDriverState(page);
+  expect(
+    (driver.lastGeneratorPreviewRequest?.generator as { pattern?: string })
+      ?.pattern
+  ).toBe(articulated);
+});

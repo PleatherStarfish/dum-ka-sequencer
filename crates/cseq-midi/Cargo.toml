@@ -1,0 +1,20 @@
+[package]
+name = "cseq-midi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["timestamped"]
+# Mach host-time conversion utilities for the future timestamped dispatch
+# path (docs/KNOWN_RISKS.md "Scheduler Timing"). Pure FFI — no coremidi.
+timestamped = []
+
+[dependencies]
+midir = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

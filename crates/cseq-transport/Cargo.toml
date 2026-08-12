@@ -1,0 +1,39 @@
+[package]
+name = "cseq-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["timestamped"]
+fuzzing = []
+timestamped = ["cseq-midi/timestamped"]
+
+[dependencies]
+cseq-midi = { path = "../cseq-midi", default-features = false }
+cseq-model = { path = "../cseq-model" }
+cseq-realize = { path = "../cseq-realize" }
+cseq-rhythm = { path = "../cseq-rhythm" }
+cseq-transforms = { path = "../cseq-transforms" }
+cseq-trigger = { path = "../cseq-trigger" }
+num-rational = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+cseq-persist = { path = "../cseq-persist" }
+proptest = { workspace = true }
+# The invariant fuzzer (tests/invariants.rs) drives the deterministic, port-less
+# realize hooks that only exist under `feature = "fuzzing"`, so the target
+# requires that feature. Run it with:
+#   cargo test -p cseq-transport --features fuzzing --test invariants
+[[test]]
+name = "invariants"
+required-features = ["fuzzing"]
+
+[[test]]
+name = "golden_ledgers"
+required-features = ["fuzzing"]

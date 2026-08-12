@@ -1,0 +1,20 @@
+[package]
+name = "cseq-trigger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# Pure crate: trigger configuration, normalization, the ResolvedCycle adapter,
+# the trigger evaluator, and the windowed triggered-score compiler. It depends
+# only on `cseq-model` (foundational data types) and serde. It must NOT depend
+# on `cseq-transport`, `src-tauri`, or any Tauri DTOs — the dependency direction
+# is trigger -> model, exactly like rhythm -> model.
+
+[dependencies]
+cseq-model = { path = "../cseq-model" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }

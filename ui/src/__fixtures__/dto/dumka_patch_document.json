@@ -1,0 +1,474 @@
+{
+  "app": "Dum-Ka",
+  "schemaVersion": 1,
+  "savedAt": "2026-06-11T12:00:00.000Z",
+  "transport": {
+    "tempoBpm": 80,
+    "currentScoreId": null
+  },
+  "sequencer": {
+    "name": "dto-contract-fixture",
+    "cycleBeats": 4,
+    "initialSubdivision": 4,
+    "initialGrouping": null,
+    "boundaries": [],
+    "velocity": 96,
+    "accent": {
+      "beatStart": {
+        "min": 0,
+        "max": 0
+      },
+      "sectionStartExtra": {
+        "min": 0,
+        "max": 0
+      },
+      "groupingStart": {
+        "min": 0,
+        "max": 0
+      },
+      "groupingMode": "overrideGati"
+    },
+    "basePitch": 60,
+    "seedMode": "perCycle",
+    "seed": 20260611,
+    "historySeeds": [],
+    "historyWeight": 1,
+    "newSeedWeight": 1,
+    "maxHistory": 8,
+    "userPreviewCycle": 0,
+    "scoreSetupOpen": false,
+    "boundariesOpen": false,
+    "maxSectionsHelpOpen": false,
+    "selectedBoundaryAfterBeat": null
+  },
+  "generatorEnabled": true,
+  "generator": {
+    "kind": "dumka",
+    "pattern": "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
+    "evolutionRate": 0,
+    "driftLeash": 25,
+    "barlowTemperature": 0,
+    "weightBarlowRemove": 3,
+    "weightBarlowAdd": 3,
+    "weightRotate": 2,
+    "weightSyncopate": 0,
+    "weightDesyncopate": 0,
+    "weightFragment": 0,
+    "weightConsolidate": 0,
+    "fillComplexity": 0,
+    "weightEuclid": 0,
+    "euclidMaxRun": 1,
+    "euclidInvert": 0,
+    "euclidRestPolicy": "tied",
+    "plan": [
+      {
+        "id": 101,
+        "order": 0,
+        "enabled": true,
+        "fromCycle": 13,
+        "toCycle": 13,
+        "family": "barlowRemove",
+        "pacing": "perCycle",
+        "intensity": 15,
+        "scope": null,
+        "options": {
+          "barlowTemperature": 0,
+          "fillComplexity": null,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      },
+      {
+        "id": 102,
+        "order": 1,
+        "enabled": true,
+        "fromCycle": 5,
+        "toCycle": 9,
+        "family": "syncopate",
+        "pacing": "linear",
+        "intensity": 32,
+        "scope": {
+          "startBeat": 2,
+          "lenBeats": 2
+        },
+        "options": {
+          "barlowTemperature": null,
+          "fillComplexity": null,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      },
+      {
+        "id": 103,
+        "order": 2,
+        "enabled": false,
+        "fromCycle": 15,
+        "toCycle": 15,
+        "family": "fragment",
+        "pacing": "easeInOut",
+        "intensity": 22,
+        "scope": {
+          "startBeat": 2,
+          "lenBeats": 2
+        },
+        "options": {
+          "barlowTemperature": null,
+          "fillComplexity": 70,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      }
+    ],
+    "planLengthCycles": 20,
+    "seedMode": {
+      "type": "locked",
+      "seed": 20260611
+    }
+  },
+  "automation": {
+    "lengthCycles": 1,
+    "markers": [],
+    "tracks": []
+  },
+  "channelHocket": {
+    "open": false,
+    "enabled": false,
+    "outputChannel": 1,
+    "order": "first",
+    "channels": [],
+    "weights": {},
+    "fallback": 1,
+    "fallbackWeights": {},
+    "entryWeights": {},
+    "seed": 0,
+    "historySeeds": [],
+    "historyWeight": 1,
+    "newSeedWeight": 1,
+    "maxHistory": 8,
+    "accentRules": [],
+    "positionRules": [],
+    "assignMode": "markov",
+    "euclid": {
+      "placement": "partition",
+      "steps": 16,
+      "layers": [],
+      "reset": "cycle",
+      "spanAccentMode": "woven",
+      "spanAccentChannel": null
+    },
+    "seedBehavior": "followGlobal"
+  },
+  "setup": {
+    "open": false,
+    "tab": "audio",
+    "autosaveEnabled": true,
+    "autosaveIntervalMs": 3000,
+    "autoloadRecentSession": true
+  },
+  "ui": {
+    "synthPropertiesOpen": false,
+    "midiDebugOpen": false,
+    "midiDebugLimit": 250,
+    "automationDebugOpen": false,
+    "automationDebugLimit": 100,
+    "seedSetupOpen": false,
+    "seedSetupTab": "global",
+    "seedLogScope": "all",
+    "automationOpen": false,
+    "timelineAutomationTargetIds": [],
+    "channelLogicHelpOpen": false
+  },
+  "seedPaths": [],
+  "project": {
+    "activeTrackId": "track-1",
+    "global": {
+      "tempoBpm": 80,
+      "cycleBeats": 4,
+      "channelConflictPolicy": "priorityOrder",
+      "channelLogicMatrix": [],
+      "conflictPriority": [
+        "track-1"
+      ],
+      "trackFlowBoxes": [],
+      "synthEnabled": false,
+      "synthPrograms": [
+        {
+          "channel": 1,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 2,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 3,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 4,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 5,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 6,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 7,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 8,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 9,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 10,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 11,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 12,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 13,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 14,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 15,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        },
+        {
+          "channel": 16,
+          "mode": "melodic",
+          "program": 0,
+          "drumNote": 36
+        }
+      ]
+    },
+    "tracks": [
+      {
+        "id": "track-1",
+        "name": "Track 1",
+        "color": "#00a39f",
+        "muted": false,
+        "soloed": false,
+        "tempoMode": "global",
+        "customTempoBpm": 80,
+        "cycleLengthMode": "global",
+        "customCycleBeats": 4,
+        "sequencer": {
+          "name": "dto-contract-fixture",
+          "cycleBeats": 4,
+          "initialSubdivision": 4,
+          "initialGrouping": null,
+          "boundaries": [],
+          "velocity": 96,
+          "accent": {
+            "beatStart": {
+              "min": 0,
+              "max": 0
+            },
+            "sectionStartExtra": {
+              "min": 0,
+              "max": 0
+            },
+            "groupingStart": {
+              "min": 0,
+              "max": 0
+            },
+            "groupingMode": "overrideGati"
+          },
+          "basePitch": 60,
+          "seedMode": "perCycle",
+          "seed": 20260611,
+          "historySeeds": [],
+          "historyWeight": 1,
+          "newSeedWeight": 1,
+          "maxHistory": 8,
+          "userPreviewCycle": 0,
+          "scoreSetupOpen": false,
+          "boundariesOpen": false,
+          "maxSectionsHelpOpen": false,
+          "selectedBoundaryAfterBeat": null
+        },
+        "generatorEnabled": true,
+        "generator": {
+          "kind": "dumka",
+          "pattern": "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
+          "evolutionRate": 0,
+          "driftLeash": 25,
+          "barlowTemperature": 0,
+          "weightBarlowRemove": 3,
+          "weightBarlowAdd": 3,
+          "weightRotate": 2,
+          "weightSyncopate": 0,
+          "weightDesyncopate": 0,
+          "weightFragment": 0,
+          "weightConsolidate": 0,
+          "fillComplexity": 0,
+          "weightEuclid": 0,
+          "euclidMaxRun": 1,
+          "euclidInvert": 0,
+          "euclidRestPolicy": "tied",
+          "plan": [
+            {
+              "id": 101,
+              "order": 0,
+              "enabled": true,
+              "fromCycle": 13,
+              "toCycle": 13,
+              "family": "barlowRemove",
+              "pacing": "perCycle",
+              "intensity": 15,
+              "scope": null,
+              "options": {
+                "barlowTemperature": 0,
+                "fillComplexity": null,
+                "euclidMaxRun": null,
+                "euclidInvert": null,
+                "euclidRestPolicy": null,
+                "rotateDirection": "earlier"
+              }
+            },
+            {
+              "id": 102,
+              "order": 1,
+              "enabled": true,
+              "fromCycle": 5,
+              "toCycle": 9,
+              "family": "syncopate",
+              "pacing": "linear",
+              "intensity": 32,
+              "scope": {
+                "startBeat": 2,
+                "lenBeats": 2
+              },
+              "options": {
+                "barlowTemperature": null,
+                "fillComplexity": null,
+                "euclidMaxRun": null,
+                "euclidInvert": null,
+                "euclidRestPolicy": null,
+                "rotateDirection": "earlier"
+              }
+            },
+            {
+              "id": 103,
+              "order": 2,
+              "enabled": false,
+              "fromCycle": 15,
+              "toCycle": 15,
+              "family": "fragment",
+              "pacing": "easeInOut",
+              "intensity": 22,
+              "scope": {
+                "startBeat": 2,
+                "lenBeats": 2
+              },
+              "options": {
+                "barlowTemperature": null,
+                "fillComplexity": 70,
+                "euclidMaxRun": null,
+                "euclidInvert": null,
+                "euclidRestPolicy": null,
+                "rotateDirection": "earlier"
+              }
+            }
+          ],
+          "planLengthCycles": 20,
+          "seedMode": {
+            "type": "locked",
+            "seed": 20260611
+          }
+        },
+        "automation": {
+          "lengthCycles": 1,
+          "markers": [],
+          "tracks": []
+        },
+        "channelHocket": {
+          "open": false,
+          "enabled": false,
+          "outputChannel": 1,
+          "order": "first",
+          "channels": [],
+          "weights": {},
+          "fallback": 1,
+          "fallbackWeights": {},
+          "entryWeights": {},
+          "seed": 0,
+          "historySeeds": [],
+          "historyWeight": 1,
+          "newSeedWeight": 1,
+          "maxHistory": 8,
+          "accentRules": [],
+          "positionRules": [],
+          "assignMode": "markov",
+          "euclid": {
+            "placement": "partition",
+            "steps": 16,
+            "layers": [],
+            "reset": "cycle",
+            "spanAccentMode": "woven",
+            "spanAccentChannel": null
+          },
+          "seedBehavior": "followGlobal"
+        },
+        "seedPaths": [],
+        "mode": "parallel",
+        "trigger": null
+      }
+    ]
+  }
+}

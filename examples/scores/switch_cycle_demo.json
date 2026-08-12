@@ -1,0 +1,240 @@
+{
+  "id": "switch_cycle_demo",
+  "name": "switch_cycle_demo",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": {
+          "numer": 1,
+          "denom": 1
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": {
+              "spec": {
+                "type": "fixed",
+                "value": 60
+              }
+            },
+            "duration_frac": {
+              "numer": 1,
+              "denom": 1
+            }
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 96
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      }
+    },
+    "next_id": 1,
+    "pulse_spans": [],
+    "next_pulse_span_id": 0
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": {
+          "type": "accent",
+          "strength": {
+            "scalar": 1.0
+          }
+        },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": {
+    "numer": 8,
+    "denom": 1
+  },
+  "default_gati": 4,
+  "default_jathi": 8,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": {
+        "type": "subdivisionSwitch",
+        "initial_weights": [
+          {
+            "subdivision": 4,
+            "weight": 1.0
+          }
+        ],
+        "initial_jathi_weights": [],
+        "inflections": [
+          {
+            "id": "boundary-1",
+            "position": {
+              "numer": 1,
+              "denom": 8
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 3,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-2",
+            "position": {
+              "numer": 1,
+              "denom": 4
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 4,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-3",
+            "position": {
+              "numer": 3,
+              "denom": 8
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 5,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-4",
+            "position": {
+              "numer": 1,
+              "denom": 2
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 7,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-5",
+            "position": {
+              "numer": 5,
+              "denom": 8
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 3,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-6",
+            "position": {
+              "numer": 3,
+              "denom": 4
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 4,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          },
+          {
+            "id": "boundary-7",
+            "position": {
+              "numer": 7,
+              "denom": 8
+            },
+            "change_probability": 1.0,
+            "subdivision_weights": [
+              {
+                "subdivision": 5,
+                "weight": 1.0
+              }
+            ],
+            "jathi_weights": []
+          }
+        ],
+        "switch_count_weights": [
+          {
+            "count": 7,
+            "weight": 1.0
+          }
+        ],
+        "seed_mode": {
+          "type": "locked",
+          "seed": 20260505
+        },
+        "pitch": {
+          "spec": {
+            "type": "fixed",
+            "value": 60
+          }
+        },
+        "velocity": {
+          "spec": {
+            "type": "fixed",
+            "value": 96
+          }
+        },
+        "accent": {
+          "beat_start": {
+            "min": 12,
+            "max": 20
+          },
+          "section_start_extra": {
+            "min": 8,
+            "max": 14
+          },
+          "jathi_start": {
+            "min": 24,
+            "max": 36
+          },
+          "jathi_mode": "overrideGati"
+        }
+      },
+      "target": {
+        "type": "root"
+      },
+      "enabled": true,
+      "label": "probabilistic gati sections"
+    }
+  ],
+  "next_transform_id": 1,
+  "metadata": {
+    "description": null,
+    "author": null
+  },
+  "schema_version": 1
+}

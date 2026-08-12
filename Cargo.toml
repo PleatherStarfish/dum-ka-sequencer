@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cseq-model",
+    "crates/cseq-transforms",
+    "crates/cseq-rhythm",
+    "crates/cseq-trigger",
+    "crates/cseq-realize",
+    "crates/cseq-transport",
+    "crates/cseq-midi",
+    "crates/cseq-persist",
+    "crates/cseq-bench",
+    "src-tauri",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Daniel"]
+
+[workspace.dependencies]
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Concurrency / timing
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+rayon = "1"
+
+# MIDI
+midir = "0.10"
+coremidi = "0.9"
+
+# Math
+num-rational = { version = "0.4", features = ["serde"] }
+
+# Tauri
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+# Dev
+insta = "1.39"
+proptest = "1.6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0

@@ -1,0 +1,17 @@
+[package]
+name = "cseq-realize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cseq-model = { path = "../cseq-model" }
+num-rational = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }

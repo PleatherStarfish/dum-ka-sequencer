@@ -1,0 +1,55 @@
+# Rust build artifacts
+target/
+*.rs.bk
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/corpus-local/
+fuzz/*.profraw
+
+# Node / pnpm / Vite
+node_modules/
+ui/dist/
+*.tsbuildinfo
+*.log
+.pnpm-store/
+# Vite writes a transient esbuild bundle of the config next to it on every
+# dev-server / build start; never track these.
+vite.config.ts.timestamp-*.mjs
+vite.config.*.timestamp-*
+*.config.*.timestamp-*.mjs
+
+# Tauri auto-generated
+src-tauri/gen/
+
+# Coverage output
+ui/coverage/
+lcov-rust.info
+*.profraw
+
+# Playwright output
+test-results/
+ui/test-results/
+ui/playwright-report/
+
+# pnpm leaves zero-byte store tempfiles when the working tree is on a mount that
+# rejects its unlink (e.g. some sandboxes). Never track these.
+_tmp_*
+
+# Claude worktrees are local scratch checkouts.
+.claude/worktrees/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Local environment / secrets
+.env
+.env.local
+.env.*.local
+.dev/
+mutants.out/

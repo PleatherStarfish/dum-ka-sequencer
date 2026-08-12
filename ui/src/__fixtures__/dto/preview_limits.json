@@ -1,0 +1,4 @@
+{
+  "liveGeneratorPreviewCycleRadius": 2,
+  "maxStoppedGeneratorPreviewCycle": 10000
+}

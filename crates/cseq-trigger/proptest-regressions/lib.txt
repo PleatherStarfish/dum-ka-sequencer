@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 778c94223aa1ecc49c4b9e69fcd77f77f511fadb74d2908d601e0bda8a2303f3 # shrinks to cfg = TriggerConfig { source_track_id: "lead", condition: BeatIsRest { beat: 3 }, launch_alignment: AtEvent, lifetime: Repeats { passes: 1 }, re_trigger: Restart, length: ScoreCycle, max_repeats: 1 }, rests = [true, false], split_cycle = 2

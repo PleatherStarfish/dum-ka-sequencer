@@ -1,0 +1,3 @@
+export const TRANSPORT_PPQN = 960;
+
+export const PLAYHEAD_LATENCY_COMPENSATION_MS = 0;

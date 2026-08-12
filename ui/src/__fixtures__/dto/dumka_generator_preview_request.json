@@ -1,0 +1,228 @@
+{
+  "spans": [
+    {
+      "spanId": 1,
+      "spanLen": 20,
+      "label": null,
+      "sectionIndex": 1,
+      "subdivision": 20
+    },
+    {
+      "spanId": 2,
+      "spanLen": 20,
+      "label": null,
+      "sectionIndex": 1,
+      "subdivision": 20
+    },
+    {
+      "spanId": 3,
+      "spanLen": 20,
+      "label": null,
+      "sectionIndex": 1,
+      "subdivision": 20
+    },
+    {
+      "spanId": 4,
+      "spanLen": 20,
+      "label": null,
+      "sectionIndex": 1,
+      "subdivision": 20
+    }
+  ],
+  "spanVelocities": [
+    {
+      "spanId": 1,
+      "velocities": [
+        113,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96
+      ]
+    },
+    {
+      "spanId": 2,
+      "velocities": [
+        114,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96
+      ]
+    },
+    {
+      "spanId": 3,
+      "velocities": [
+        115,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96
+      ]
+    },
+    {
+      "spanId": 4,
+      "velocities": [
+        116,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96,
+        96
+      ]
+    }
+  ],
+  "enabled": true,
+  "generator": {
+    "kind": "dumka",
+    "pattern": "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
+    "evolutionRate": 15,
+    "driftLeash": 30,
+    "barlowTemperature": 0,
+    "weightBarlowRemove": 3,
+    "weightBarlowAdd": 3,
+    "weightRotate": 2,
+    "weightSyncopate": 0,
+    "weightDesyncopate": 0,
+    "weightFragment": 0,
+    "weightConsolidate": 0,
+    "fillComplexity": 0,
+    "weightEuclid": 0,
+    "euclidMaxRun": 1,
+    "euclidInvert": 0,
+    "euclidRestPolicy": "tied",
+    "plan": [
+      {
+        "id": 101,
+        "order": 0,
+        "enabled": true,
+        "fromCycle": 13,
+        "toCycle": 13,
+        "family": "barlowRemove",
+        "pacing": "perCycle",
+        "intensity": 15,
+        "scope": null,
+        "options": {
+          "barlowTemperature": 0,
+          "fillComplexity": null,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      },
+      {
+        "id": 102,
+        "order": 1,
+        "enabled": true,
+        "fromCycle": 5,
+        "toCycle": 9,
+        "family": "syncopate",
+        "pacing": "linear",
+        "intensity": 32,
+        "scope": {
+          "startBeat": 2,
+          "lenBeats": 2
+        },
+        "options": {
+          "barlowTemperature": null,
+          "fillComplexity": null,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      },
+      {
+        "id": 103,
+        "order": 2,
+        "enabled": false,
+        "fromCycle": 15,
+        "toCycle": 15,
+        "family": "fragment",
+        "pacing": "easeInOut",
+        "intensity": 22,
+        "scope": {
+          "startBeat": 2,
+          "lenBeats": 2
+        },
+        "options": {
+          "barlowTemperature": null,
+          "fillComplexity": 70,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "earlier"
+        }
+      }
+    ],
+    "planLengthCycles": 20,
+    "seedMode": {
+      "type": "locked",
+      "seed": 20260611
+    }
+  },
+  "cycle": 0,
+  "cycleBeats": 4,
+  "automation": null,
+  "trackId": null
+}

@@ -1,0 +1,36 @@
+[package]
+name = "cseq-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cseq-transport = { path = "../crates/cseq-transport" }
+cseq-midi = { path = "../crates/cseq-midi" }
+cseq-model = { path = "../crates/cseq-model" }
+cseq-transforms = { path = "../crates/cseq-transforms" }
+cseq-rhythm = { path = "../crates/cseq-rhythm" }
+cseq-trigger = { path = "../crates/cseq-trigger" }
+tauri = { workspace = true, features = ["default"] }
+tauri-plugin-dialog = { workspace = true }
+coremidi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Real-backend e2e harness: when CAESURA_E2E_HARNESS_PORT is set, the binary
+# serves the real invoke_handler over local HTTP (via tauri::test's MockRuntime)
+# instead of opening a window. Never enabled in production builds.
+e2e-harness = ["tauri/test"]

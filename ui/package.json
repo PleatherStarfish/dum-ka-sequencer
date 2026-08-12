@@ -1,0 +1,71 @@
+{
+  "name": "dum-ka-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test:timeline": "tsc -p tsconfig.timeline-test.json && node --test tests/timelineModel.test.cjs",
+    "test:e2e": "playwright test --project=chromium --workers=1",
+    "test:e2e:contrast": "playwright test tests/e2e/theme-contrast.spec.ts --project=chromium --workers=1",
+    "test:e2e:fuzz": "playwright test --project=fuzz --workers=1",
+    "test:e2e:fuzz:soak": "CAESURA_UI_FUZZ_STEPS=30000 playwright test --project=fuzz --workers=1",
+    "test:e2e:chaos": "playwright test --project=chaos --workers=1",
+    "test:e2e:chaos:soak": "CAESURA_GREMLINS_ACTIONS=30000 CAESURA_GREMLINS_SEGMENT_ACTIONS=7500 CAESURA_GREMLINS_DELAY_MS=1 playwright test --project=chaos --workers=1",
+    "test:e2e:real": "cargo build --manifest-path ../Cargo.toml -p cseq-app --features e2e-harness && playwright test --config playwright.real.config.ts --workers=1",
+    "test:e2e:headed": "playwright test --project=chromium --headed",
+    "test:e2e:ui": "playwright test --project=chromium --ui",
+    "css:dead-selectors": "CAESURA_CSS_COVERAGE=1 playwright test tests/e2e/css-dead-selector-report.spec.ts --project=tools --workers=1",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "bench": "vitest bench --run",
+    "bench:backend": "../scripts/bench.sh",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext ts,tsx"
+  },
+  "dependencies": {
+    "@react-aria/focus": "^3.22.1",
+    "@react-aria/numberfield": "^3.13.1",
+    "@react-aria/slider": "^3.9.1",
+    "@react-aria/switch": "^3.8.1",
+    "@react-aria/visually-hidden": "^3.9.1",
+    "@react-stately/numberfield": "^3.12.1",
+    "@react-stately/slider": "^3.8.1",
+    "@react-stately/toggle": "^3.10.1",
+    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/plugin-dialog": "2.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
+    "@playwright/test": "1.42.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/coverage-v8": "1.6.1",
+    "colorjs.io": "^0.6.1",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "gremlins.js": "2.2.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4",
+    "vitest": "1.6.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@tauri-apps/api": "2.10.1"
+    }
+  }
+}

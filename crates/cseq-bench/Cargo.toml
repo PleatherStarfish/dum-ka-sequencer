@@ -1,0 +1,18 @@
+[package]
+name = "cseq-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cseq-model = { path = "../cseq-model" }
+cseq-realize = { path = "../cseq-realize" }
+cseq-rhythm = { path = "../cseq-rhythm" }
+cseq-transforms = { path = "../cseq-transforms" }
+# `fuzzing` exposes the port-less parallel realize hook used by the fast-forward
+# (replay-from-zero) bench case.
+cseq-transport = { path = "../cseq-transport", features = ["fuzzing"] }
+# The explicit sequential/parallel comparator keeps rayon visible at the call
+# site even though transport also uses it internally.
+rayon = "1"

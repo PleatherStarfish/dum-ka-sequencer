@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`spec builders (golden snapshots from a neutral patch) > channelHocketSpecFromPatch assembles transitions for enabled channels 1`] = `
+{
+  "accentRules": [],
+  "assignMode": "markov",
+  "channels": [
+    1,
+    2,
+  ],
+  "entryWeights": [],
+  "euclid": null,
+  "fallback": 1,
+  "fallbackWeights": [],
+  "globalSeed": 1234,
+  "order": "first",
+  "positionRules": [],
+  "seedMode": {
+    "seed": 1234,
+    "type": "perCycle",
+  },
+  "transitions": [
+    {
+      "from": [
+        1,
+      ],
+      "to": 2,
+      "weight": 1,
+    },
+    {
+      "from": [
+        2,
+      ],
+      "to": 1,
+      "weight": 1,
+    },
+  ],
+}
+`;

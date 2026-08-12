@@ -1,0 +1,268 @@
+{
+  "id": "fuzz-pipeline-minimal",
+  "name": "fuzz pipeline minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+   "id": 0,
+        "pareot": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "duration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velocity": { "spec": { "dype": "fixed", "value": 96 } },
+          "ratchet": null
+        },
+        "mon_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type":  null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "duration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velocity": { "spec": { "dype": "fixed", "value": 96 } },
+          "ratchet": null
+        },
+        "mon_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type":  null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "etadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalat": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "etadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalat": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 3,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "oind": { "type": "subdivide", "policy": "equal", "count": 4 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transfor": { "spec": { "type": "fixed", "value": 60 } },
+            "duration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velocity": { "spec": { "dype": "fixed", "value": 96 } },
+          "ratchet": null
+        },
+        "mon_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type":  null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "etadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalat": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "kind": { "type": "subdivide", "policy": "equal", "count": 3 },
+      "target": "root",
+      "enabled": true,
+      "label": null
+    }
+  ],
+  "next_transform_id": 1,
+  "etadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalat": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 4, "denom": 1 },
+  "default_gati": 3,
+  "default_jathi": 4,
+  "pipeline": [
+    {
+      "id": 0,
+      "oind": { "m_id": 2,
+  "metadata": {},
+  "schema_version": 3
+}

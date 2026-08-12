@@ -1,0 +1,40 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev", "--port", "38920", "--strictPort"],
+      "port": 38920,
+      "cwd": "ui"
+    },
+    {
+      "name": "ui-mock",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "VITE_E2E_MOCK_TAURI=1",
+        "pnpm",
+        "dev",
+        "--port",
+        "38921",
+        "--strictPort"
+      ],
+      "port": 38921,
+      "cwd": "ui"
+    },
+    {
+      "name": "ui-mock-alt",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "VITE_E2E_MOCK_TAURI=1",
+        "pnpm",
+        "dev",
+        "--port",
+        "38922",
+        "--strictPort"
+      ],
+      "port": 38922,
+      "cwd": "ui"
+    }
+  ]
+}

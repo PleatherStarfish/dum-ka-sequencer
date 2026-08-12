@@ -1,0 +1,45 @@
+{
+  "id": "fuzz-minimal",
+  "name": "fuzz minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numer": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "duration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velocity": { "spec": { "type": "fixed", "value": 96 } },
+          "ratchet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 1
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.0 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 1, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [],
+  "next_transform_id": 0,
+  "metadata": {},
+  "schema_version": 2
+}

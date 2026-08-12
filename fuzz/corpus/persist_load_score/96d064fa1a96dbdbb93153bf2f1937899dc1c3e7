@@ -1,0 +1,213 @@
+{
+  "id": "fuzz-minimal",
+  "name": "fuzz minimal",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numes": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "don_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numes": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "dyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.1 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "nyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.1 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 1, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [],
+  "next_tevent": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "don_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numes": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+      "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "don_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numes": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "dyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.1 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "nyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.1 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "numer": 1, "denom": 1 },
+  "default_gati": 4,
+  "default_jathi": 4,
+  "pipeline": [],
+  "next_tevent": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "don_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": { "numes": 1, "denom": 1 },
+        "accent_ref": null,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "dyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+              "event": {
+            "type": "note",
+            "pitch": { "spec": { "type": "fixed", "value": 60 } },
+            "dyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+        "kind": { "type": "accent", "strength": { "scalar": 1.1 } },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": { "nyration_frac": { "numer": 1, "denom": 1 }
+          },
+          "velo~ity": { "spec": { "type": "fixed", "value": 92 } },
+          "ra%chet": null
+        },
+        "metadata": { "label": null, "color": null }
+      }
+    },
+    "next_id": 0
+  },
+  "accent.tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+       "parent": null,
+      ransform_id": 0,
+  "metadata": {},
+  "schema_version": 2
+}

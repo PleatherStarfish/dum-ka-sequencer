@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 55886ed8f05a2f3192b4e0ed52bbb37938b3637c3c7667197a3513f3c5c478d5 # shrinks to p = ParallelParams { seed: 0, n_tracks: 1, use_box: false, box_authored_chain: false, use_trigger: true, trigger_variant: 1, policy_index: 0, with_matrix: false, with_priority: false, tempo_jitter: false, silent_second: false, shapers: false }, cycles = 1
+cc 712a06ff11eed8ca1999d62821e8fdf4ef16f3f9b1dc2bfc6a58b63860ec8493 # shrinks to p = ParallelParams { seed: 13481520045838793, n_tracks: 2, use_box: false, box_authored_chain: false, use_trigger: false, trigger_variant: 0, policy_index: 8, with_matrix: false, with_priority: false, tempo_jitter: true, silent_second: false, shapers: true }, cycles = 1
+cc a36f529224982dcd4792eb1b9f8ab2b7f1dbf79b23309d5de2bae183580a4a63 # shrinks to p = ParallelParams { seed: 281157728937828035, n_tracks: 3, use_box: false, box_authored_chain: false, use_trigger: false, trigger_variant: 0, policy_index: 0, with_matrix: false, with_priority: false, tempo_jitter: false, silent_second: false, shapers: true }, cycles = 2
+cc bd982823e08d9b823c8c66d1fa42f2dc3ea89e840a1ef8fd14a98ac19add3f96 # shrinks to p = ParallelParams { seed: 0, n_tracks: 1, use_box: false, box_authored_chain: false, use_trigger: true, trigger_variant: 1, policy_index: 0, with_matrix: false, with_priority: false, tempo_jitter: false, silent_second: false, shapers: false }, cycles = 2
+cc e7322e0fd78aab716db77108c7b441fe8775d6e2cad01e4e8e97f5c5d5b6bfc8 # shrinks to p = ParallelParams { seed: 0, n_tracks: 2, use_box: false, box_authored_chain: false, use_trigger: false, trigger_variant: 0, policy_index: 4, with_matrix: false, with_priority: false, tempo_jitter: true, silent_second: false, shapers: false }, cycles = 2

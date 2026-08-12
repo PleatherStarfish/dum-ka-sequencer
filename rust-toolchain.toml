@@ -1,0 +1,10 @@
+# Pins the Rust toolchain used for building and the CI fast lane (rust.yml).
+#
+# The workspace declares `rust-version = "1.75"` as its crate MSRV, but current
+# locked build dependencies include crates that require rustc 1.88. Pin that
+# toolchain consistently in CI and locally. The
+# scheduled fuzz workflow uses nightly via its own `dtolnay/rust-toolchain@nightly`
+# step and is unaffected by this file.
+[toolchain]
+channel = "1.88.0"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

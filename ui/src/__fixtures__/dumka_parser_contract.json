@@ -1,0 +1,392 @@
+[
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 2
+            }
+          }
+        ],
+        "requiredSubdivision": 1,
+        "totalBeats": 4
+      },
+      "ok": true
+    },
+    "pattern": "x . x ."
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "dum",
+            "dur": {
+              "den": 4,
+              "num": 3
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          },
+          {
+            "cls": "ka",
+            "dur": {
+              "den": 4,
+              "num": 1
+            },
+            "start": {
+              "den": 4,
+              "num": 3
+            }
+          },
+          {
+            "cls": "ka",
+            "dur": {
+              "den": 2,
+              "num": 1
+            },
+            "start": {
+              "den": 2,
+              "num": 3
+            }
+          },
+          {
+            "cls": "dum",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 1,
+              "num": 2
+            }
+          },
+          {
+            "cls": "ka",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 12
+            }
+          },
+          {
+            "cls": "dum",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 14
+            }
+          },
+          {
+            "cls": "ka",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 16
+            }
+          },
+          {
+            "cls": "dum",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 18
+            }
+          }
+        ],
+        "requiredSubdivision": 20,
+        "totalBeats": 4
+      },
+      "ok": true
+    },
+    "pattern": "[dum@3 ka] [. ka] [dum ka dum ka dum]@2"
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 4,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 4,
+              "num": 1
+            },
+            "start": {
+              "den": 4,
+              "num": 3
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 4,
+              "num": 1
+            },
+            "start": {
+              "den": 4,
+              "num": 5
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 2,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 2
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 2,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 3
+            }
+          },
+          {
+            "cls": "ka",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 5
+            }
+          }
+        ],
+        "requiredSubdivision": 4,
+        "totalBeats": 6
+      },
+      "ok": true
+    },
+    "pattern": "E(3,8,3)@2 [x .]*2 | _ # comment\nka"
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 1
+            }
+          }
+        ],
+        "requiredSubdivision": 1,
+        "totalBeats": 2
+      },
+      "ok": true
+    },
+    "pattern": "xx"
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 1
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          }
+        ],
+        "requiredSubdivision": 1,
+        "totalBeats": 1
+      },
+      "ok": true
+    },
+    "pattern": "[[[[[[[[[[[[[[[[x _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512] _@512]"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 7,
+        "line": 1,
+        "message": "pattern needs a per-beat Subdivision of 69257922561, above the maximum 64; simplify the tuplet here"
+      },
+      "ok": false
+    },
+    "pattern": "[[[[x .@512] .@512] .@512] .@512]"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 7,
+        "line": 2,
+        "message": "weight must be 1-512"
+      },
+      "ok": false
+    },
+    "pattern": "x .\n[x ka@0]"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 5,
+        "line": 1,
+        "message": "unclosed '['"
+      },
+      "ok": false
+    },
+    "pattern": "[x x"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 3,
+        "line": 1,
+        "message": "']' without a matching '['"
+      },
+      "ok": false
+    },
+    "pattern": "x ]"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 1,
+        "line": 1,
+        "message": "empty pattern; write at least one note, e.g. x . x ."
+      },
+      "ok": false
+    },
+    "pattern": ""
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 1,
+        "line": 1,
+        "message": "empty group '[]'"
+      },
+      "ok": false
+    },
+    "pattern": "[]"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 1,
+        "line": 1,
+        "message": "E(9,8) has more onsets than slots"
+      },
+      "ok": false
+    },
+    "pattern": "E(9,8)"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 4,
+        "line": 1,
+        "message": "'(' is only valid after E, as in E(3,8)"
+      },
+      "ok": false
+    },
+    "pattern": "dum(3,8)"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 1,
+        "line": 1,
+        "message": "'_' has nothing to extend; start with a note or rest"
+      },
+      "ok": false
+    },
+    "pattern": "_ x"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 3,
+        "line": 1,
+        "message": "unexpected character '😀'"
+      },
+      "ok": false
+    },
+    "pattern": "x 😀"
+  },
+  {
+    "outcome": {
+      "issue": {
+        "col": 2,
+        "line": 1,
+        "message": "unexpected character '﻿'"
+      },
+      "ok": false
+    },
+    "pattern": "x﻿x"
+  }
+]

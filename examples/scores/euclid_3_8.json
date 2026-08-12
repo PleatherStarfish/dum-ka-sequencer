@@ -1,0 +1,328 @@
+{
+  "id": "euclid_3_8",
+  "name": "euclid_3_8",
+  "duration_tree": {
+    "root": 0,
+    "nodes": {
+      "4": {
+        "id": 4,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "rest"
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "8": {
+        "id": 8,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": {
+              "spec": {
+                "type": "fixed",
+                "value": 60
+              }
+            },
+            "duration_frac": {
+              "numer": 1,
+              "denom": 1
+            }
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "1": {
+        "id": 1,
+        "parent": 0,
+        "duration": {
+          "numer": 1,
+          "denom": 1
+        },
+        "accent_ref": null,
+        "kind": {
+          "type": "subdivided",
+          "children": [
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "policy": "equal"
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "7": {
+        "id": 7,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "rest"
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "2": {
+        "id": 2,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": {
+              "spec": {
+                "type": "fixed",
+                "value": 60
+              }
+            },
+            "duration_frac": {
+              "numer": 1,
+              "denom": 1
+            }
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "5": {
+        "id": 5,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "note",
+            "pitch": {
+              "spec": {
+                "type": "fixed",
+                "value": 60
+              }
+            },
+            "duration_frac": {
+              "numer": 1,
+              "denom": 1
+            }
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "9": {
+        "id": 9,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "rest"
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "3": {
+        "id": 3,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "rest"
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "0": {
+        "id": 0,
+        "parent": null,
+        "duration": {
+          "numer": 1,
+          "denom": 1
+        },
+        "accent_ref": null,
+        "kind": {
+          "type": "subdivided",
+          "children": [
+            1
+          ],
+          "policy": "equal"
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      },
+      "6": {
+        "id": 6,
+        "parent": 1,
+        "duration": {
+          "numer": 1,
+          "denom": 8
+        },
+        "accent_ref": 0,
+        "kind": {
+          "type": "pulse",
+          "event": {
+            "type": "rest"
+          },
+          "velocity": {
+            "spec": {
+              "type": "fixed",
+              "value": 100
+            }
+          }
+        },
+        "metadata": {
+          "label": null,
+          "color": null,
+          "tags": []
+        }
+      }
+    },
+    "next_id": 10,
+    "pulse_spans": [],
+    "next_pulse_span_id": 0
+  },
+  "accent_tree": {
+    "root": 0,
+    "nodes": {
+      "0": {
+        "id": 0,
+        "parent": null,
+        "kind": {
+          "type": "accent",
+          "strength": {
+            "scalar": 1.0
+          }
+        },
+        "label": null
+      }
+    }
+  },
+  "cycle_length": {
+    "numer": 1,
+    "denom": 1
+  },
+  "default_gati": 8,
+  "default_jathi": 4,
+  "pipeline": [],
+  "next_transform_id": 0,
+  "metadata": {
+    "description": null,
+    "author": null
+  },
+  "schema_version": 1
+}

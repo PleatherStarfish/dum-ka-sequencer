@@ -1,0 +1,78 @@
+{
+  "name": "dto-contract-fixture",
+  "cycleBeats": 6,
+  "initialWeights": [
+    {
+      "subdivision": 7,
+      "weight": 1
+    }
+  ],
+  "initialJathiWeights": [
+    {
+      "jathi": 3,
+      "weight": 1
+    }
+  ],
+  "initialJathiBhedam": null,
+  "initialCustomSubdivision": null,
+  "speedSubdivision": null,
+  "automation": null,
+  "inflections": [
+    {
+      "id": "boundary-after-3",
+      "position": 0.5,
+      "changeProbability": 1,
+      "subdivisionWeights": [
+        {
+          "subdivision": 7,
+          "weight": 1
+        }
+      ],
+      "jathiWeights": [
+        {
+          "jathi": 3,
+          "weight": 1
+        }
+      ],
+      "customSubdivision": null,
+      "jathiBhedam": null
+    }
+  ],
+  "switchCountWeights": [
+    {
+      "count": 0,
+      "weight": 0
+    },
+    {
+      "count": 1,
+      "weight": 1
+    }
+  ],
+  "seedMode": "locked",
+  "seed": 20260611,
+  "historySeeds": [],
+  "historyWeight": 1,
+  "newSeedWeight": 1,
+  "maxHistory": 8,
+  "newSeedChance": 15,
+  "holdChance": 50,
+  "blendCycles": 16,
+  "singleParameterRhythmicModulation": false,
+  "accent": {
+    "beatStart": {
+      "min": 4,
+      "max": 4
+    },
+    "sectionStartExtra": {
+      "min": 8,
+      "max": 8
+    },
+    "jathiStart": {
+      "min": 6,
+      "max": 6
+    },
+    "jathiMode": "overrideGati"
+  },
+  "pitch": 60,
+  "velocity": 96
+}

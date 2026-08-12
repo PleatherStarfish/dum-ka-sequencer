@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Caesura User Manual</title>
+  <style>
+    @page {
+      size: Letter;
+      margin: 0.55in 0.62in;
+    }
+
+    :root {
+      --ink: #201c24;
+      --muted: #665d68;
+      --rule: #d8ced8;
+      --paper: #fbf8f2;
+      --panel: #ffffff;
+      --plum: #35293a;
+      --amber: #d8902f;
+      --cyan: #4c8f93;
+      --rose: #b35c6c;
+      --violet: #6e6594;
+      --green: #6c8b4f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 10.8pt/1.46 "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.08;
+      color: var(--plum);
+      break-after: avoid;
+    }
+
+    h1 {
+      font-size: 42pt;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-top: 28px;
+      padding-top: 12px;
+      border-top: 1px solid var(--rule);
+      font-size: 20pt;
+    }
+
+    h3 {
+      margin-top: 18px;
+      font-size: 12.6pt;
+    }
+
+    p { margin: 7px 0; }
+    ul, ol { margin: 7px 0 10px 22px; padding: 0; }
+    li { margin: 3px 0; }
+    strong { color: var(--plum); }
+    code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 9.5pt;
+      background: #f2edf1;
+      border: 1px solid #e4dbe2;
+      border-radius: 4px;
+      padding: 0 3px;
+    }
+
+    .cover {
+      min-height: 9.2in;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 22px;
+      page-break-after: always;
+    }
+
+    .cover-kicker {
+      color: var(--amber);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 10pt;
+    }
+
+    .cover-title {
+      align-self: center;
+      display: grid;
+      gap: 18px;
+    }
+
+    .subtitle {
+      max-width: 6.2in;
+      color: var(--muted);
+      font-size: 15pt;
+      line-height: 1.35;
+    }
+
+    .cover-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      color: #fff;
+    }
+
+    .cover-cell {
+      min-height: 0.82in;
+      border-radius: 6px;
+      padding: 9px;
+      background: var(--plum);
+      display: grid;
+      align-content: end;
+      font-size: 8.2pt;
+      font-weight: 700;
+    }
+
+    .cover-cell:nth-child(2) { background: var(--cyan); }
+    .cover-cell:nth-child(3) { background: var(--amber); color: #261900; }
+    .cover-cell:nth-child(4) { background: var(--rose); }
+    .cover-cell:nth-child(5) { background: var(--violet); }
+    .cover-cell:nth-child(6) { background: var(--green); }
+    .cover-cell:nth-child(7) { background: #4e4557; }
+    .cover-cell:nth-child(8) { background: #896241; }
+
+    .note {
+      border-left: 4px solid var(--amber);
+      background: #fff7e8;
+      padding: 9px 11px;
+      margin: 10px 0;
+      break-inside: avoid;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 11px;
+      break-inside: avoid;
+    }
+
+    .panel h3 { margin-top: 0; }
+
+    .small {
+      color: var(--muted);
+      font-size: 9pt;
+    }
+
+    .caption {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 8.6pt;
+    }
+
+    .figure {
+      margin: 12px 0;
+      break-inside: avoid;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #fff;
+      border: 1px solid var(--rule);
+      border-radius: 7px;
+    }
+
+    .flow text,
+    .theory text,
+    .automation text,
+    .matrix text,
+    .ratchet text {
+      font-family: "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+      fill: var(--ink);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 9px 0 13px;
+      break-inside: avoid;
+      font-size: 8.6pt;
+    }
+
+    th, td {
+      border: 1px solid var(--rule);
+      padding: 5px 6px;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f2edf1;
+      color: var(--plum);
+      text-align: left;
+    }
+
+    .toc {
+      columns: 2;
+      column-gap: 22px;
+      margin-top: 12px;
+    }
+
+    .toc p {
+      break-inside: avoid;
+      margin: 0 0 8px;
+    }
+
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <div class="cover-kicker">CarnaticSeq / Caesura</div>
+    <div class="cover-title">
+      <h1>Caesura<br />User Manual</h1>
+      <p class="subtitle">
+        A practical guide to building probabilistic Carnatic-inspired rhythm,
+        reading the timeline, automating musical parameters, and routing the
+        resulting MIDI with confidence.
+      </p>
+      <div class="cover-grid">
+        <div class="cover-cell">Cycle</div>
+        <div class="cover-cell">Gati</div>
+        <div class="cover-cell">Jathi</div>
+        <div class="cover-cell">Boundary</div>
+        <div class="cover-cell">Rhythm</div>
+        <div class="cover-cell">Ratchet</div>
+        <div class="cover-cell">Pitch</div>
+        <div class="cover-cell">Channel</div>
+      </div>
+    </div>
+    <p class="small">Generated from repository documentation for the current Caesura implementation.</p>
+  </section>
+
+  <main>
+    <h2>Contents</h2>
+    <div class="toc">
+      <p><strong>1.</strong> What Caesura is</p>
+      <p><strong>2.</strong> The musical model</p>
+      <p><strong>3.</strong> Five-minute first patch</p>
+      <p><strong>4.</strong> Reading the timeline</p>
+      <p><strong>5.</strong> Score controls</p>
+      <p><strong>6.</strong> Seeds</p>
+      <p><strong>7.</strong> Automation</p>
+      <p><strong>8.</strong> Rhythm Shaper</p>
+      <p><strong>9.</strong> Ratchet, ornaments, pitch, channel</p>
+      <p><strong>10.</strong> Saving, setup, logs, glossary</p>
+    </div>
+
+    <h2>What Caesura Is</h2>
+    <p>
+      Caesura is a macOS MIDI sequencer for Carnatic-inspired probabilistic
+      rhythm. It builds a rhythm tree, realizes stochastic choices under seed
+      control, shows the realization in a timeline, and sends that same
+      realization to MIDI playback.
+    </p>
+    <div class="note">
+      <strong>The core promise:</strong> what is visible in the timeline is what
+      playback is using. If the timeline and sound disagree, treat that as a
+      bug.
+    </div>
+
+    <div class="figure">
+      <svg class="flow" viewBox="0 0 960 300" role="img" aria-label="Caesura playback pipeline">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#665d68"></path>
+          </marker>
+        </defs>
+        <rect x="30" y="36" width="126" height="56" rx="6" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="93" y="61" text-anchor="middle" font-size="14" font-weight="700">Cycle</text>
+        <text x="93" y="78" text-anchor="middle" font-size="11">beats</text>
+        <rect x="205" y="36" width="126" height="56" rx="6" fill="#fff7e8" stroke="#d8ced8"/>
+        <text x="268" y="61" text-anchor="middle" font-size="14" font-weight="700">Boundaries</text>
+        <text x="268" y="78" text-anchor="middle" font-size="11">after beats</text>
+        <rect x="380" y="36" width="126" height="56" rx="6" fill="#eef7f7" stroke="#d8ced8"/>
+        <text x="443" y="61" text-anchor="middle" font-size="14" font-weight="700">Gati/Jathi</text>
+        <text x="443" y="78" text-anchor="middle" font-size="11">sections</text>
+        <rect x="555" y="36" width="126" height="56" rx="6" fill="#f7eef1" stroke="#d8ced8"/>
+        <text x="618" y="61" text-anchor="middle" font-size="14" font-weight="700">Rhythm</text>
+        <text x="618" y="78" text-anchor="middle" font-size="11">Markov spans</text>
+        <rect x="730" y="36" width="170" height="56" rx="6" fill="#f1eff8" stroke="#d8ced8"/>
+        <text x="815" y="61" text-anchor="middle" font-size="14" font-weight="700">Playback Layers</text>
+        <text x="815" y="78" text-anchor="middle" font-size="11">ratchet, pitch, channel</text>
+        <line x1="156" y1="64" x2="205" y2="64" stroke="#665d68" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="331" y1="64" x2="380" y2="64" stroke="#665d68" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="506" y1="64" x2="555" y2="64" stroke="#665d68" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="681" y1="64" x2="730" y2="64" stroke="#665d68" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="92" y="146" width="776" height="78" rx="8" fill="#ffffff" stroke="#d8ced8"/>
+        <text x="480" y="171" text-anchor="middle" font-size="15" font-weight="700">One request feeds both timeline preview and MIDI playback</text>
+        <line x1="480" y1="92" x2="480" y2="146" stroke="#d8902f" stroke-width="3" marker-end="url(#arrow)"/>
+        <rect x="170" y="238" width="220" height="38" rx="5" fill="#35293a"/>
+        <text x="280" y="262" text-anchor="middle" font-size="13" fill="#fff">Visible timeline</text>
+        <rect x="570" y="238" width="220" height="38" rx="5" fill="#35293a"/>
+        <text x="680" y="262" text-anchor="middle" font-size="13" fill="#fff">Scheduled MIDI</text>
+        <line x1="390" y1="257" x2="570" y2="257" stroke="#d8902f" stroke-width="3"/>
+      </svg>
+      <div class="caption">The sequencer resolves one musical request and uses it for both display and playback.</div>
+    </div>
+
+    <h2>The Musical Model</h2>
+    <p>
+      A score begins with one repeating cycle. The cycle contains beats. Beats
+      are subdivided into matras by the active gati. Section boundaries are
+      possible changes authored after beats. Each resolved section chooses its
+      own gati and may also choose a jathi accent pulse when the pulse tiles the
+      section cleanly.
+    </p>
+    <p>
+      The most important rule: <strong>gati subdivides each beat, never the whole
+      section.</strong> If a four-beat section resolves to gati 7, each beat has
+      seven matras, for 28 matras in that section.
+    </p>
+
+    <div class="figure">
+      <svg class="theory" viewBox="0 0 960 320" role="img" aria-label="Cycle beat gati and jathi diagram">
+        <rect x="40" y="40" width="880" height="72" rx="8" fill="#fff" stroke="#d8ced8"/>
+        <text x="58" y="30" font-size="14" font-weight="700">Cycle: 8 beats</text>
+        <g>
+          <rect x="60" y="62" width="100" height="30" fill="#f2edf1" stroke="#d8ced8"/>
+          <rect x="160" y="62" width="100" height="30" fill="#f2edf1" stroke="#d8ced8"/>
+          <rect x="260" y="62" width="100" height="30" fill="#eef7f7" stroke="#d8ced8"/>
+          <rect x="360" y="62" width="100" height="30" fill="#eef7f7" stroke="#d8ced8"/>
+          <rect x="460" y="62" width="100" height="30" fill="#eef7f7" stroke="#d8ced8"/>
+          <rect x="560" y="62" width="100" height="30" fill="#f7eef1" stroke="#d8ced8"/>
+          <rect x="660" y="62" width="100" height="30" fill="#f7eef1" stroke="#d8ced8"/>
+          <rect x="760" y="62" width="100" height="30" fill="#f7eef1" stroke="#d8ced8"/>
+          <text x="110" y="82" text-anchor="middle" font-size="12">1</text>
+          <text x="210" y="82" text-anchor="middle" font-size="12">2</text>
+          <text x="310" y="82" text-anchor="middle" font-size="12">3</text>
+          <text x="410" y="82" text-anchor="middle" font-size="12">4</text>
+          <text x="510" y="82" text-anchor="middle" font-size="12">5</text>
+          <text x="610" y="82" text-anchor="middle" font-size="12">6</text>
+          <text x="710" y="82" text-anchor="middle" font-size="12">7</text>
+          <text x="810" y="82" text-anchor="middle" font-size="12">8</text>
+        </g>
+        <line x1="260" y1="50" x2="260" y2="102" stroke="#d8902f" stroke-width="4"/>
+        <line x1="560" y1="50" x2="560" y2="102" stroke="#d8902f" stroke-width="4"/>
+        <text x="260" y="125" text-anchor="middle" font-size="12">boundary after beat 2</text>
+        <text x="560" y="125" text-anchor="middle" font-size="12">boundary after beat 5</text>
+
+        <text x="58" y="166" font-size="14" font-weight="700">Gati subdivides each beat</text>
+        <g stroke="#d8ced8">
+          <rect x="60" y="184" width="160" height="42" fill="#fff"/>
+          <rect x="280" y="184" width="160" height="42" fill="#fff"/>
+          <rect x="500" y="184" width="160" height="42" fill="#fff"/>
+        </g>
+        <text x="140" y="176" text-anchor="middle" font-size="12">gati 4</text>
+        <text x="360" y="176" text-anchor="middle" font-size="12">gati 7</text>
+        <text x="580" y="176" text-anchor="middle" font-size="12">jathi pulse</text>
+        <g fill="#4c8f93">
+          <circle cx="80" cy="205" r="5"/><circle cx="120" cy="205" r="5"/><circle cx="160" cy="205" r="5"/><circle cx="200" cy="205" r="5"/>
+        </g>
+        <g fill="#4c8f93">
+          <circle cx="296" cy="205" r="4"/><circle cx="317" cy="205" r="4"/><circle cx="338" cy="205" r="4"/><circle cx="359" cy="205" r="4"/><circle cx="380" cy="205" r="4"/><circle cx="401" cy="205" r="4"/><circle cx="422" cy="205" r="4"/>
+        </g>
+        <g fill="#b35c6c">
+          <circle cx="520" cy="205" r="5"/><circle cx="580" cy="205" r="5"/><circle cx="640" cy="205" r="5"/>
+        </g>
+        <rect x="706" y="178" width="174" height="58" rx="6" fill="#fff7e8" stroke="#d8ced8"/>
+        <text x="793" y="202" text-anchor="middle" font-size="12" font-weight="700">Section start</text>
+        <text x="793" y="219" text-anchor="middle" font-size="11">still counts if gati repeats</text>
+      </svg>
+      <div class="caption">Boundaries are after beats; gati subdivides every beat in the resolved section.</div>
+    </div>
+
+    <h2>Five-Minute First Patch</h2>
+    <ol>
+      <li>Set <strong>Beats/cycle</strong> to 8.</li>
+      <li>Set <strong>Pitch</strong> to 60 and <strong>Velocity</strong> around 96.</li>
+      <li>Use initial gati weights for 4, 3, and 5.</li>
+      <li>Add boundaries after beats 2 and 5.</li>
+      <li>Give each boundary a moderate chance, such as 35 to 60 percent.</li>
+      <li>Give the boundaries their own gati weights so changes have character.</li>
+      <li>Set max-section weights so one or two changes are more likely than many changes.</li>
+      <li>Press Play and inspect the realized timeline.</li>
+      <li>Switch seed mode from per-cycle to locked when you find a useful variation.</li>
+      <li>Save the patch before adding Rhythm Shaper or ratchet.</li>
+    </ol>
+
+    <h2>Reading The Timeline</h2>
+    <p>
+      The timeline has authored and resolved layers. The top rail shows where
+      boundaries may happen. The resolved bands show what actually happened for
+      the inspected cycle. Lower lanes show gati, jathi, rhythm grouping,
+      ratchet, ornaments, pitch, channel, and automation samples.
+    </p>
+    <div class="grid-3">
+      <div class="panel">
+        <h3>Authored</h3>
+        <p>Boundary positions, probabilities, and weights are values you edit.</p>
+      </div>
+      <div class="panel">
+        <h3>Resolved</h3>
+        <p>Sections, gati, jathi, and rhythm groups are concrete choices for a cycle.</p>
+      </div>
+      <div class="panel">
+        <h3>Playback</h3>
+        <p>Ratchet, ornaments, pitch, and channel lanes show final MIDI behavior.</p>
+      </div>
+    </div>
+
+    <h2>Score Controls</h2>
+    <table>
+      <thead>
+        <tr><th>Control</th><th>What it changes</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Beats/cycle</td><td>Cycle length.</td><td>Structural. Boundaries are normalized against it.</td></tr>
+        <tr><td>Pitch</td><td>Base MIDI note.</td><td>Current automation target.</td></tr>
+        <tr><td>Velocity</td><td>Base MIDI velocity.</td><td>Current automation target before accent sampling.</td></tr>
+        <tr><td>Initial gati weights</td><td>First section gati choice.</td><td>Weights are current automation targets.</td></tr>
+        <tr><td>Initial jathi weights</td><td>First section jathi accent choice.</td><td>Only tileable jathis can be used.</td></tr>
+        <tr><td>Boundaries</td><td>Possible section changes after beats.</td><td>Probability and weights are current automation targets.</td></tr>
+        <tr><td>Max sections</td><td>How many sections may exist.</td><td>Chosen before boundary rolls.</td></tr>
+        <tr><td>Single-parameter modulation</td><td>Continuity preference for rhythmic changes.</td><td>Current boolean automation target.</td></tr>
+        <tr><td>Accent ranges</td><td>Velocity boosts for beat, section, and jathi starts.</td><td>Min/max fields are current automation targets.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Seed Strategy</h2>
+    <p>
+      Seeds make probabilistic music repeatable. Locked mode repeats a result.
+      Per-cycle mode changes by cycle while remaining deterministic. History
+      mode chooses between remembered seeds and new seeds. Rhythm, pitch, and
+      channel layers can follow the global seed or use their own strategy.
+    </p>
+    <div class="note">
+      Use locked seeds to capture a phrase. Use per-cycle seeds for variation.
+      Use history mode when a piece should revisit earlier states.
+    </div>
+
+    <h2>Automation</h2>
+    <p>
+      Automation runs across a top-level number of cycles. It is sampled before
+      each beat, then the timeline and playback are realized from those samples.
+      Points are stored as exact normalized rational times, so a point at 73
+      percent stays coordinated when the automation span is stretched from a
+      short phrase to hundreds of cycles.
+    </p>
+
+    <div class="figure">
+      <svg class="automation" viewBox="0 0 960 330" role="img" aria-label="Automation graph with points and markers">
+        <rect x="52" y="42" width="840" height="210" rx="8" fill="#fff" stroke="#d8ced8"/>
+        <line x1="92" y1="224" x2="854" y2="224" stroke="#d8ced8"/>
+        <line x1="92" y1="72" x2="92" y2="224" stroke="#d8ced8"/>
+        <g stroke="#efe7ee">
+          <line x1="244" y1="72" x2="244" y2="224"/>
+          <line x1="396" y1="72" x2="396" y2="224"/>
+          <line x1="548" y1="72" x2="548" y2="224"/>
+          <line x1="700" y1="72" x2="700" y2="224"/>
+          <line x1="92" y1="186" x2="854" y2="186"/>
+          <line x1="92" y1="148" x2="854" y2="148"/>
+          <line x1="92" y1="110" x2="854" y2="110"/>
+        </g>
+        <line x1="649" y1="62" x2="649" y2="242" stroke="#d8902f" stroke-width="3" stroke-dasharray="8 6"/>
+        <text x="649" y="263" text-anchor="middle" font-size="12">global marker 73%</text>
+        <path d="M 92 205 C 196 188, 244 142, 320 132 C 420 118, 496 96, 548 118 C 610 144, 649 174, 754 86 C 800 48, 836 58, 854 70" fill="none" stroke="#4c8f93" stroke-width="4"/>
+        <g fill="#35293a" stroke="#fff" stroke-width="2">
+          <circle cx="92" cy="205" r="7"/>
+          <circle cx="320" cy="132" r="7"/>
+          <circle cx="548" cy="118" r="7"/>
+          <circle cx="649" cy="174" r="7"/>
+          <circle cx="854" cy="70" r="7"/>
+        </g>
+        <rect x="96" y="278" width="142" height="28" rx="5" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="167" y="297" text-anchor="middle" font-size="12">point list</text>
+        <rect x="252" y="278" width="150" height="28" rx="5" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="327" y="297" text-anchor="middle" font-size="12">curve amount</text>
+        <rect x="416" y="278" width="182" height="28" rx="5" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="507" y="297" text-anchor="middle" font-size="12">snap to markers</text>
+        <rect x="612" y="278" width="214" height="28" rx="5" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="719" y="297" text-anchor="middle" font-size="12">sample once per beat</text>
+      </svg>
+      <div class="caption">Automation is graph-edited, marker-aligned, and sampled at beat boundaries.</div>
+    </div>
+
+    <h3>Current Automation Targets</h3>
+    <p>
+      Current targets include pitch, velocity, single-parameter modulation,
+      accent ranges, initial gati/jathi weights, boundary probabilities,
+      boundary gati/jathi weights, and max-section weights. Future phases should
+      add matrix cells, articulation cells, arbitrary subdivision, ratchet,
+      ornaments, pitch, channel, synth monitor values, and other editable
+      playback parameters.
+    </p>
+
+    <h2>Rhythm Shaper</h2>
+    <p>
+      The Rhythm Shaper groups material inside protected accent spans. A state
+      is a pulse pattern for a span length. A matrix cell is a weighted
+      transition from previous state context to next state. First-order mode
+      uses one previous state; second-order mode uses two.
+    </p>
+    <div class="figure">
+      <svg class="matrix" viewBox="0 0 960 300" role="img" aria-label="Markov matrix diagram">
+        <rect x="56" y="48" width="260" height="200" rx="8" fill="#fff" stroke="#d8ced8"/>
+        <text x="186" y="76" text-anchor="middle" font-size="15" font-weight="700">States</text>
+        <g fill="#4c8f93">
+          <circle cx="100" cy="122" r="8"/><circle cx="145" cy="122" r="8"/><circle cx="235" cy="122" r="8"/>
+          <circle cx="100" cy="170" r="8"/><circle cx="190" cy="170" r="8"/><circle cx="235" cy="170" r="8"/>
+          <circle cx="100" cy="218" r="8"/><circle cx="145" cy="218" r="8"/><circle cx="190" cy="218" r="8"/><circle cx="235" cy="218" r="8"/>
+        </g>
+        <rect x="380" y="48" width="324" height="200" rx="8" fill="#fff" stroke="#d8ced8"/>
+        <text x="542" y="76" text-anchor="middle" font-size="15" font-weight="700">Transition Weights</text>
+        <g>
+          <rect x="424" y="104" width="56" height="38" fill="#f2edf1" stroke="#d8ced8"/><text x="452" y="128" text-anchor="middle" font-size="12">0</text>
+          <rect x="480" y="104" width="56" height="38" fill="#fff7e8" stroke="#d8ced8"/><text x="508" y="128" text-anchor="middle" font-size="12">4</text>
+          <rect x="536" y="104" width="56" height="38" fill="#eef7f7" stroke="#d8ced8"/><text x="564" y="128" text-anchor="middle" font-size="12">1</text>
+          <rect x="592" y="104" width="56" height="38" fill="#f7eef1" stroke="#d8ced8"/><text x="620" y="128" text-anchor="middle" font-size="12">2</text>
+          <rect x="424" y="142" width="56" height="38" fill="#eef7f7" stroke="#d8ced8"/><text x="452" y="166" text-anchor="middle" font-size="12">1</text>
+          <rect x="480" y="142" width="56" height="38" fill="#f2edf1" stroke="#d8ced8"/><text x="508" y="166" text-anchor="middle" font-size="12">0</text>
+          <rect x="536" y="142" width="56" height="38" fill="#fff7e8" stroke="#d8ced8"/><text x="564" y="166" text-anchor="middle" font-size="12">6</text>
+          <rect x="592" y="142" width="56" height="38" fill="#f2edf1" stroke="#d8ced8"/><text x="620" y="166" text-anchor="middle" font-size="12">0</text>
+          <rect x="424" y="180" width="56" height="38" fill="#fff7e8" stroke="#d8ced8"/><text x="452" y="204" text-anchor="middle" font-size="12">3</text>
+          <rect x="480" y="180" width="56" height="38" fill="#f7eef1" stroke="#d8ced8"/><text x="508" y="204" text-anchor="middle" font-size="12">2</text>
+          <rect x="536" y="180" width="56" height="38" fill="#f2edf1" stroke="#d8ced8"/><text x="564" y="204" text-anchor="middle" font-size="12">0</text>
+          <rect x="592" y="180" width="56" height="38" fill="#eef7f7" stroke="#d8ced8"/><text x="620" y="204" text-anchor="middle" font-size="12">1</text>
+        </g>
+        <rect x="758" y="80" width="144" height="58" rx="6" fill="#f2edf1" stroke="#d8ced8"/>
+        <text x="830" y="105" text-anchor="middle" font-size="13" font-weight="700">Fallback</text>
+        <text x="830" y="122" text-anchor="middle" font-size="11">static or weighted</text>
+        <rect x="758" y="170" width="144" height="58" rx="6" fill="#fff7e8" stroke="#d8ced8"/>
+        <text x="830" y="195" text-anchor="middle" font-size="13" font-weight="700">Seed mode</text>
+        <text x="830" y="212" text-anchor="middle" font-size="11">repeat or vary</text>
+      </svg>
+      <div class="caption">Rhythm matrices choose grouped patterns inside protected spans.</div>
+    </div>
+
+    <h3>Articulation, Speed, And Re-Subdivision</h3>
+    <p>
+      Articulation can rest or tie individual cells. Gati speed and jathi timing
+      can alter the span frame before grouping. Arbitrary subdivision can
+      reinterpret a protected span as another virtual length, using Markov
+      material or a weighted pattern pool. These features are powerful because
+      they change the vocabulary the matrix sees.
+    </p>
+
+    <h2>Ratchet, Ornaments, Pitch, And Channel</h2>
+    <div class="grid-2">
+      <div>
+        <p>
+          Ratchet is a playback-only layer. It adds rapid repeated hits inside
+          eligible note groups without changing the underlying rhythm tree.
+          Ornaments add grace notes and delayed echoes. Pitch Shaper rewrites
+          final pitches. Channel Hocket rewrites final MIDI channels.
+        </p>
+        <p>
+          These layers happen late in the pipeline, so their debug logs are
+          important. They show what actually fired during playback.
+        </p>
+      </div>
+      <div class="figure">
+        <svg class="ratchet" viewBox="0 0 480 240" role="img" aria-label="Playback layer order">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#665d68"></path>
+            </marker>
+          </defs>
+          <rect x="28" y="28" width="108" height="42" rx="5" fill="#eef7f7" stroke="#d8ced8"/>
+          <text x="82" y="54" text-anchor="middle" font-size="12">Rhythm</text>
+          <rect x="186" y="28" width="108" height="42" rx="5" fill="#fff7e8" stroke="#d8ced8"/>
+          <text x="240" y="54" text-anchor="middle" font-size="12">Ratchet</text>
+          <rect x="344" y="28" width="108" height="42" rx="5" fill="#f7eef1" stroke="#d8ced8"/>
+          <text x="398" y="54" text-anchor="middle" font-size="12">Ornaments</text>
+          <line x1="136" y1="49" x2="186" y2="49" stroke="#665d68" marker-end="url(#arrow2)"/>
+          <line x1="294" y1="49" x2="344" y2="49" stroke="#665d68" marker-end="url(#arrow2)"/>
+          <rect x="90" y="126" width="126" height="42" rx="5" fill="#f1eff8" stroke="#d8ced8"/>
+          <text x="153" y="152" text-anchor="middle" font-size="12">Pitch Shaper</text>
+          <rect x="270" y="126" width="126" height="42" rx="5" fill="#f2edf1" stroke="#d8ced8"/>
+          <text x="333" y="152" text-anchor="middle" font-size="12">Channel Hocket</text>
+          <line x1="240" y1="70" x2="153" y2="126" stroke="#665d68" marker-end="url(#arrow2)"/>
+          <line x1="398" y1="70" x2="333" y2="126" stroke="#665d68" marker-end="url(#arrow2)"/>
+          <rect x="156" y="194" width="168" height="34" rx="5" fill="#35293a"/>
+          <text x="240" y="216" text-anchor="middle" font-size="12" fill="#fff">Final MIDI queue</text>
+          <line x1="216" y1="168" x2="222" y2="194" stroke="#665d68" marker-end="url(#arrow2)"/>
+          <line x1="333" y1="168" x2="286" y2="194" stroke="#665d68" marker-end="url(#arrow2)"/>
+        </svg>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>Key controls</th><th>Debug signal</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Ratchet</td><td>Probability, seed, speed windows, curves, modifiers, cooldown, velocity.</td><td>Ratchet playback events.</td></tr>
+        <tr><td>Ornaments</td><td>Grace placement/counts, delay windows, tuplets, shared modifiers.</td><td>Ornament playback events.</td></tr>
+        <tr><td>Pitch Shaper</td><td>Pitch states, Markov matrix, boundary policy, transpose, ratchet/ornament pitch modes.</td><td>Pitch playback events.</td></tr>
+        <tr><td>Channel Hocket</td><td>Enabled channels, Markov matrix, fallback, ratchet/ornament channel modes, accent routing.</td><td>Channel playback events.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Saving, Setup, And Logs</h2>
+    <p>
+      A `.caesura` patch saves transport values, score controls, automation,
+      rhythm matrices, ratchet and ornament settings, pitch shaping, channel
+      hocketing, synth voices, setup preferences, seed paths, and relevant
+      editor state. Autosave is crash recovery, not a replacement for deliberate
+      patch saves.
+    </p>
+    <p>
+      The MIDI out log shows scheduled outgoing events. The automation playback
+      log shows sampled automation states for each beat during playback. Seed,
+      ratchet, ornament, pitch, and channel logs are debugging tools for proving
+      the timeline and playback are describing the same realization.
+    </p>
+
+    <h2>Complete Control Reference</h2>
+    <p>
+      The developer and testing companion document is
+      <code>docs/EDITABLE_VALUE_INVENTORY.md</code>. It lists every persisted
+      editable value family, including dynamic matrix cells and planned
+      automation targets, and should be updated whenever a new control is added.
+    </p>
+
+    <h2>Glossary</h2>
+    <table>
+      <tbody>
+        <tr><th>Anuloma</th><td>Speeding relationship, represented by faster speed choices.</td></tr>
+        <tr><th>Beat</th><td>A primary pulse inside the cycle.</td></tr>
+        <tr><th>Boundary</th><td>A possible section change authored after a beat.</td></tr>
+        <tr><th>Cycle</th><td>The repeating formal unit.</td></tr>
+        <tr><th>Gati</th><td>Beat subdivision count. Gati subdivides each beat.</td></tr>
+        <tr><th>Jathi</th><td>A regular accent pulse that must tile a resolved section.</td></tr>
+        <tr><th>Matra</th><td>The subdivision unit inside a beat.</td></tr>
+        <tr><th>Protected span</th><td>Accent-delimited region that rhythm grouping and ratchet should not cross.</td></tr>
+        <tr><th>Pratiloma</th><td>Slowing relationship, represented by slower speed choices.</td></tr>
+        <tr><th>Ratchet</th><td>Playback-only repeated hits inside note groups.</td></tr>
+        <tr><th>Section</th><td>A resolved region between accepted boundaries.</td></tr>
+        <tr><th>Seed</th><td>Integer source for reproducible stochastic choices.</td></tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

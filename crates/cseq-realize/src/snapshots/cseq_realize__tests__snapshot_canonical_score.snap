@@ -1,0 +1,13 @@
+---
+source: crates/cseq-realize/src/lib.rs
+assertion_line: 821
+expression: snapshot
+---
+[
+    "offset=0/1 kind=NoteOn { channel: 0, pitch: 61, velocity: 100 } node=1",
+    "offset=1/3 kind=NoteOff { channel: 0, pitch: 61 } node=1",
+    "offset=1/3 kind=NoteOn { channel: 0, pitch: 62, velocity: 100 } node=2",
+    "offset=2/3 kind=NoteOff { channel: 0, pitch: 62 } node=2",
+    "offset=2/3 kind=NoteOn { channel: 0, pitch: 63, velocity: 100 } node=3",
+    "offset=1/1 kind=NoteOff { channel: 0, pitch: 63 } node=3",
+]

@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-08-04T05:03:38+00:00",
+  "host": "regenerated-by-perf-check",
+  "units": "milliseconds",
+  "backendMetric": "median of the measured iterations (cseq-bench)",
+  "frontendMetric": "mean (vitest bench)",
+  "thresholdPercentDefault": 25.0,
+  "note": "Machine-specific numbers. Promote a CI-generated copy of this file to scripts/perf-baseline.json before flipping --strict.",
+  "backend": {
+    "channel/resolve-dense-second-order-32768": 2.1208,
+    "channel/resolve-euclid-partition-32768": 89.4172,
+    "generator/example-density-72-32768": 0.2692,
+    "score/realize-tracks-8-parallel": 0.1025,
+    "score/realize-tracks-8-sequential": 0.1605,
+    "transport/fast-forward-parallel-4x256": 177.4363,
+    "transport/fast-forward-parallel-4x64": 33.4044
+  },
+  "frontend": {
+    "automation targets > buildAutomationTargetDefs (full target enumeration)": 0.0527,
+    "overlay derivations > buildChannelLogicOverrideRows": 0.0065,
+    "spec builders > channelHocketSpecFromPatch (8 channels)": 0.0123
+  }
+}
