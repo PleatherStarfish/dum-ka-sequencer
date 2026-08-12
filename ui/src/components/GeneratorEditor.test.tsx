@@ -17,6 +17,8 @@ function props(overrides: Partial<GeneratorEditorProps> = {}): GeneratorEditorPr
     dumkaPattern: "x . x .",
     dumkaEvolutionRate: 0,
     dumkaDriftLeash: 25,
+    dumkaDensityFloor: 0,
+    dumkaDensityCeiling: 100,
     dumkaPreviewError: null,
     dumkaRequired: { cycleBeats: 4, subdivision: 1 },
     dumkaStructureReady: false,
@@ -36,6 +38,8 @@ function props(overrides: Partial<GeneratorEditorProps> = {}): GeneratorEditorPr
     onApplyDumkaStructure: vi.fn(),
     setDumkaEvolutionRate: vi.fn(),
     setDumkaDriftLeash: vi.fn(),
+    setDumkaDensityFloor: vi.fn(),
+    setDumkaDensityCeiling: vi.fn(),
     dumkaBarlowTemperature: 0,
     setDumkaBarlowTemperature: vi.fn(),
     dumkaFillComplexity: 0,
@@ -282,7 +286,7 @@ describe("GeneratorEditor", () => {
     ).toContain("dumka structure mismatch");
   });
 
-  it("forwards current Grouping fences to the Articulate repair", () => {
+  it("forwards current Grouping fences to the optional Articulate gesture", () => {
     const onDumkaPatternCommit = vi.fn();
     render(
       <GeneratorEditor
@@ -295,8 +299,6 @@ describe("GeneratorEditor", () => {
             spanLen: 3,
             subdivision: 15,
           })),
-          dumkaPreviewError:
-            "dumka structure mismatch: a note sustains across the span boundary at beat 0; split the note or keep the hold inside one beat or Grouping tile",
           onDumkaPatternCommit,
         })}
       />

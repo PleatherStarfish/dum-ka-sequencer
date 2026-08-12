@@ -19,7 +19,7 @@ ID salts its own `SALT_PLAN` stream; reorder and save therefore cannot retarget
 its choices. An empty plan is the exact legacy fold and remains the
 byte-compatibility anchor.
 
-Intensity is quota, not probability. A pin requests
+In operation-quota mode, intensity is quota, not probability. A pin requests
 `ceil(intensity × candidates / 100)` operations (Rotate rounds its requested
 beat displacement). Each range also authors a pacing policy:
 
@@ -37,6 +37,20 @@ that covered cycle and it accepts only Per cycle pacing. If no directive is
 active, the legacy rate/weight layer runs unchanged. Missing `pacing` on an
 older patch defaults to Per cycle, preserving its trajectory.
 
+Each deterministic row also has an opt-in **Step size**. Missing `magnitude`
+(or explicit `operationQuota`) is the exact intensity behavior above and
+serializes in the historical omitted shape. `perceptual` instead pins model
+`v1` and seeks a target fixed-point rhythm distance on every active cycle. The
+planner scores the corridor-normalized zero-operation hold, then sequential
+legal prefixes up to `maxOperations`, stopping at the first guard failure or
+exact target. Initial candidate count does not cap repeatable families. It
+chooses the nearest target and breaks equal errors toward the smaller prefix.
+Its target replaces intensity and therefore
+requires Per cycle pacing; Stochastic rejects it. Scope, density corridor, and
+trial projection continue to govern the search. See
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md) for the exact seven
+components, bounds, calibration status, and limitations.
+
 Gradual pacing bounds how many **operator applications** are scheduled at one
 cycle boundary; it is not a continuous audio crossfade. One Add/Remove usually
 changes one onset and one Syncopate/Desyncopate moves one onset. A single
@@ -52,9 +66,14 @@ the window. A pattern edit that makes a scope orphaned does not brick playback;
 the directive skips and preview traces `orphanedScope`.
 
 Authored directives are exempt from the drift leash because the change is
-explicit, but never from interval disjointness, tie fences, or trial projection.
-Preview returns per-cycle `{requested, applied, skipped}` trace entries for the
-requested cycle (`none`, `orphanedScope`, `projection`, or `exhausted`). A
+explicit, but never from the density corridor, interval disjointness, or trial
+projection. Valid paired ties across adjacent spans are projectable; dangling
+or cycle-wrapping ties remain forbidden. Preview returns per-cycle
+`{requested, applied, skipped, corridorClamp?, perceptual?}` trace entries for
+the requested cycle (`none`, `orphanedScope`, `projection`, or `exhausted`). In
+perceptual mode, `requested` is the number of successfully examined nonzero
+prefixes, `applied` is the selected prefix (possibly zero), and the additive object reports model,
+actual, target, tolerance, reached, and exhausted truth. A
 gradual range reports a trace even on a scheduled hold (`0/0`), so the editor
 can show its position without inventing cumulative work from a partial cache.
 Transport does not carry trace and still realizes the same resolved spans. See
@@ -105,8 +124,7 @@ ranks by the indispensability of the strongest pulse the figure would
 newly articulate (fragment) or the weakest onset the merge would remove
 (consolidate), widened by the temperature pool. Figures charge the drift
 leash like adds and removes — a fragment of k pieces spends k−1 (k from
-silence) — and a fragment whose sustain would cross a span boundary is
-skipped by trial projection for that cycle. Finer-than-grid tuplets remain
+silence). Paired cross-span ties now project normally. Finer-than-grid tuplets remain
 gated on the platform upsample extension (ROADMAP M6+).
 
 **Euclid reshape knobs** (authored only): `euclidMaxRun` (1–8; above 1
@@ -116,9 +134,9 @@ complements its mask — k onsets become n−k, leash-charged like any density
 change; the complement of a Euclidean rhythm is again Euclidean), and
 `euclidRestPolicy` (tied = each reshaped onset sustains to the next;
 silent = one-slot hits — Caesura's `EuclideanRestPolicy`). Windows with a
-sustain straddling their edge are not candidates; cycle-scope reshapes
-with tied durations only project on structures whose spans can hold the
-sustains. The editor's pattern card also carries a **seed roller** that
+sustain straddling their reshape window are not candidates; tied durations
+may cross adjacent structural spans through the paired tie handshake. The
+editor's pattern card also carries a **seed roller** that
 composes whole cycles from the same vocabulary (`E(k,n,r)` sugar for plain
 rolls, expanded burst/inverted masks otherwise). Each physical beat uses the
 exact local slot count derived from the committed pattern, including rest
@@ -142,7 +160,12 @@ published tables (3×2 `[5,0,3,1,4,2]`, 2×3 `[5,0,2,4,1,3]`, 2×2
 `[3,0,2,1]`, 2×2×2 `[7,0,4,2,6,1,5,3]`). Stratification is the beat
 count's prime factors (largest first) then the Subdivision's. Grids with a
 prime factor beyond 7 (no published Ψ table here) deterministically play
-the seed verbatim instead of guessing.
+the seed verbatim when the corridor is off. If a corridor is active, a
+documented positional order is used only to normalize density; it does not
+pretend to be a missing Barlow ranking. Perceptual scoring is the exception:
+any enabled perceptual row on an unsupported grid fails authoring validation,
+including a future row, because the pinned model cannot construct its
+Barlow/Sioros metrical context. Disabled rows preserve the legacy fallback.
 
 The Generator editor renders this machinery live per algorithm family
 (lanes and formulas mirrored in `ui/src/dumkaMetrics.ts`, pinned by the
@@ -151,6 +174,22 @@ Rust-generated `dumka_metrics_contract.json`); see
 
 ## Guards
 
+- **Density corridor** (`densityFloor` / `densityCeiling`, automated at
+  `generator.dumka.densityFloor` / `generator.dumka.densityCeiling`): onset
+  count stays between `ceil(floor% × grid slots)` and
+  `floor(ceiling% × grid slots)`. Defaults 0/100 switch the rail off and keep
+  old trajectories byte-identical. Each operator is quota-clamped; Fragment
+  can use fewer pieces and Consolidate can merge a shorter run. If the rail
+  moves past inherited state, deterministic weakest-first removals or
+  strongest-first additions normalize it before that cycle's operators, with
+  every edit trial-projected. Directive-local paired overrides take precedence
+  over sampled globals. Independently automated rails may cross; the ceiling
+  stays the hard limit and the effective floor contracts to it. Preview trace
+  records the blocking `floor` or `ceiling` and its effective percentage.
+  Authored directive IDs remain positive; `directiveId: 0`, family
+  `stochastic`, is the reserved trace source for a clamped legacy layer.
+  Preview also returns the fold-owned cycle-effective floor/ceiling so the
+  Evolve band remains truthful under automation and ordered overrides.
 - **Drift leash** (`driftLeash`, `generator.dumka.driftLeash`): the
   symmetric difference between the current and seed onset sets may never
   exceed `⌈leash% × seed onsets⌉`. Add, Remove, and the M3 displacement
@@ -161,10 +200,12 @@ Rust-generated `dumka_metrics_contract.json`); see
   deterministic, trial-projectable removals/restorations contract the state
   before that cycle's stochastic operator is considered.
 - **Trial projection**: every candidate result is projected against the
-  actual structural spans; an op that would strand a note across a span
-  boundary is skipped for that cycle. Evolution can stall; playback can
-  never break (property-tested under Grouping-3 tiles where rotation
-  genuinely produces illegal candidates).
+  actual structural spans. Paired cross-span tie chains are legal; malformed
+  ties, overlap, incompatible grids, or broken tiling are not. Evolution can
+  stall; playback can never break.
+- **Precedence**: corridor > explicit plan > stochastic drift leash; projection
+  remains an absolute playability postcondition. A directive may exceed the
+  leash, but it cannot exceed the corridor or bypass projection.
 - Out-of-range authored knobs are rejected with a pinned Display
   (`dumka evolutionRate must be 0-100, got 101`), never clamped; the
   automation samplers clamp their sampled values like every other target.
@@ -181,17 +222,31 @@ Rust-generated `dumka_metrics_contract.json`); see
 
 Every stochastic decision is keyed by `(seed, cycle, purpose salt)` —
 never by draw order — so adding a decision can never perturb another. The
-invariants suite fuzzes evolving configs (rate and leash across their full
-ranges) through all four property families, including byte-identical
-seed-path replay. The fold is recomputed per resolve; measured cost
-(cseq-bench `generator/dumka-fold-cycle-10000`, release, M-series): folding
-to cycle 10,000 at rate 100 takes ~17 ms. Random-access stopped preview is
+invariants suite fuzzes evolving configs (rate, leash, and paired density
+corridors across their full ranges) through all four property families,
+including byte-identical seed-path replay. The fold is recomputed per resolve;
+measured cost (cseq-bench
+`generator/dumka-fold-corridor-cycle-10000`, release, M-series): folding a
+legal 16-directive plan through a 25–60% corridor to cycle 10,000 has a
+10.66 ms median over 10 measured runs. Random-access stopped preview is
 therefore capped at cycle 10,000 in both patch normalization and the generic
 Tauri preview boundary. Playback itself remains unbounded, and live timeline
 requests within two cycles of the reference or active parallel-track cycle
 continue to use the same resolver. The per-resolve cost still grows linearly
 with a long-running transport's cycle; checkpointing remains future work if
 unbounded multi-day real-time runs become a supported performance target.
+
+Two report-only release cases cover calibrated pacing:
+`generator/dumka-perceptual-planner-cycle-1` and
+`generator/dumka-perceptual-distance-dense-8192`. One local run measured
+approximately 1.140 ms and 1.114 ms median respectively. These machine-specific
+numbers are not CI thresholds; commands and model scope are recorded in
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
+The generator rejects enabled perceptual plans that reserve more than 4,096
+distance evaluations over their complete authored ranges; each active
+row-cycle reserves `maxOperations + 1` for prefix zero and the nonzero search.
+This prevents a valid far-cycle preview from multiplying the dense-distance
+case into minutes of replay work.
 
 The mock e2e driver deliberately does not port the fold. It projects the seed
 at cycle 0, or at a later cycle only when the authored rate is 0 and no enabled

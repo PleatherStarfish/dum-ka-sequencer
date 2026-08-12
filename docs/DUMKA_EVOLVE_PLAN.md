@@ -4,7 +4,8 @@ Status: **implemented.** This began as the design-first artifact
 (same convention as `DUMKA_FIGURES.md` / `DUMKA_PHRASE_DRIFT.md`) for
 replacing "rate-percent roulette" with an authored plan: *pins* and
 *ranges* on a cycle timeline, each naming an operator family, an
-intensity, and an optional beat-range scope — all executed by the same
+operation-quota or perceptual step size, and an optional beat-range scope — all
+executed by the same
 pure, identity-seeded fold, byte-replayable, through the one generator
 seam. `planLengthCycles` remains canvas-only, directive trace remains a
 preview/authoring artifact, and transport still consumes the ordinary span
@@ -14,6 +15,14 @@ M3.8 extends each deterministic range with `perCycle`, `linear`, or
 `easeInOut` pacing. The default is the original schedule; the latter two pace
 one fixed target through the authored range. They remain part of this same
 plan/fold contract rather than introducing a morph renderer.
+
+The current implementation also adds an opt-in, versioned **perceptual** step
+size. Instead of deriving an operation count from intensity, it evaluates the
+legal prefix of one deterministic operator trajectory and selects the smallest
+prefix nearest an authored realized-rhythm target. It is still the same pure
+fold—not interpolation, audio crossfade, or a second renderer. The exact model
+and calibration status are in
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
 
 ## 1. Problem statement (verbatim from use)
 
@@ -61,7 +70,12 @@ pub struct EvolutionDirective {
     pub family: DirectiveFamily,
     #[serde(default)]
     pub pacing: DirectivePacing,    // PerCycle | Linear | EaseInOut
-    /// 0–100; family-specific meaning, §4. Clamped, never rejected.
+    #[serde(
+        default,
+        skip_serializing_if = "DirectiveMagnitude::is_operation_quota"
+    )]
+    pub magnitude: DirectiveMagnitude,
+    /// 0–100; family-specific meaning, §4. Ignored by perceptual magnitude.
     pub intensity: u32,
     /// Beat window in the UNROTATED metric frame; None = whole cycle.
     pub scope: Option<BeatRange>,   // { start_beat: u32, len_beats: u32 }
@@ -76,6 +90,19 @@ pub enum DirectivePacing {
     PerCycle,
     Linear,
     EaseInOut,
+}
+
+#[derive(Serialize, Deserialize, Default, ...)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum DirectiveMagnitude {
+    #[default]
+    OperationQuota,
+    Perceptual {
+        model_version: PerceptualModelVersion, // currently V1 only
+        target_milli: u32,                     // 0..=100_000
+        tolerance_milli: u32,                  // 0..=100_000
+        max_operations: u32,                   // 1..=256
+    },
 }
 
 #[derive(Serialize, Deserialize, ...)]
@@ -96,6 +123,8 @@ pub struct DirectiveOptions {
     pub euclid_max_run: Option<u32>,       // 1–8
     pub euclid_invert: Option<u32>,        // percent
     pub euclid_rest_policy: Option<EuclidRestPolicy>,
+    pub density_floor: Option<u32>,        // paired local corridor override
+    pub density_ceiling: Option<u32>,
 }
 ```
 
@@ -123,9 +152,27 @@ The tolerant TypeScript patch reader drops an explicitly invalid pacing row
 with a warning; direct Rust DTO input remains strict and rejects unknown enum
 values.
 
-## 4. Intensity semantics — exact, per family
+Missing `magnitude` defaults to `OperationQuota`, and that default is omitted
+again on serialization, preserving pre-feature wire bytes. A perceptual row
+must explicitly carry `modelVersion: "v1"`, target and tolerance in
+`0..=100_000` milli-units, and `maxOperations` in `1..=256`. It requires
+`PerCycle` pacing and a deterministic family. Stochastic + perceptual and
+Linear/Ease-in-out + perceptual are rejected rather than assigned ambiguous
+combined semantics. Perceptual scoring also requires a Barlow-supported
+beat/Subdivision grid. On an unsupported grid, any enabled perceptual row
+fails authoring validation immediately, including a future row; disabled rows
+retain the ordinary unsupported-grid fallback.
 
-Intensity is a **deterministic quota**, not a probability. Let `C(c)` be
+Enabled perceptual rows also share a plan-wide lifetime budget of 4,096
+distance evaluations. Each active row-cycle reserves `maxOperations + 1`
+scores, including prefix zero; the sum uses saturating arithmetic. The editor
+prevents an over-budget edit, and tolerant patch loading preserves but disables
+later offending rows so their authored data can be repaired.
+
+## 4. Magnitude semantics — exact, per family
+
+With absent/`OperationQuota` magnitude, intensity is a **deterministic quota**,
+not a probability. Let `C(c)` be
 the candidate count the family sees at cycle `c` *within scope* (sounding
 onsets for Remove; silent-uncovered slots for Add; legal vectors for the
 Sioros pair; fragmentable intervals / consolidatable runs for figures;
@@ -170,6 +217,26 @@ Euclid may reshape many events in one legal application. Gradual pacing makes
 large batches less likely but does not promise a crossfade or a universal
 bound on adjacent-cycle onset distance.
 
+With `Perceptual` magnitude, `targetMilli` **replaces intensity**. At each
+active cycle the fold first includes its corridor-normalized hold as prefix
+zero, then sequentially attempts up to `maxOperations` ordinary identity-seeded
+operations. Every examined prefix has passed the family's scope, interval,
+density-corridor, and trial-projection guards; the first failed frontier ends
+the search. Initial `C(c)` is not a cap because repeatable operations can create
+new candidates. The planner scores each reachable prefix against the state
+handed to this directive and selects minimum absolute target error; a tie keeps
+the smaller prefix. An exact target stops further work. `toleranceMilli`
+affects whether the result is reported as reached, not which closest prefix
+wins or when search stops.
+
+This is per-active-cycle calibration, so it cannot be combined with Linear or
+Ease-in/out's range-global quota distribution. Multiple families at one cycle
+still layer by `order`; each calibrates its own contribution from the state
+left by earlier rows, and their composite distance is neither additive nor
+bounded by one row's target. See
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md) for the fixed-point
+feature formulas and important non-claims.
+
 ## 5. Scope — "only the last 2 beats"
 
 `BeatRange {start_beat, len_beats}` ⇒ slot window
@@ -205,13 +272,13 @@ beat-strip glyph.
   Consequence: gaps in the plan are literal repetition when
   `evolutionRate` is 0 — "how many cycles of repetition" is authored by
   where the pins are.
-- **Leash**: directive applications are exempt from the drift leash (the
+- **Rails**: directive applications are exempt from the drift leash (the
   author demanded exactly this change; a silently vetoed pin is the
-  "uncontrolled" feeling this design kills) but are **never** exempt
-  from trial projection, the tie fence, or interval disjointness —
+  "uncontrolled" feeling this design kills) but are **never** exempt from
+  their effective density corridor, trial projection, or interval disjointness —
   playability stays inviolable. A projection-vetoed application is
   skipped and **traced**. The leash continues to govern `Stochastic`
-  cycles. Loudly documented in DUMKA_EVOLUTION.md.
+  cycles. Precedence is corridor > plan > leash, with projection absolute.
 
 ## 7. Observability — the trace (DTO extension)
 
@@ -226,22 +293,51 @@ pub struct DirectiveTraceEntry {
     pub requested: u32,   // quota n for this cycle
     pub applied: u32,     // survived projection
     pub skipped: DirectiveSkip, // None | OrphanedScope | Projection | Exhausted
+    pub corridor_clamp: Option<DensityCorridorClamp>, // independent clamp truth
+    pub perceptual: Option<PerceptualPacingTrace>,     // opt-in calibration truth
+}
+
+pub struct PerceptualPacingTrace {
+    pub model_version: PerceptualModelVersion,
+    pub actual_milli: u32,
+    pub target_milli: u32,
+    pub tolerance_milli: u32,
+    pub reached: bool,
+    pub exhausted: bool,
 }
 ```
 
-Wire: `generator_preview` response gains `trace: Vec<DirectiveTraceEntry>`
-(serde default empty; absent for non-dumka and for cycle 0). Both DTO
+Wire: `generator_preview` response carries `trace: Vec<DirectiveTraceEntry>`
+plus the fold-owned cycle-effective `densityCorridor { floor, ceiling }`
+(serde default empty; absent for non-Dum-Ka responses, while cycle 0 reports
+the authored/automated Dum-Ka rail even though evolution itself is bypassed). Both DTO
 fixture directions regenerate; the mock — which cannot fold — keeps
 failing loudly for any evolving cycle and now treats a non-empty enabled
 plan as evolving. Playback needs no trace (the ledger is the truth); the
 trace is a preview/authoring artifact, which keeps the transport DTO
 untouched.
 
+Authored directive IDs remain positive. `directiveId: 0` with family
+`stochastic` is reserved for a corridor-only trace from the un-authored legacy
+evolution layer. It is emitted only when global/automated normalization or a
+legacy stochastic application is actually clamped; the default 0–100%
+corridor therefore keeps the historical empty trace. The editor treats this
+as an unscoped rail event and never derives directive range progress from it.
+
 For gradual ranges, `requested` and `applied` are deliberately the **current
 cycle's delta**, not a cumulative completion percentage. A scheduled 0/0 hold
 still emits an entry. The editor derives `step k of L` from the directive's
 range and ID; it never sums whichever earlier traces happen to be in its
 bounded preview cache and calls that authoritative progress.
+
+For perceptual rows, `requested` is the number of successfully examined
+nonzero prefixes (`0..=maxOperations`) and `applied` is the chosen prefix
+length, including zero. `reached` means the
+chosen result lies inside the inclusive tolerance window. `exhausted` means no
+admissible searched prefix did so; `skipped` and `corridorClamp` retain the
+independent structural reason when a rail or projection frontier prevented
+further work. The editor displays backend-measured Realized versus Target and
+does not infer a distance from operation counts.
 
 Random-access preview resolves both structural and generator History seed
 pools sequentially from cycle 0 through the requested cycle. Transport mutates
@@ -258,7 +354,7 @@ module.
 directive schema plus every editing operation as a pure function —
 `addPin(plan, family, cycle)`, `moveDirective`, `resizeRange`,
 `setIntensity`, `setScope`, `setOptions`, `toggleEnabled`, `reorder`,
-`setPacing`, `removeDirective` — each returning
+`setPacing`, `setMagnitude`, `removeDirective` — each returning
 `{ok, plan} | {ok:false, message}`
 with the same-family-overlap rule enforced at edit time (the engine
 re-validates; the editor never authors what the engine rejects).
@@ -276,9 +372,10 @@ Normalization mirrors patch rules; ids allocated
   Rotate, Syncopate, Desyncopate, Fragment, Consolidate, Euclid,
   Stochastic), each in the family's established insight-panel color;
   collapsible to used-lanes-only.
-- A **pin** renders as a diamond at (cycle, lane) with an intensity
-  badge ("15%"); a **range** as a rounded bar `[from..to]` with the
-  badge centered. Gradual ranges carry a visible Linear or Ease marker;
+- A **pin** renders as a diamond at (cycle, lane) with its operation-quota
+  intensity ("15%") or perceptual target badge; a **range** is a rounded bar
+  `[from..to]` with the badge centered. Gradual quota ranges carry a visible
+  Linear or Ease marker;
   **scope** renders as a beat-strip glyph inside the
   bar (N cells, covered beats filled — "last 2 of 4" is legible at a
   glance); disabled directives render hollow.
@@ -287,25 +384,35 @@ Normalization mirrors patch rules; ids allocated
   = duplicate; Delete = remove; every gesture keyboard-accessible
   (selection + arrow keys / fields — the a11y contract the component
   tests pin, and what Playwright drives).
-- **Inspector** (selected directive): intensity NumericField, from/to
-  cycle fields, enabled toggle, **Transition** (`Repeat each cycle`, `Linear
+- **Inspector** (selected directive): from/to cycle fields, enabled toggle,
+  **Step size** (`Operation quota` or `Perceptual target`), and the relevant
+  fields. Operation quota exposes intensity and **Transition** (`Repeat each cycle`, `Linear
   transition`, or `Gentle transition`) for deterministic families,
-  family-specific option fields, and the
+  while Perceptual target exposes target magnitude, tolerance, and maximum
+  operations, pins model `v1`, and reports the realized trace. It requires
+  Repeat each cycle, so transition/smoothing controls are absent in that mode.
+  Both modes retain family-specific option fields and the
   **scope picker** — the cycle's beats rendered as proportional blocks
   (reusing the rhythm-builder block idiom); click/shift-click selects a
   contiguous beat run; "whole cycle" clears. A deterministic pin offers
   **Smooth across 4 cycles**, which atomically turns it into a four-cycle
-  Gentle transition. Stochastic exposes no Transition control.
+  Gentle transition. Stochastic exposes neither Perceptual target nor a
+  Transition control.
 - **Composition strip** (the requested graphic): a per-cycle summary row
   under the lanes — onset-count sparkline + density heat ribbon,
   computed from cached per-cycle previews (the existing
   `generator_preview` random access, ≤ cycle 10 000, debounced and
   LRU-cached exactly like the timeline's rhythm cache) — overlaid with
-  **applied-trace ticks**: a filled tick where `applied > 0`, a hollow
+  the authored **density-corridor band**, plus **applied-trace ticks**: a
+  filled tick where `applied > 0`, a hollow
   tick where a directive was skipped (tooltip carries the skip reason).
-  Requested-vs-applied divergence is therefore visible per cycle. A selected
+  A corridor-clamped tick is separately marked and names the active limit, so
+  it can coexist with a projection/exhaustion reason. Requested-vs-applied
+  divergence is therefore visible per cycle. A selected
   gradual range also labels its current transition step; a zero-change easing
-  hold remains visible rather than masquerading as an inactive gap.
+  hold remains visible rather than masquerading as an inactive gap. A selected
+  perceptual row shows its backend `actual` versus `target ± tolerance`; its
+  trace tick still uses applied/skipped/corridor truth.
 - **Preview comparison**: selecting a directive scrubs the stopped preview
   (`userPreviewCycle`) to its `from_cycle`; a "before/after" toggle flips
   between `from_cycle − 1` and `from_cycle`. This is deliberately a visual
@@ -326,18 +433,27 @@ active."
   invalid/duplicate ids repaired, and order re-densified;
   absent pacing materializes as `perCycle`, while an unknown pacing or a
   smoothed Stochastic row is dropped as malformed with a warning;
+  absent/explicit Operation-quota magnitude projects to absence, while a
+  malformed, unversioned, smoothed, or Stochastic perceptual magnitude drops
+  the row with the same warning;
   fail-closed key screening for every new field name against
   `STRIPPED_PATCH_KEYS`).
+- Generator params persist `densityFloor` / `densityCeiling` (0/100 defaults),
+  and directive options may carry the paired overrides. Partial, inverted, or
+  unknown override semantics fail closed during tolerant recall and strict
+  invoke validation.
 - DTO fixtures: `dumka_generator_preview_request.json` and
-  `dumka_patch_document.json` regenerate with a rich 3-directive plan
-  (a Per-cycle pin, a scoped Linear range, and a disabled Gentle directive);
-  `preview` response
-  fixture pins a non-empty trace. No-op proofs on both sides.
+  `dumka_patch_document.json` regenerate with a rich four-directive plan
+  (a Per-cycle pin, a scoped Linear range, a disabled Gentle directive, and a
+  disabled version-pinned perceptual row); separate legacy and perceptual
+  preview fixtures pin omission compatibility and a non-empty calibration
+  trace. No-op proofs run on both sides.
 - Mock: plan-aware "evolving" predicate; still resolves cycle 0 and
   non-evolving configs bit-exactly; still throws the pinned message for
   folded cycles.
-- Automation registry: **unchanged** (110 targets). The plan is not an
-  automation target; the doc states why (tuple-valued, scoped, ordered).
+- Automation registry: **112 targets**. The two scalar corridor rails are
+  cycle-start targets; the plan remains non-automatable because it is
+  tuple-valued, scoped, and ordered.
 
 ## 10. Test matrix (regression-first)
 
@@ -354,13 +470,20 @@ Engine:
   catch-up, and deterministic replay. The canonical 8-onset 15% Remove target
   becomes counts `8, 8, 7, 7, 6` from the pre-range baseline through four
   linear cycles, instead of one 8→6 boundary.
+- Perceptual pacing: identity/symmetry/bounds/determinism for the seven-feature
+  `v1` score; sustain-split, weak/strong fill and displacement,
+  clear/ambiguous rotation, syncopation, and ratio-complexity anchors; legal
+  prefix zero; exact nearest-target selection; smaller-prefix error ties;
+  target replacing intensity; work bounds; invalid version/pacing/Stochastic
+  combinations; corridor/projection frontier and trace truth.
 - Scope: per family, candidates fully inside the window (proptest over
   random scopes); Sioros landing-in-scope; windowed Rotate is a pure
   cyclic shift; orphaned scope ⇒ skip + trace.
 - Independence: two families pinned at one cycle both apply, in `order`.
-- Leash exemption + projection supremacy: a directive change that the
-  tie fence rejects is skipped and traced; playability proptest stays
-  green under Grouping-3 spans.
+- Leash exemption + projection supremacy: directives may exceed the leash but
+  not the density corridor; paired cross-span ties project, while malformed
+  ties and other projection failures are skipped and traced. Playability and
+  corridor properties stay green under Grouping-3 spans.
 - Pinned plan trajectory: the user's literal example (repeat to 12;
   Barlow 15% at 13; Fragment 22% scoped last-2-beats at 15) → exact
   event vectors at cycles 12/13/14/15/16 + byte replay.
@@ -371,12 +494,16 @@ Engine:
   families; fuzz arm extension (bounded plan in
   `parallel_transport_queue`); `dumka_dsl_parse` untouched (plan is not
   notation).
-- Bench: fold-to-10k with a 16-directive plan (accumulators are O(1)
-  per directive per cycle; expect ≈ current ~17 ms).
+- Bench: fold-to-10k with a 16-directive plan, plus focused
+  `dumka-perceptual-planner-cycle-1` and
+  `dumka-perceptual-distance-dense-8192` release cases. One local report-only
+  run measured approximately 1.140 ms and 1.114 ms median for the perceptual
+  cases; these are not CI thresholds.
 
 UI:
 - `dumkaEvolvePlan` model: every op, overlap rule, pacing transition, and
-  normalization round-trip (patch → model → patch fixed point).
+  magnitude transition, bounds/fail-closed combination, and normalization
+  round-trip (patch → model → patch fixed point).
 - Component: create/move/resize/scope/inspector flows by role/label;
   trace tick rendering from a fixture trace.
 - e2e (real lane): author the user's example through the editor, Apply

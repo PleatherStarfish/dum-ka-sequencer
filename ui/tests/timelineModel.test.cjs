@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  formatBeatFraction,
   filterSeedPathItemsForTrack,
   pruneTimelineAutomationTargetIds,
   seedPathTrackMatches,
@@ -425,4 +426,12 @@ test("seed recurrence rows keep inactive streams visible without fabricating rep
   assert.equal(rows[0].newCount, 0);
   assert.equal(rows[0].observedCount, 1);
   assert.equal(rows[0].paceLabel, "seeded");
+});
+
+test("formatBeatFraction reduces cell lengths to beat quantities", () => {
+  assert.equal(formatBeatFraction(8, 20), "2/5");
+  assert.equal(formatBeatFraction(5, 20), "1/4");
+  assert.equal(formatBeatFraction(20, 20), "1");
+  assert.equal(formatBeatFraction(30, 20), "3/2");
+  assert.equal(formatBeatFraction(0, 20), "0");
 });

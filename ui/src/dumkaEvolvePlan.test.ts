@@ -3,15 +3,23 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DIRECTIVE_OPTIONS,
   DEFAULT_DIRECTIVE_PACING,
+  DEFAULT_PERCEPTUAL_MAGNITUDE,
   MAX_EVOLUTION_DIRECTIVES,
+  MAX_PERCEPTUAL_DISTANCE_MILLI,
+  MAX_PERCEPTUAL_OPERATIONS,
+  MAX_PERCEPTUAL_SCORING_WORK,
   addPin,
   duplicateDirective,
   moveDirective,
   normalizeEvolutionPlan,
+  perceptualDirectiveScoringWork,
+  perceptualScoringWork,
   removeDirective,
   reorder,
   resizeRange,
+  setDensityCorridor,
   setIntensity,
+  setMagnitude,
   setOptions,
   setPacing,
   setScope,
@@ -62,6 +70,8 @@ describe("dumka evolution plan model", () => {
           ...row.options,
           barlowTemperature: -2,
           fillComplexity: 130,
+          densityFloor: 75,
+          densityCeiling: 35,
           euclidMaxRun: 99,
           euclidInvert: 105,
           euclidRestPolicy: "silent",
@@ -84,6 +94,8 @@ describe("dumka evolution plan model", () => {
       options: {
         barlowTemperature: 0,
         fillComplexity: 100,
+        densityFloor: 35,
+        densityCeiling: 75,
         euclidMaxRun: 8,
         euclidInvert: 100,
         euclidRestPolicy: "silent",
@@ -156,7 +168,20 @@ describe("dumka evolution plan model", () => {
       rotateDirection: "later",
     });
 
-    const toggled = planOf(toggleEnabled(options, 10));
+    const corridor = planOf(
+      setDensityCorridor(options, 10, { floor: 72, ceiling: 24 })
+    );
+    expect(corridor[0]!.options).toMatchObject({
+      densityFloor: 24,
+      densityCeiling: 72,
+    });
+    const inheritedCorridor = planOf(setDensityCorridor(corridor, 10, null));
+    expect(inheritedCorridor[0]!.options).toMatchObject({
+      densityFloor: null,
+      densityCeiling: null,
+    });
+
+    const toggled = planOf(toggleEnabled(inheritedCorridor, 10));
     expect(toggled[0]!.enabled).toBe(false);
 
     const reordered = planOf(reorder(toggled, 20, 0));
@@ -205,6 +230,112 @@ describe("dumka evolution plan model", () => {
     );
   });
 
+  it("keeps operation quota absent and safely normalizes perceptual magnitude", () => {
+    const normalized = normalizeEvolutionPlan([
+      pin(1, "fragment", 2),
+      {
+        ...pin(2, "rotate", 3),
+        pacing: "linear",
+        magnitude: { mode: "operationQuota" },
+      },
+      {
+        ...pin(3, "euclid", 4),
+        pacing: "easeInOut",
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v1",
+          targetMilli: MAX_PERCEPTUAL_DISTANCE_MILLI + 1,
+          toleranceMilli: -1,
+          maxOperations: MAX_PERCEPTUAL_OPERATIONS + 1,
+        },
+      },
+      {
+        ...pin(4, "stochastic", 5),
+        magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+      },
+    ]);
+
+    expect(normalized[0]).not.toHaveProperty("magnitude");
+    expect(normalized[1]).not.toHaveProperty("magnitude");
+    expect(normalized[1]!.pacing).toBe("linear");
+    expect(normalized[2]).toMatchObject({
+      pacing: "perCycle",
+      magnitude: {
+        mode: "perceptual",
+        modelVersion: "v1",
+        targetMilli: 100_000,
+        toleranceMilli: 0,
+        maxOperations: 256,
+      },
+    });
+    expect(normalized[3]).not.toHaveProperty("magnitude");
+  });
+
+  it("switches magnitude modes without repurposing the stored intensity", () => {
+    const base = [{ ...pin(1, "fragment", 5), pacing: "easeInOut" as const }];
+    const perceptual = planOf(
+      setMagnitude(base, 1, { ...DEFAULT_PERCEPTUAL_MAGNITUDE })
+    );
+    expect(perceptual[0]).toMatchObject({
+      intensity: 25,
+      pacing: "perCycle",
+      magnitude: DEFAULT_PERCEPTUAL_MAGNITUDE,
+    });
+    expect(planOf(setPacing(perceptual, 1, "linear"))[0]!.pacing).toBe(
+      "perCycle"
+    );
+
+    const quota = planOf(setMagnitude(perceptual, 1, undefined));
+    expect(quota[0]).not.toHaveProperty("magnitude");
+    expect(quota[0]!.intensity).toBe(25);
+    expect(
+      planOf(
+        setMagnitude(
+          [pin(2, "stochastic", 6)],
+          2,
+          { ...DEFAULT_PERCEPTUAL_MAGNITUDE }
+        )
+      )[0]
+    ).not.toHaveProperty("magnitude");
+  });
+
+  it("mirrors the engine's inclusive lifetime perceptual scoring budget", () => {
+    const left = {
+      ...pin(1, "fragment", 1),
+      toCycle: 240,
+      magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+    };
+    const right = {
+      ...pin(2, "rotate", 241),
+      magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+    };
+
+    expect(perceptualDirectiveScoringWork(left)).toBe(4_080n);
+    expect(perceptualScoringWork([left])).toBe(4_080n);
+    expect(validateEvolutionPlan([left]).ok).toBe(true);
+    expect(validateEvolutionPlan([left, right])).toEqual({
+      ok: false,
+      message:
+        "dumka perceptual plan reserves 4097 scoring operations, exceeding the limit of 4096",
+    });
+    expect(MAX_PERCEPTUAL_SCORING_WORK).toBe(4_096);
+
+    expect(
+      perceptualScoringWork([
+        {
+          ...right,
+          enabled: false,
+          fromCycle: 1,
+          toCycle: Number.MAX_SAFE_INTEGER,
+          magnitude: {
+            ...DEFAULT_PERCEPTUAL_MAGNITUDE,
+            maxOperations: MAX_PERCEPTUAL_OPERATIONS,
+          },
+        },
+      ])
+    ).toBe(0n);
+  });
+
   it("smooths a deterministic pin across four cycles atomically", () => {
     const base = [pin(1, "fragment", 5), pin(2, "fragment", 10)];
     expect(planOf(smoothDirectiveOverFourCycles(base, 1))[0]).toMatchObject({
@@ -230,6 +361,18 @@ describe("dumka evolution plan model", () => {
       ok: false,
       message:
         "Stochastic directives use a per-cycle probability and cannot be smoothed",
+    });
+  });
+
+  it("does not apply transition pacing to perceptual directives", () => {
+    const row = {
+      ...pin(1, "fragment", 4),
+      magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+    };
+    expect(smoothDirectiveOverFourCycles([row], 1)).toEqual({
+      ok: false,
+      message:
+        "Perceptual directives target each active cycle and cannot use transition pacing",
     });
   });
 

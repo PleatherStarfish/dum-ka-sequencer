@@ -79,13 +79,72 @@ test("builds a tuplet visually and plays exactly the previewed request", async (
   );
 });
 
-test("articulates a nested beat-2 5:2 group and recovers through playback", async ({
+test("Span covers existing Pattern beats without extending the cycle", async ({
+  page,
+}) => {
+  const counted =
+    "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]";
+  const spanningTwo = "[dum . . ka] [. . ka . x]@2 [x x . x]";
+  const spanningThree = "[dum . . ka] [. . ka . x]@3";
+
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+  const generator = await openMainEditor(page, "generator");
+  await generator.getByLabel("Generator kind").selectOption("dumka");
+  const field = generator.getByLabel("Dum-Ka pattern");
+
+  await generator
+    .getByRole("button", { name: "group 5: 4 in the time of 1" })
+    .click();
+  const count = generator.getByLabel("Group count");
+  await count.fill("5");
+  await count.blur();
+  await expect(field).toHaveValue(counted);
+
+  const span = generator.getByLabel("Group span in existing beats");
+  await span.fill("2");
+  await span.blur();
+  await expect(field).toHaveValue(spanningTwo);
+  await expect(generator.locator(".rb-ruler > span")).toHaveCount(4);
+  await expect(generator.getByLabel("Required structure")).toHaveText(
+    "needs 4 beats · Subdivision 20"
+  );
+  await expect(
+    generator.getByRole("button", { name: "group 5: 5 in the time of 2" })
+  ).toHaveText("5:2");
+
+  await span.fill("3");
+  await span.blur();
+  await expect(field).toHaveValue(spanningThree);
+  await expect(generator.locator(".rb-ruler > span")).toHaveCount(4);
+  await expect(generator.getByLabel("Required structure")).toHaveText(
+    "needs 4 beats · Subdivision 20"
+  );
+  await expect(
+    generator.getByRole("button", { name: "group 5: 5 in the time of 3" })
+  ).toHaveText("5:3");
+
+  await generator.getByRole("button", { name: "Apply structure" }).click();
+  await expect(
+    generator.getByRole("button", { name: "Structure ready" })
+  ).toBeDisabled();
+  await closeMainEditor(page, "generator");
+  await expect(page.getByTestId("transport-play")).toBeEnabled();
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+
+  const driver = await getDriverState(page);
+  expect(driver.lastGeneratorPreviewRequest?.cycleBeats).toBe(4);
+  expect(driver.lastGeneratorPreviewRequest?.generator).toEqual(
+    driver.lastTrackPlaybackRequest?.generator
+  );
+});
+
+test("plays a nested beat-2 5:2 group as a tied span without articulation", async ({
   page,
 }) => {
   const plain = "x [[x x x x x]@2]@2 x";
-  const articulated = "x [[[x .] [x .] [x .] [x .] [x .]]@2]@2 x";
-  const boundaryError =
-    "dumka structure mismatch: a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile";
 
   await openCaesura(page, {
     setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
@@ -103,8 +162,8 @@ test("articulates a nested beat-2 5:2 group and recovers through playback", asyn
   await page.getByRole("button", { name: "Group selection" }).click();
   await expect(field).toHaveValue("x [x x]@2 x");
 
-  // Wrap the group once more, then edit the inner ratio. This is the nested
-  // geometry that used to hide the Articulate escape hatch.
+  // Wrap the group once more, then edit the inner ratio. This pins the nested
+  // selection geometry for the optional Articulate styling gesture.
   await page.getByRole("button", { name: "Group selection" }).click();
   await expect(field).toHaveValue("x [[x x]@2]@2 x");
   await page
@@ -123,21 +182,11 @@ test("articulates a nested beat-2 5:2 group and recovers through playback", asyn
   await expect(
     page.getByRole("button", { name: "Structure ready" })
   ).toBeDisabled();
-  await expect(page.locator(".dumka-preview-error")).toContainText(
-    boundaryError
-  );
-  await expect(
-    page.getByRole("button", { name: "Articulate crossing notes" })
-  ).toBeVisible();
-
-  await page
-    .getByRole("button", { name: "Articulate crossing notes" })
-    .click();
-  await expect(field).toHaveValue(articulated);
   await expect(page.locator(".dumka-preview-error")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Articulate crossing notes" })
   ).toHaveCount(0);
+  await expect(field).toHaveValue(plain);
   await page.locator("#generator-editor summary").click();
 
   await expect
@@ -146,7 +195,7 @@ test("articulates a nested beat-2 5:2 group and recovers through playback", asyn
       const generator = driver.lastGeneratorPreviewRequest?.generator as
         | { kind?: string; pattern?: string }
         | undefined;
-      return generator?.kind === "dumka" && generator.pattern === articulated;
+      return generator?.kind === "dumka" && generator.pattern === plain;
     })
     .toBe(true);
 
@@ -168,10 +217,8 @@ test("articulates a nested beat-2 5:2 group and recovers through playback", asyn
   expect(state.timelineLayerSourcesCoherent).toBe(true);
 });
 
-test("articulates against the actual Grouping fence", async ({ page }) => {
+test("plays a sustain through an actual Grouping fence", async ({ page }) => {
   const plain = "[[x x x x x]@2 .]@2";
-  const articulated =
-    "[[[x .@3] [x .@3] [x .@3] [x .@3] [x .@3]]@2 .]@2";
 
   await openCaesura(page, {
     setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
@@ -204,17 +251,8 @@ test("articulates against the actual Grouping fence", async ({ page }) => {
 
   await closeMainEditor(page);
   const reopened = await openMainEditor(page, "generator");
-  await expect(reopened.locator(".dumka-preview-error")).toContainText(
-    "a note sustains across the span boundary"
-  );
-  await reopened
-    .getByRole("button", { name: "group 1: 5 in the time of 2" })
-    .click();
-  await reopened
-    .getByRole("button", { name: "Articulate", exact: true })
-    .click();
-  await expect(reopened.getByLabel("Dum-Ka pattern")).toHaveValue(articulated);
   await expect(reopened.locator(".dumka-preview-error")).toHaveCount(0);
+  await expect(reopened.getByLabel("Dum-Ka pattern")).toHaveValue(plain);
 
   await closeMainEditor(page);
   await expect(page.getByTestId("transport-play")).toBeEnabled();
@@ -222,16 +260,20 @@ test("articulates against the actual Grouping fence", async ({ page }) => {
   expect(
     (driver.lastGeneratorPreviewRequest?.generator as { pattern?: string })
       ?.pattern
-  ).toBe(articulated);
+  ).toBe(plain);
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+  const playing = await getDriverState(page);
+  expect(
+    (playing.lastTrackPlaybackRequest?.generator as { pattern?: string })?.pattern
+  ).toBe(plain);
 });
 
-test("repairs the reported mixed 5:2 tuplet crossing beat 2", async ({
+test("plays the reported mixed 5:2 tuplet crossing beat 2", async ({
   page,
 }) => {
   const plain =
     "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]";
-  const articulated =
-    "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]";
 
   await openCaesura(page, {
     setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
@@ -245,21 +287,15 @@ test("repairs the reported mixed 5:2 tuplet crossing beat 2", async ({
     "needs 5 beats · Subdivision 20"
   );
   await generator.getByRole("button", { name: "Apply structure" }).click();
-  await expect(generator.locator(".dumka-preview-error")).toContainText(
-    "a note sustains across the span boundary at beat 2"
-  );
+  await expect(generator.locator(".dumka-preview-error")).toHaveCount(0);
 
   await expect(
     generator.getByRole("button", { name: "Articulate", exact: true })
   ).toHaveCount(0);
   await expect(
     generator.getByRole("button", { name: "Articulate crossing notes" })
-  ).toBeVisible();
-  await generator
-    .getByRole("button", { name: "Articulate crossing notes" })
-    .click();
-  await expect(field).toHaveValue(articulated);
-  await expect(generator.locator(".dumka-preview-error")).toHaveCount(0);
+  ).toHaveCount(0);
+  await expect(field).toHaveValue(plain);
 
   await closeMainEditor(page);
   await expect(page.getByTestId("transport-play")).toBeEnabled();
@@ -267,5 +303,11 @@ test("repairs the reported mixed 5:2 tuplet crossing beat 2", async ({
   expect(
     (driver.lastGeneratorPreviewRequest?.generator as { pattern?: string })
       ?.pattern
-  ).toBe(articulated);
+  ).toBe(plain);
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+  const playing = await getDriverState(page);
+  expect(
+    (playing.lastTrackPlaybackRequest?.generator as { pattern?: string })?.pattern
+  ).toBe(plain);
 });

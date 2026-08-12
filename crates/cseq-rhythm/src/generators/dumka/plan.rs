@@ -10,12 +10,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::generators::GeneratorError;
 
+use super::perceptual::PerceptualModelVersion;
 use super::reshape::EuclidRestPolicy;
 
 /// Hard upper bound for one authored evolution score. Validation checks this
 /// before inspecting rows or running the same-family overlap scan, keeping
 /// hostile DTOs from turning the pairwise authoring rule into unbounded work.
 pub const MAX_EVOLUTION_DIRECTIVES: usize = 256;
+/// The perceptual model reports normalized milli-distance on this closed
+/// interval. Keeping authored targets in the same integer domain makes the
+/// score portable and avoids float-dependent planner decisions.
+pub const MAX_PERCEPTUAL_DISTANCE_MILLI: u32 = super::perceptual::PERCEPTUAL_DISTANCE_MAX_MILLI;
+/// Hard work bound for one perceptually paced directive at one cycle.
+pub const MAX_PERCEPTUAL_OPERATIONS: u32 = 256;
+/// Maximum aggregate prefix-scoring work admitted by one generator
+/// resolution. Dum-Ka reconstructs a requested cycle by folding every
+/// historical cycle from one, so this budget is cumulative across every
+/// enabled perceptual row that has entered that fold.
+///
+/// Each active row-cycle charges its normalized zero-prefix score plus up to
+/// `maxOperations` nonzero-prefix scores. The default 16-operation search can
+/// therefore remain active for 240 row-cycles. Keeping this separate from
+/// [`MAX_PERCEPTUAL_OPERATIONS`] bounds a far historical preview without
+/// making ordinary calibration too coarse.
+pub const MAX_PERCEPTUAL_SCORING_WORK: u64 = 4_096;
+/// Sentinel used by trace rows produced by the un-authored stochastic layer.
+/// Authored directive IDs validate as positive, so this cannot collide with
+/// score rows. The legacy layer emits it only when a density-corridor clamp
+/// actually changes or blocks that cycle; behavior-off traces stay empty.
+pub const LEGACY_EVOLUTION_TRACE_ID: u64 = 0;
 
 /// One contiguous beat scope, measured in the unrotated metric frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +69,36 @@ pub enum DirectivePacing {
     PerCycle,
     Linear,
     EaseInOut,
+}
+
+/// How a directive decides how many legal operator applications to realize.
+///
+/// `OperationQuota` is the historical intensity-driven behavior. Perceptual
+/// pacing instead searches the legal prefix of the operator trajectory and
+/// chooses the prefix nearest the requested transition distance. The enum is
+/// internally tagged so future magnitude models remain additive on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum DirectiveMagnitude {
+    #[default]
+    OperationQuota,
+    Perceptual {
+        model_version: PerceptualModelVersion,
+        target_milli: u32,
+        tolerance_milli: u32,
+        max_operations: u32,
+    },
+}
+
+impl DirectiveMagnitude {
+    const fn is_operation_quota(&self) -> bool {
+        matches!(self, Self::OperationQuota)
+    }
 }
 
 /// Operator family named by an authored directive.
@@ -115,6 +168,12 @@ pub struct EvolutionDirective {
     pub family: DirectiveFamily,
     #[serde(default)]
     pub pacing: DirectivePacing,
+    /// Omitted legacy rows retain byte-identical intensity/quota semantics.
+    #[serde(
+        default,
+        skip_serializing_if = "DirectiveMagnitude::is_operation_quota"
+    )]
+    pub magnitude: DirectiveMagnitude,
     pub intensity: u32,
     #[serde(default)]
     pub scope: Option<BeatRange>,
@@ -130,6 +189,46 @@ impl EvolutionDirective {
     pub const fn is_active(&self, cycle: u64) -> bool {
         self.enabled && cycle >= self.from_cycle && cycle <= self.to_cycle
     }
+}
+
+/// Conservatively reserve the maximum legal-prefix scoring work needed to
+/// reconstruct `requested_cycle`. Exact-target early exits are deliberately
+/// ignored: request admission must depend only on authored data, never on the
+/// evolving musical state. Disabled and strictly future rows cost no work;
+/// completed rows still count because deterministic historical replay visits
+/// their active cycles again on every resolution.
+pub(crate) fn validate_perceptual_scoring_work_through(
+    plan: &[EvolutionDirective],
+    through_cycle: u64,
+) -> Result<(), GeneratorError> {
+    let requested = plan.iter().fold(0u64, |total, directive| {
+        let DirectiveMagnitude::Perceptual { max_operations, .. } = directive.magnitude else {
+            return total;
+        };
+        if !directive.enabled || through_cycle == 0 {
+            return total;
+        }
+
+        // The historical fold is exactly 1..=through_cycle. Clamping the
+        // authored start keeps this helper total even before row validation.
+        let first = directive.from_cycle.max(1);
+        let last = directive.to_cycle.min(through_cycle);
+        let active_cycles = if last < first {
+            0
+        } else {
+            last.saturating_sub(first).saturating_add(1)
+        };
+        let scores_per_cycle = u64::from(max_operations).saturating_add(1);
+        total.saturating_add(active_cycles.saturating_mul(scores_per_cycle))
+    });
+
+    if requested > MAX_PERCEPTUAL_SCORING_WORK {
+        return Err(GeneratorError::DumkaPerceptualWorkLimit {
+            requested,
+            limit: MAX_PERCEPTUAL_SCORING_WORK,
+        });
+    }
+    Ok(())
 }
 
 /// Why a scheduled quota did not fully apply.
@@ -162,6 +261,21 @@ pub struct DensityCorridorClamp {
     pub density_percent: u32,
 }
 
+/// Additive truth for an opt-in perceptually paced transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PerceptualPacingTrace {
+    pub model_version: PerceptualModelVersion,
+    pub actual_milli: u32,
+    pub target_milli: u32,
+    pub tolerance_milli: u32,
+    pub reached: bool,
+    /// True when a reachable-prefix search ran to its work cap or structural
+    /// frontier without finding a prefix inside the tolerance window. An
+    /// orphaned scope performs no search and therefore leaves this false.
+    pub exhausted: bool,
+}
+
 /// Authoring trace for one active directive at one cycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +288,8 @@ pub struct DirectiveTraceEntry {
     pub skipped: DirectiveSkip,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corridor_clamp: Option<DensityCorridorClamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perceptual: Option<PerceptualPacingTrace>,
 }
 
 /// Exact integer remainder carried by one range across the historical fold.
@@ -357,6 +473,54 @@ pub(crate) fn validate_plan(plan: &[EvolutionDirective]) -> Result<(), Generator
                 ),
             });
         }
+        if let DirectiveMagnitude::Perceptual {
+            model_version: _,
+            target_milli,
+            tolerance_milli,
+            max_operations,
+        } = directive.magnitude
+        {
+            if target_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} magnitude targetMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {target_milli}",
+                        directive.id
+                    ),
+                });
+            }
+            if tolerance_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} magnitude toleranceMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {tolerance_milli}",
+                        directive.id
+                    ),
+                });
+            }
+            if !(1..=MAX_PERCEPTUAL_OPERATIONS).contains(&max_operations) {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} magnitude maxOperations must be 1-{MAX_PERCEPTUAL_OPERATIONS}, got {max_operations}",
+                        directive.id
+                    ),
+                });
+            }
+            if directive.pacing != DirectivePacing::PerCycle {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} perceptual magnitude pacing must be perCycle",
+                        directive.id
+                    ),
+                });
+            }
+            if directive.family == DirectiveFamily::Stochastic {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} stochastic magnitude must be operationQuota",
+                        directive.id
+                    ),
+                });
+            }
+        }
         if directive.scope.is_some_and(|scope| scope.len_beats == 0) {
             return Err(GeneratorError::DumkaPlanInvalid {
                 message: format!(
@@ -427,6 +591,11 @@ pub(crate) fn validate_plan(plan: &[EvolutionDirective]) -> Result<(), Generator
         }
     }
 
+    // Validate the complete authored ranges up front. A request-cycle guard
+    // remains at the generator seam as defense in depth, but any plan accepted
+    // here is safe throughout normal transport progression.
+    validate_perceptual_scoring_work_through(plan, u64::MAX)?;
+
     for (index, left) in plan.iter().enumerate() {
         for right in &plan[index + 1..] {
             if left.family != right.family {
@@ -460,6 +629,7 @@ mod tests {
             to_cycle: to,
             family,
             pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::OperationQuota,
             intensity: 32,
             scope: None,
             options: DirectiveOptions::default(),
@@ -506,6 +676,300 @@ mod tests {
         assert_eq!(
             validate_plan(&[row]).unwrap_err().to_string(),
             "dumka plan invalid: directive 9 stochastic pacing must be perCycle"
+        );
+    }
+
+    #[test]
+    fn legacy_magnitude_defaults_and_serializes_byte_compatibly() {
+        let legacy = serde_json::json!({
+            "id": 9,
+            "order": 9,
+            "enabled": true,
+            "fromCycle": 1,
+            "toCycle": 4,
+            "family": "barlowAdd",
+            "pacing": "perCycle",
+            "intensity": 32,
+            "scope": null,
+            "options": {}
+        });
+        let row: EvolutionDirective = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(row.magnitude, DirectiveMagnitude::OperationQuota);
+        let serialized = serde_json::to_value(row).unwrap();
+        assert!(
+            serialized.get("magnitude").is_none(),
+            "the default must not add bytes to the historical wire object"
+        );
+    }
+
+    #[test]
+    fn perceptual_magnitude_is_bounded_and_rejects_combination_semantics() {
+        let mut row = directive(9, DirectiveFamily::BarlowAdd, 1, 4);
+        row.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: PerceptualModelVersion::V1,
+            target_milli: 5_000,
+            tolerance_milli: 500,
+            max_operations: 16,
+        };
+        validate_plan(&[row.clone()]).expect("a bounded per-cycle target is valid");
+        assert_eq!(
+            serde_json::to_value(&row).unwrap()["magnitude"],
+            serde_json::json!({
+                "mode": "perceptual",
+                "modelVersion": "v1",
+                "targetMilli": 5_000,
+                "toleranceMilli": 500,
+                "maxOperations": 16
+            })
+        );
+        let missing_version = serde_json::json!({
+            "mode": "perceptual",
+            "targetMilli": 5_000,
+            "toleranceMilli": 500,
+            "maxOperations": 16
+        });
+        assert!(
+            serde_json::from_value::<DirectiveMagnitude>(missing_version).is_err(),
+            "a perceptual row must pin its scoring model"
+        );
+        let unknown_version = serde_json::json!({
+            "mode": "perceptual",
+            "modelVersion": "v2",
+            "targetMilli": 5_000,
+            "toleranceMilli": 500,
+            "maxOperations": 16
+        });
+        assert!(
+            serde_json::from_value::<DirectiveMagnitude>(unknown_version).is_err(),
+            "an unknown scoring model must fail closed"
+        );
+
+        row.pacing = DirectivePacing::Linear;
+        assert_eq!(
+            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 perceptual magnitude pacing must be perCycle"
+        );
+        row.pacing = DirectivePacing::PerCycle;
+        row.family = DirectiveFamily::Stochastic;
+        assert_eq!(
+            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 stochastic magnitude must be operationQuota"
+        );
+        row.family = DirectiveFamily::BarlowAdd;
+        row.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: PerceptualModelVersion::V1,
+            target_milli: 5_000,
+            tolerance_milli: 500,
+            max_operations: 0,
+        };
+        assert_eq!(
+            validate_plan(&[row]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 magnitude maxOperations must be 1-256, got 0"
+        );
+    }
+
+    #[test]
+    fn perceptual_scoring_work_budget_accepts_the_boundary_and_rejects_one_more_cycle() {
+        let mut row = directive(9, DirectiveFamily::BarlowAdd, 1, 240);
+        row.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: PerceptualModelVersion::V1,
+            target_milli: 5_000,
+            tolerance_milli: 500,
+            max_operations: 16,
+        };
+        validate_plan(&[row.clone()]).expect("240 default searches reserve 4,080 scores");
+
+        row.to_cycle = 241;
+        let error = validate_plan(&[row]).unwrap_err();
+        assert_eq!(
+            error,
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: 4_097,
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "dumka perceptual plan reserves 4097 scoring operations, exceeding the limit of 4096"
+        );
+
+        let mut minimal = directive(10, DirectiveFamily::Fragment, 1, 2_048);
+        minimal.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: PerceptualModelVersion::V1,
+            target_milli: 5_000,
+            tolerance_milli: 500,
+            max_operations: 1,
+        };
+        validate_plan(&[minimal.clone()])
+            .expect("one candidate plus P0 reserves two scores per active cycle");
+        minimal.to_cycle = 2_049;
+        assert_eq!(
+            validate_plan(&[minimal]).unwrap_err(),
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: 4_098,
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            }
+        );
+    }
+
+    #[test]
+    fn perceptual_scoring_work_is_aggregate_saturating_and_enabled_only() {
+        let perceptual = |mut row: EvolutionDirective, max_operations| {
+            row.magnitude = DirectiveMagnitude::Perceptual {
+                model_version: PerceptualModelVersion::V1,
+                target_milli: 5_000,
+                tolerance_milli: 500,
+                max_operations,
+            };
+            row
+        };
+        let left = perceptual(directive(1, DirectiveFamily::BarlowAdd, 1, 120), 16);
+        let right = perceptual(directive(2, DirectiveFamily::Fragment, 1, 120), 16);
+        validate_plan(&[left.clone(), right.clone()])
+            .expect("different families aggregate below the shared work boundary");
+
+        let extra = perceptual(directive(3, DirectiveFamily::Rotate, 9, 9), 16);
+        assert_eq!(
+            validate_plan(&[left, right, extra]).unwrap_err(),
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: MAX_PERCEPTUAL_SCORING_WORK + 1,
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            }
+        );
+
+        let mut disabled = perceptual(
+            directive(4, DirectiveFamily::Euclid, 1, u64::MAX),
+            MAX_PERCEPTUAL_OPERATIONS,
+        );
+        disabled.enabled = false;
+        validate_plan(&[disabled]).expect("disabled rows reserve no scoring work");
+
+        let huge = perceptual(
+            directive(5, DirectiveFamily::Consolidate, 1, u64::MAX),
+            MAX_PERCEPTUAL_OPERATIONS,
+        );
+        assert_eq!(
+            validate_plan(&[huge]).unwrap_err(),
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: u64::MAX,
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            },
+            "inclusive range arithmetic must saturate instead of wrapping"
+        );
+    }
+
+    #[test]
+    fn request_relative_perceptual_work_guard_counts_only_replayed_history() {
+        let mut row = directive(9, DirectiveFamily::BarlowAdd, 1, 241);
+        row.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: PerceptualModelVersion::V1,
+            target_milli: 5_000,
+            tolerance_milli: 500,
+            max_operations: 16,
+        };
+        validate_perceptual_scoring_work_through(&[row.clone()], 0).unwrap();
+        validate_perceptual_scoring_work_through(&[row.clone()], 240).unwrap();
+        assert_eq!(
+            validate_perceptual_scoring_work_through(&[row], 241).unwrap_err(),
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: 4_097,
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            }
+        );
+    }
+
+    #[test]
+    fn directive_density_corridor_is_paired_ordered_and_bounded() {
+        let mut row = directive(9, DirectiveFamily::Fragment, 1, 4);
+        row.options.density_floor = Some(25);
+        assert_eq!(
+            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 densityFloor and densityCeiling must both be set or both be omitted"
+        );
+
+        row.options.density_ceiling = Some(20);
+        assert_eq!(
+            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 densityFloor must be at most densityCeiling, got 25 > 20"
+        );
+
+        row.options.density_floor = Some(0);
+        row.options.density_ceiling = Some(101);
+        assert_eq!(
+            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            "dumka plan invalid: directive 9 densityCeiling must be 0-100, got 101"
+        );
+
+        row.options.density_ceiling = Some(60);
+        validate_plan(&[row]).expect("a paired ordered corridor is valid");
+    }
+
+    #[test]
+    fn clamp_trace_serializes_additively_to_the_skip_reason() {
+        let trace = DirectiveTraceEntry {
+            cycle: 4,
+            directive_id: 9,
+            family: DirectiveFamily::Fragment,
+            requested: 2,
+            applied: 1,
+            skipped: DirectiveSkip::Projection,
+            corridor_clamp: Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 60,
+            }),
+            perceptual: None,
+        };
+        assert_eq!(
+            serde_json::to_value(trace).unwrap(),
+            serde_json::json!({
+                "cycle": 4,
+                "directiveId": 9,
+                "family": "fragment",
+                "requested": 2,
+                "applied": 1,
+                "skipped": "projection",
+                "corridorClamp": {"limit": "ceiling", "densityPercent": 60}
+            })
+        );
+    }
+
+    #[test]
+    fn perceptual_trace_serializes_as_an_additive_truth_object() {
+        let trace = DirectiveTraceEntry {
+            cycle: 4,
+            directive_id: 9,
+            family: DirectiveFamily::Rotate,
+            requested: 1,
+            applied: 0,
+            skipped: DirectiveSkip::Exhausted,
+            corridor_clamp: None,
+            perceptual: Some(PerceptualPacingTrace {
+                model_version: PerceptualModelVersion::V1,
+                actual_milli: 0,
+                target_milli: 1_000,
+                tolerance_milli: 100,
+                reached: false,
+                exhausted: true,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(trace).unwrap(),
+            serde_json::json!({
+                "cycle": 4,
+                "directiveId": 9,
+                "family": "rotate",
+                "requested": 1,
+                "applied": 0,
+                "skipped": "exhausted",
+                "perceptual": {
+                    "modelVersion": "v1",
+                    "actualMilli": 0,
+                    "targetMilli": 1_000,
+                    "toleranceMilli": 100,
+                    "reached": false,
+                    "exhausted": true
+                }
+            })
         );
     }
 

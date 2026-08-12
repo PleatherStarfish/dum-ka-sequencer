@@ -8783,6 +8783,7 @@ export default function App() {
           planLengthCycles={dumkaPlanLengthCycles}
           cycleBeats={cycleBeats}
           playbackStructureLocked={playbackStructureLocked}
+          previewCycle={userPreviewCycle}
           cachedPreviews={evolveCachedPreviews}
           trace={evolveTrace}
           inheritedOptions={{

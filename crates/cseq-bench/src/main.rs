@@ -7,10 +7,11 @@ use rayon::prelude::*;
 
 use cseq_model::SubdivisionPolicy;
 use cseq_rhythm::{
-    resolve_channel_hocket, ChannelAssignMode, ChannelHocketSpec, ChannelTransition,
-    DirectiveFamily, DirectiveOptions, DumkaGeneratorParams, EvolutionDirective,
-    ExampleGeneratorParams, GeneratorConfig, GeneratorCycleContext, GeneratorSeedMode,
-    GeneratorSpanInput, MarkovOrder, RhythmSeedMode,
+    perceptual_distance, resolve_channel_hocket, ChannelAssignMode, ChannelHocketSpec,
+    ChannelTransition, DirectiveFamily, DirectiveMagnitude, DirectiveOptions, DumkaGeneratorParams,
+    EvolutionDirective, EvolutionState, EvolvedOnset, ExampleGeneratorParams, GeneratorConfig,
+    GeneratorCycleContext, GeneratorSeedMode, GeneratorSpanInput, MarkovOrder, PerceptualContext,
+    PerceptualModel, RhythmSeedMode,
 };
 
 struct BenchCase {
@@ -150,9 +151,19 @@ fn bench_cases() -> Vec<BenchCase> {
             run: || resolve_example_generator(4_096, 8),
         },
         BenchCase {
-            name: "generator/dumka-fold-cycle-10000",
-            description: "fold Dum-Ka to cycle 10000 through a legal 16-directive evolution plan",
+            name: "generator/dumka-fold-corridor-cycle-10000",
+            description: "fold Dum-Ka to cycle 10000 through a legal 16-directive plan with a 25-60% density corridor",
             run: || resolve_dumka_generator(10_000),
+        },
+        BenchCase {
+            name: "generator/dumka-perceptual-planner-cycle-1",
+            description: "select one legal Dum-Ka operator prefix against the pinned perceptual-distance model",
+            run: resolve_dumka_perceptual_generator,
+        },
+        BenchCase {
+            name: "generator/dumka-perceptual-distance-dense-8192",
+            description: "compare two dense legal-maximum Dum-Ka cycle states with exact circular phase matching",
+            run: perceptual_distance_dense_8192,
         },
         BenchCase {
             name: "channel/resolve-dense-second-order-32768",
@@ -273,6 +284,8 @@ fn resolve_dumka_generator(cycle: u64) -> usize {
     let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
         evolution_rate: 0,
         drift_leash: 100,
+        density_floor: 25,
+        density_ceiling: 60,
         plan: planned_bench_directives(),
         seed_mode: GeneratorSeedMode::Locked { seed: 42 },
         ..Default::default()
@@ -292,6 +305,107 @@ fn resolve_dumka_generator(cycle: u64) -> usize {
     .iter()
     .map(|span| span.cells.len())
     .sum()
+}
+
+fn resolve_dumka_perceptual_generator() -> usize {
+    static SPANS: OnceLock<Vec<GeneratorSpanInput>> = OnceLock::new();
+    let spans = SPANS.get_or_init(|| {
+        (0..4)
+            .map(|index| GeneratorSpanInput {
+                span_id: index as u64 + 1,
+                span_len: 16,
+                label: None,
+                section_index: Some(1),
+                subdivision: Some(16),
+            })
+            .collect()
+    });
+    let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
+        pattern: "[x . x . x . x . x . x . x . x .] *4".to_string(),
+        evolution_rate: 0,
+        drift_leash: 100,
+        plan: vec![EvolutionDirective {
+            id: 1,
+            order: 0,
+            enabled: true,
+            from_cycle: 1,
+            to_cycle: 1,
+            family: DirectiveFamily::BarlowAdd,
+            pacing: cseq_rhythm::DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::Perceptual {
+                model_version: cseq_rhythm::PerceptualModelVersion::V1,
+                target_milli: 12_000,
+                tolerance_milli: 250,
+                max_operations: 32,
+            },
+            intensity: 25,
+            scope: None,
+            options: DirectiveOptions::default(),
+        }],
+        seed_mode: GeneratorSeedMode::Locked { seed: 42 },
+        ..Default::default()
+    });
+    cseq_rhythm::resolve_generator_cycle_with_trace(
+        black_box(&config),
+        &GeneratorCycleContext {
+            track_id: None,
+            cycle: 1,
+            cycle_beats: 4,
+            spans: black_box(spans),
+            seed: 42,
+            automation: &|_, _, _| None,
+        },
+    )
+    .expect("perceptually paced Dum-Ka generator resolves")
+    .spans
+    .iter()
+    .map(|span| span.cells.len())
+    .sum()
+}
+
+fn perceptual_distance_dense_8192() -> usize {
+    static CASE: OnceLock<(EvolutionState, EvolutionState, PerceptualContext)> = OnceLock::new();
+    let (left, right, context) = CASE.get_or_init(|| {
+        let left = EvolutionState {
+            onsets: (0..8_192)
+                .filter(|slot| (slot % 2 == 0) ^ (slot % 127 == 0))
+                .map(|slot| EvolvedOnset {
+                    slot,
+                    dur: 1,
+                    class: "x".to_string(),
+                })
+                .collect(),
+            rotation_beats: 0,
+        };
+        let right = EvolutionState {
+            onsets: left
+                .onsets
+                .iter()
+                .map(|onset| EvolvedOnset {
+                    slot: (onset.slot + 173) % 8_192,
+                    ..onset.clone()
+                })
+                .collect(),
+            rotation_beats: 0,
+        };
+        let strata = cseq_rhythm::generators::dumka::barlow::stratification(128, 64)
+            .expect("benchmark grid is Barlow-supported");
+        let context = PerceptualContext::new(
+            128,
+            64,
+            cseq_rhythm::generators::dumka::barlow::indispensability(&strata),
+            cseq_rhythm::generators::dumka::sioros::metrical_levels(&strata),
+        )
+        .expect("benchmark context is valid");
+        (left, right, context)
+    });
+    perceptual_distance(
+        black_box(left),
+        black_box(right),
+        black_box(context),
+        &PerceptualModel::v1(),
+    )
+    .total_milli as usize
 }
 
 fn planned_bench_directives() -> Vec<EvolutionDirective> {
@@ -323,6 +437,7 @@ fn planned_bench_directives() -> Vec<EvolutionDirective> {
                 } else {
                     cseq_rhythm::DirectivePacing::EaseInOut
                 },
+                magnitude: DirectiveMagnitude::OperationQuota,
                 intensity: 32,
                 scope: None,
                 options: DirectiveOptions::default(),

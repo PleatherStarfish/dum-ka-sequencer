@@ -137,11 +137,9 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
       seed: { seed: "20260611", source: "locked", history: [] },
       spans: [],
     });
-    // The articulated reference pattern: quintuplet ONSETS span beats three
-    // and four, but each note is detached inside its slot, so nothing
-    // sustains across a per-beat span boundary. It needs Subdivision 20 over
-    // four beats; the spans are the matching per-beat layout so the Rust
-    // half can resolve the exact wire bytes through the one shared dispatch.
+    // The reference pattern includes a quintuplet phrase and exercises the
+    // same rich request shape used by preview and playback. Exact crossing
+    // tie vectors live in the Rust-generated parser/projection contract.
     await bridge.generatorPreview({
       spans: [1, 2, 3, 4].map((spanId) => ({
         spanId,
@@ -164,6 +162,8 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
         pattern: "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
         evolutionRate: 15,
         driftLeash: 30,
+        densityFloor: 20,
+        densityCeiling: 60,
         barlowTemperature: 0,
         weightBarlowRemove: 3,
         weightBarlowAdd: 3,
@@ -191,6 +191,8 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
             options: {
               barlowTemperature: 0,
               fillComplexity: null,
+              densityFloor: null,
+              densityCeiling: null,
               euclidMaxRun: null,
               euclidInvert: null,
               euclidRestPolicy: null,
@@ -210,6 +212,8 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
             options: {
               barlowTemperature: null,
               fillComplexity: null,
+              densityFloor: 20,
+              densityCeiling: 60,
               euclidMaxRun: null,
               euclidInvert: null,
               euclidRestPolicy: null,
@@ -229,10 +233,40 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
             options: {
               barlowTemperature: null,
               fillComplexity: 70,
+              densityFloor: null,
+              densityCeiling: null,
               euclidMaxRun: null,
               euclidInvert: null,
               euclidRestPolicy: null,
               rotateDirection: "earlier",
+            },
+          },
+          {
+            id: 104,
+            order: 3,
+            enabled: false,
+            fromCycle: 17,
+            toCycle: 19,
+            family: "rotate",
+            pacing: "perCycle",
+            magnitude: {
+              mode: "perceptual",
+              modelVersion: "v1",
+              targetMilli: 5_000,
+              toleranceMilli: 500,
+              maxOperations: 16,
+            },
+            intensity: 99,
+            scope: null,
+            options: {
+              barlowTemperature: null,
+              fillComplexity: null,
+              densityFloor: null,
+              densityCeiling: null,
+              euclidMaxRun: null,
+              euclidInvert: null,
+              euclidRestPolicy: null,
+              rotateDirection: "later",
             },
           },
         ],
@@ -300,6 +334,25 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
           intensity: 22,
           scope: { startBeat: 2, lenBeats: 2 },
           options: { fillComplexity: 70 },
+        },
+        {
+          id: 104,
+          order: 3,
+          enabled: false,
+          fromCycle: 17,
+          toCycle: 19,
+          family: "rotate",
+          pacing: "perCycle",
+          magnitude: {
+            mode: "perceptual",
+            modelVersion: "v1",
+            targetMilli: 5_000,
+            toleranceMilli: 500,
+            maxOperations: 16,
+          },
+          intensity: 99,
+          scope: null,
+          options: { rotateDirection: "later" },
         },
       ],
       planLengthCycles: 20,

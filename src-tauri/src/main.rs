@@ -1106,6 +1106,16 @@ struct GeneratorPreviewDto {
     /// disabled resolution, and cycle zero return an empty vector.
     #[serde(default)]
     trace: Vec<cseq_rhythm::DirectiveTraceEntry>,
+    /// Cycle-effective rail after automation and the last applicable
+    /// directive override. Other generators and legacy responses omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    density_corridor: Option<cseq_rhythm::DensityCorridorRange>,
+    /// Whole-cycle realized perceptual distance (requested cycle vs the
+    /// previous cycle's state) for Dum-Ka previews — the calibration
+    /// readout. Absent for other generators, disabled resolution, cycle 0,
+    /// and grids without published Barlow tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cycle_distance: Option<cseq_rhythm::PerceptualCycleDistance>,
 }
 
 const MAX_STOPPED_PREVIEW_CYCLE: u64 = 10_000;
@@ -2431,7 +2441,7 @@ fn resolve_generator_preview(
     let seed =
         cseq_rhythm::resolve_generator_seed_at_cycle(request.generator.seed_mode(), request.cycle)
             .map_err(|error| error.to_string())?;
-    let (mut spans, trace) = if request.enabled {
+    let (mut spans, trace, density_corridor, cycle_distance) = if request.enabled {
         let automation = |target: &str, sample_cycle: u64, default: f64| {
             let automation = request.automation.as_ref()?;
             // One shared predicate with transport playback: the seam treats
@@ -2467,12 +2477,23 @@ fn resolve_generator_preview(
             },
         )
         .map_err(|error| error.to_string())?;
-        (resolution.spans, resolution.trace)
+        (
+            resolution.spans,
+            resolution.trace,
+            resolution.density_corridor,
+            resolution.cycle_distance,
+        )
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), None, None)
     };
     stamp_preview_cell_velocities(&mut spans, &request.span_velocities);
-    Ok(GeneratorPreviewDto { seed, spans, trace })
+    Ok(GeneratorPreviewDto {
+        seed,
+        spans,
+        trace,
+        density_corridor,
+        cycle_distance,
+    })
 }
 
 #[tauri::command]
@@ -3344,14 +3365,24 @@ const EVOLUTION_DIRECTIVE_KEYS: &[&str] = &[
     "toCycle",
     "family",
     "pacing",
+    "magnitude",
     "intensity",
     "scope",
     "options",
 ];
 const EVOLUTION_SCOPE_KEYS: &[&str] = &["startBeat", "lenBeats"];
+const EVOLUTION_MAGNITUDE_KEYS: &[&str] = &[
+    "mode",
+    "modelVersion",
+    "targetMilli",
+    "toleranceMilli",
+    "maxOperations",
+];
 const EVOLUTION_OPTION_KEYS: &[&str] = &[
     "barlowTemperature",
     "fillComplexity",
+    "densityFloor",
+    "densityCeiling",
     "euclidMaxRun",
     "euclidInvert",
     "euclidRestPolicy",
@@ -3423,6 +3454,17 @@ fn validate_v1_evolution_plan_shape(
                 EVOLUTION_SCOPE_KEYS,
                 &format!("{directive_path}.scope"),
                 "scope",
+            )?;
+        }
+        if let Some(magnitude) = directive
+            .get("magnitude")
+            .and_then(serde_json::Value::as_object)
+        {
+            validate_evolution_object_keys(
+                magnitude,
+                EVOLUTION_MAGNITUDE_KEYS,
+                &format!("{directive_path}.magnitude"),
+                "magnitude",
             )?;
         }
         if let Some(options) = directive
@@ -4262,6 +4304,7 @@ mod tests {
             },
             spans: vec![],
             trace: vec![],
+            density_corridor: None,
         };
         let generator_wire =
             serde_json::to_value(generator).expect("generator preview must serialize");
@@ -4294,6 +4337,7 @@ mod tests {
         }))
         .expect("legacy preview response without trace must remain readable");
         assert!(legacy.trace.is_empty());
+        assert!(legacy.density_corridor.is_none());
     }
 
     #[test]
@@ -4314,6 +4358,8 @@ mod tests {
                     "scope": null,
                     "options": {
                         "rotateDirection": "earlier",
+                        "densityFloor": 20,
+                        "densityCeiling": 60,
                         "futureOption": true
                     }
                 }]
@@ -5605,6 +5651,8 @@ mod tests {
                 "options": {
                     "barlowTemperature": 0,
                     "fillComplexity": null,
+                    "densityFloor": 20,
+                    "densityCeiling": 60,
                     "euclidMaxRun": null,
                     "euclidInvert": null,
                     "euclidRestPolicy": null,
@@ -5673,6 +5721,13 @@ mod tests {
             "fromCycle",
             "toCycle",
             "family",
+            "pacing",
+            "magnitude",
+            "mode",
+            "modelVersion",
+            "targetMilli",
+            "toleranceMilli",
+            "maxOperations",
             "intensity",
             "scope",
             "startBeat",
@@ -5680,6 +5735,8 @@ mod tests {
             "options",
             "barlowTemperature",
             "fillComplexity",
+            "densityFloor",
+            "densityCeiling",
             "euclidMaxRun",
             "euclidInvert",
             "euclidRestPolicy",
@@ -5699,13 +5756,23 @@ mod tests {
 
     #[test]
     fn v1_documents_reject_unknown_evolution_nested_keys_in_every_generator_slot() {
-        for target in ["directive", "scope", "options"] {
+        for target in ["directive", "scope", "magnitude", "options"] {
             let with_unknown = || {
                 let mut generator = evolution_generator_document();
                 let directive = &mut generator["plan"][0];
                 match target {
                     "directive" => directive["futureDirective"] = json!(true),
                     "scope" => directive["scope"]["futureScope"] = json!(true),
+                    "magnitude" => {
+                        directive["magnitude"] = json!({
+                            "mode": "perceptual",
+                            "modelVersion": "v1",
+                            "targetMilli": 5_000,
+                            "toleranceMilli": 500,
+                            "maxOperations": 16,
+                            "futureMagnitude": true,
+                        });
+                    }
                     "options" => directive["options"]["futureOption"] = json!(true),
                     _ => unreachable!(),
                 }
@@ -6251,7 +6318,7 @@ mod dto_fixtures {
             params.seed_mode,
             cseq_rhythm::GeneratorSeedMode::Locked { seed: 20260611 }
         );
-        assert_eq!(params.plan.len(), 3);
+        assert_eq!(params.plan.len(), 4);
         assert_eq!(params.plan[0].id, 101);
         assert_eq!(
             params.plan[0].pacing,
@@ -6264,6 +6331,24 @@ mod dto_fixtures {
             cseq_rhythm::DirectivePacing::EaseInOut
         );
         assert!(!params.plan[2].enabled);
+        assert_eq!(params.plan[3].id, 104);
+        assert!(!params.plan[3].enabled);
+        assert_eq!(params.plan[3].from_cycle, 17);
+        assert_eq!(params.plan[3].to_cycle, 19);
+        assert_eq!(
+            params.plan[3].pacing,
+            cseq_rhythm::DirectivePacing::PerCycle
+        );
+        assert_eq!(
+            params.plan[3].magnitude,
+            cseq_rhythm::DirectiveMagnitude::Perceptual {
+                model_version: cseq_rhythm::PerceptualModelVersion::V1,
+                target_milli: 5_000,
+                tolerance_milli: 500,
+                max_operations: 16,
+            }
+        );
+        assert_eq!(params.plan[3].intensity, 99);
         assert_eq!(params.plan_length_cycles, 20);
 
         // The wire config must resolve through the one shared dispatch on the
@@ -6311,6 +6396,13 @@ mod dto_fixtures {
             }
         }
         assert!(preview.trace.is_empty(), "cycle zero is always the seed");
+        assert_eq!(
+            preview.density_corridor,
+            Some(cseq_rhythm::DensityCorridorRange {
+                floor: 20,
+                ceiling: 60,
+            })
+        );
 
         // The Rust-owned response fixture pins the trace side of the DTO. Use
         // the same rich bridge request at its Barlow pin while disabling the
@@ -6322,6 +6414,45 @@ mod dto_fixtures {
             unreachable!("fixture is pinned to Dum-Ka")
         };
         params.evolution_rate = 0;
+        // Behavior-off compatibility pin: resolving the same authored pin at
+        // the new 0–100 defaults must preserve the exact pre-M3.9 trajectory
+        // and requested/applied trace, not merely its cycle-zero seed.
+        let mut legacy_request = traced_request.clone();
+        let cseq_rhythm::GeneratorConfig::Dumka(legacy_params) = &mut legacy_request.generator
+        else {
+            unreachable!("fixture is pinned to Dum-Ka")
+        };
+        legacy_params.density_floor = 0;
+        legacy_params.density_ceiling = 100;
+        for directive in &mut legacy_params.plan {
+            directive.options.density_floor = None;
+            directive.options.density_ceiling = None;
+        }
+        let legacy_preview = resolve_generator_preview(legacy_request, &[])
+            .expect("behavior-off corridor request must resolve");
+        assert_eq!(legacy_preview.trace.len(), 1);
+        assert_eq!(legacy_preview.trace[0].directive_id, 101);
+        assert_eq!(legacy_preview.trace[0].requested, 2);
+        assert_eq!(legacy_preview.trace[0].applied, 2);
+        assert!(legacy_preview.trace[0].corridor_clamp.is_none());
+        assert_eq!(
+            legacy_preview.density_corridor,
+            Some(cseq_rhythm::DensityCorridorRange {
+                floor: 0,
+                ceiling: 100,
+            })
+        );
+        let legacy_json = serde_json::to_string_pretty(&legacy_preview)
+            .expect("serialize behavior-off Dum-Ka preview DTO");
+        check_or_update(
+            "dumkaGeneratorLegacyPreview.fixture.ts",
+            &ts_fixture(
+                "GeneratorPreview",
+                "dumkaGeneratorLegacyPreviewFixture",
+                &legacy_json,
+            ),
+        );
+
         let traced_preview = resolve_generator_preview(traced_request, &[])
             .expect("fixture pin must resolve through the trace-capable preview command");
         assert!(traced_preview
@@ -6333,6 +6464,62 @@ mod dto_fixtures {
         check_or_update(
             "dumkaGeneratorPreview.fixture.ts",
             &ts_fixture("GeneratorPreview", "dumkaGeneratorPreviewFixture", &json),
+        );
+
+        // Activate only the request's future perceptual row in a derived
+        // preview so Rust serialization pins the additive trace object without
+        // rewriting either M3.9 corridor fixture.
+        let mut perceptual_request: GeneratorPreviewRequestDto =
+            serde_json::from_str(&text).expect("perceptual traced request must deserialize");
+        perceptual_request.cycle = 17;
+        let cseq_rhythm::GeneratorConfig::Dumka(perceptual_params) =
+            &mut perceptual_request.generator
+        else {
+            unreachable!("fixture is pinned to Dum-Ka")
+        };
+        perceptual_params.evolution_rate = 0;
+        perceptual_params.density_floor = 0;
+        perceptual_params.density_ceiling = 100;
+        for directive in &mut perceptual_params.plan {
+            directive.enabled = false;
+            directive.options.density_floor = None;
+            directive.options.density_ceiling = None;
+        }
+        perceptual_params.plan[3].enabled = true;
+        let perceptual_preview = resolve_generator_preview(perceptual_request, &[])
+            .expect("perceptual fixture row must resolve through preview");
+        let perceptual_trace = perceptual_preview
+            .trace
+            .iter()
+            .find(|entry| entry.directive_id == 104)
+            .expect("perceptual fixture must attribute directive 104");
+        let perceptual = perceptual_trace
+            .perceptual
+            .expect("perceptual fixture trace must carry calibration detail");
+        assert_eq!(perceptual_trace.requested, 16);
+        assert_eq!(perceptual_trace.applied, 0);
+        assert_eq!(
+            perceptual_trace.skipped,
+            cseq_rhythm::DirectiveSkip::Exhausted
+        );
+        assert_eq!(
+            perceptual.model_version,
+            cseq_rhythm::PerceptualModelVersion::V1
+        );
+        assert_eq!(perceptual.actual_milli, 0);
+        assert_eq!(perceptual.target_milli, 5_000);
+        assert_eq!(perceptual.tolerance_milli, 500);
+        assert!(!perceptual.reached);
+        assert!(perceptual.exhausted);
+        let perceptual_json = serde_json::to_string_pretty(&perceptual_preview)
+            .expect("serialize perceptual Dum-Ka preview DTO");
+        check_or_update(
+            "dumkaGeneratorPerceptualPreview.fixture.ts",
+            &ts_fixture(
+                "GeneratorPreview",
+                "dumkaGeneratorPerceptualPreviewFixture",
+                &perceptual_json,
+            ),
         );
     }
 
@@ -6377,6 +6564,21 @@ mod dto_fixtures {
             assert_eq!(
                 params.plan[2].pacing,
                 cseq_rhythm::DirectivePacing::EaseInOut
+            );
+            assert_eq!(params.plan.len(), 4);
+            assert_eq!(
+                params.plan[3].pacing,
+                cseq_rhythm::DirectivePacing::PerCycle
+            );
+            assert!(!params.plan[3].enabled);
+            assert_eq!(
+                params.plan[3].magnitude,
+                cseq_rhythm::DirectiveMagnitude::Perceptual {
+                    model_version: cseq_rhythm::PerceptualModelVersion::V1,
+                    target_milli: 5_000,
+                    tolerance_milli: 500,
+                    max_operations: 16,
+                }
             );
             config
                 .validate()

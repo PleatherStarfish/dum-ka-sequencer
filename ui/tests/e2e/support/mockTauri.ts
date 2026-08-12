@@ -26,6 +26,7 @@ const DUMKA_MOCK_PATTERNS: string[] = [
   "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
   "x . x .",
   "x _ x .",
+  "[x x x x x]@2",
   "[x", // pinned parse-error case
   // Authored by the visual rhythm builder in rhythm-builder.spec.ts:
   // rest→note toggle, then a 5:1 split of the first beat.
@@ -38,11 +39,14 @@ const DUMKA_MOCK_PATTERNS: string[] = [
   "x [[x x]@2]@2 x",
   "x [[x x x x x]@2]@2 x",
   "x [[[x .] [x .] [x .] [x .] [x .]]@2]@2 x",
-  // Nested 5:2 under an S15 / Grouping-3 projection: the exact span-aware
-  // repair needs four cells per slot, rather than the per-beat `[x .]` form.
+  // Nested 5:2 under an S15 / Grouping-3 projection: the optional detached
+  // style needs four cells per slot, rather than the per-beat `[x .]` form.
   "[[x x x x x]@2 .]@2",
   "[[[x .@3] [x .@3] [x .@3] [x .@3] [x .@3]]@2 .]@2",
-  // Reported five-beat mixed tuplet and its span-safe Articulate rewrite.
+  // Reported five-beat mixed tuplet and its optional detached-note rewrite.
+  "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]",
+  "[dum . . ka] [. . ka . x]@2 [x x . x]",
+  "[dum . . ka] [. . ka . x]@3",
   "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]",
   "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]",
 ];
@@ -1201,6 +1205,8 @@ export async function installMockTauri(
       name:
         | "evolutionRate"
         | "driftLeash"
+        | "densityFloor"
+        | "densityCeiling"
         | "barlowTemperature"
         | "weightBarlowRemove"
         | "weightBarlowAdd"
@@ -1298,6 +1304,21 @@ export async function installMockTauri(
           generator.evolutionRate,
           0
         );
+        const densityFloor = dumkaPercent(
+          "densityFloor",
+          generator.densityFloor,
+          0
+        );
+        const densityCeiling = dumkaPercent(
+          "densityCeiling",
+          generator.densityCeiling,
+          100
+        );
+        if (densityFloor > densityCeiling) {
+          throw new Error(
+            `dumka plan invalid: densityFloor must be at most densityCeiling, got ${densityFloor} > ${densityCeiling}`
+          );
+        }
         dumkaPercent("driftLeash", generator.driftLeash, 25);
         dumkaPercent("barlowTemperature", generator.barlowTemperature, 0);
         dumkaPercent("weightBarlowRemove", generator.weightBarlowRemove, 3);
@@ -1311,10 +1332,11 @@ export async function installMockTauri(
         dumkaPercent("weightEuclid", generator.weightEuclid, 0);
         dumkaPercent("euclidInvert", generator.euclidInvert, 0);
         {
-          const maxRun = generator.euclidMaxRun ?? 1;
+          const rawMaxRun = generator.euclidMaxRun ?? 1;
+          const maxRun = Number(rawMaxRun);
           if (!Number.isInteger(maxRun) || maxRun < 0) {
             throw new Error(
-              `mock dumka preview rejected euclidMaxRun ${String(maxRun)}: the engine's serde boundary refuses non-u32 values before generator validation`
+              `mock dumka preview rejected euclidMaxRun ${String(rawMaxRun)}: the engine's serde boundary refuses non-u32 values before generator validation`
             );
           }
           if (maxRun === 0 || maxRun > 8) {
@@ -1348,6 +1370,9 @@ export async function installMockTauri(
           request,
           "generator.dumka.evolutionRate"
         );
+        const densityIsAutomated =
+          hasEnabledAutomationSource(request, "generator.dumka.densityFloor") ||
+          hasEnabledAutomationSource(request, "generator.dumka.densityCeiling");
         const hasEnabledPlan =
           Array.isArray(generator.plan) &&
           generator.plan.some(
@@ -1358,7 +1383,12 @@ export async function installMockTauri(
           );
         if (
           cycle > 0 &&
-          (evolutionRate > 0 || evolutionIsAutomated || hasEnabledPlan)
+          (evolutionRate > 0 ||
+            evolutionIsAutomated ||
+            densityFloor > 0 ||
+            densityCeiling < 100 ||
+            densityIsAutomated ||
+            hasEnabledPlan)
         ) {
           throw new Error(
             `mock dumka preview cannot resolve evolving cycle ${cycle}; use the real-backend lane`
@@ -1457,6 +1487,10 @@ export async function installMockTauri(
           seed: seedDto,
           spans: stampSpanVelocities(request, outSpans),
           trace: [],
+          densityCorridor: {
+            floor: densityFloor,
+            ceiling: densityCeiling,
+          },
         };
       }
       if (generator.kind !== "example") {

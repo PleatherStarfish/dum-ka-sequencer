@@ -27,7 +27,7 @@ describe("accentLaneChoice", () => {
   it("labels a grouping section", () => {
     expect(accentLaneChoice([span("jathiPulse")])).toEqual({
       kind: "jathiPulse",
-      label: "generator · grouping",
+      label: "gen · grouping",
     });
   });
 

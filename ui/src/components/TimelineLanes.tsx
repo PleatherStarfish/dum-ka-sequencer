@@ -56,6 +56,7 @@ import {
   pulseSpanLabel,
 } from "../resolvedSections";
 import {
+  formatBeatFraction,
   selectActiveParallelTrackPosition,
   timelineChannelColor,
 } from "../timelineModel";
@@ -97,13 +98,55 @@ export function AlignedTimelineRow({
   className?: string;
   children: ReactNode;
 }) {
+  // Rows are pure track geometry: the panel-level labels column
+  // (TimelineLaneLabelsColumn) carries the visible names, so beat widths
+  // stay uniform across sections and the playhead's fraction × width math
+  // holds. String labels survive here as the row's accessible name.
   return (
-    <div className={`aligned-timeline-row ${className}`}>
+    <div
+      className={`aligned-timeline-row ${className}`}
+      aria-label={typeof label === "string" ? label : undefined}
+    >
       <div className="aligned-timeline-track">
         <TimelineGridLines beatCount={beatCount} />
-        <span className="aligned-timeline-label">{label}</span>
         {children}
       </div>
+    </div>
+  );
+}
+
+export interface TimelineLaneLabelEntry {
+  key: string;
+  /** The row's height-modifier class (is-beat-ruler, is-gati-matras, …) so
+   * the label cell mirrors the exact track height and borders. */
+  className: string;
+  label: string;
+}
+
+/**
+ * The one visible label rail for the whole timeline: rendered OUTSIDE the
+ * sections grid so section tracks keep uniform beat widths and the
+ * playhead's parent measures pure track width. The entry list must mirror
+ * the section lane stack; TimelinePanel builds both from the same flags
+ * and a parity test pins row count and classes against a rendered section.
+ */
+export function TimelineLaneLabelsColumn({
+  entries,
+}: {
+  entries: TimelineLaneLabelEntry[];
+}) {
+  return (
+    <div className="timeline-lane-labels" data-testid="timeline-lane-labels">
+      <span className="timeline-lane-labels-spacer" aria-hidden="true" />
+      {entries.map((entry) => (
+        <span
+          className={`timeline-lane-label-cell ${entry.className}`}
+          data-testid="timeline-lane-label"
+          key={entry.key}
+        >
+          <b>{entry.label}</b>
+        </span>
+      ))}
     </div>
   );
 }
@@ -777,11 +820,23 @@ export function GatiMatraLane({
   playheadAkshara: number | null;
 }) {
   const beatCount = section.endBeat - section.startBeat + 1;
-  // Label thinning: at a high Subdivision × beat count the per-pulse
-  // numbers overlap into an unreadable smear (35/beat over four beats was
-  // the reported case). Every cell still renders — only every stride-th
-  // pulse (plus each beat/division start) keeps its number; ~96 labels is
-  // the densest a full-width row stays legible.
+  // Ruler anchors: numbering every pulse smears into digit soup on dense
+  // grids (20/beat over four beats in the reported case), and thinning by
+  // a flat budget still labels musically arbitrary pulses. Instead label
+  // only ANCHORS — the beat start plus its principal divisions: the
+  // smallest divisor stride of the pulse count that yields at most four
+  // labels per beat (20 → stride 5 → pulses 1/6/11/16, the beat's
+  // quarters; a prime count labels only the beat start). Unlabeled pulses
+  // stay as unnumbered ticks. A global ~96-label budget still guards very
+  // long sections by escalating to beat starts only.
+  const anchorStride = (pulses: number, maxLabels: number): number => {
+    for (let stride = 1; stride <= pulses; stride += 1) {
+      if (pulses % stride === 0 && pulses / stride <= maxLabels) {
+        return stride;
+      }
+    }
+    return pulses;
+  };
   const matraLabel = (matraIndex: number, stride: number): string =>
     matraIndex % stride === 0 ? String(matraIndex + 1) : "";
   const customDivisionSpans = section.pulseSpans.filter(
@@ -793,7 +848,7 @@ export function GatiMatraLane({
       (sum, span) => sum + Math.max(0, span.matraLen),
       0
     );
-    const customStride = Math.max(1, Math.ceil(customCells / 96));
+    const customBudgetExceeded = customCells > 96;
     return (
       <AlignedTimelineRow
         label="custom subdivision"
@@ -830,7 +885,13 @@ export function GatiMatraLane({
                   span.gati ?? "?"
                 } · ${formatShortNumber(span.duration)} beats`}
               >
-                {matraLabel(matraIndex, customStride)}
+                {matraLabel(
+                  matraIndex,
+                  anchorStride(
+                    Math.max(1, span.matraLen),
+                    customBudgetExceeded ? 1 : 4
+                  )
+                )}
               </span>
             );
           })
@@ -839,7 +900,7 @@ export function GatiMatraLane({
     );
   }
   const gatiCells = section.beats.reduce((sum, beat) => sum + beat.gati, 0);
-  const gatiStride = Math.max(1, Math.ceil(gatiCells / 96));
+  const gatiBudgetExceeded = gatiCells > 96;
   return (
     <AlignedTimelineRow
       label={`subdivision ${section.gati}`}
@@ -862,7 +923,13 @@ export function GatiMatraLane({
             <span
               className={`gati-matra-cell${active ? " is-active" : ""}${
                 isBeatStart ? " is-beat-start" : ""
-              }${isSectionStart ? " is-section-start" : ""}`}
+              }${isSectionStart ? " is-section-start" : ""}${
+                matraIndex %
+                  anchorStride(beat.gati, gatiBudgetExceeded ? 1 : 4) ===
+                0
+                  ? " is-ruler-anchor"
+                  : ""
+              }`}
               data-testid="gati-matra-cell"
               data-beat={beat.beat}
               data-gati={beat.gati}
@@ -871,7 +938,10 @@ export function GatiMatraLane({
               style={{ left: `${left}%`, width: `${width}%` }}
               title={`beat ${beat.beat} pulse ${matraIndex + 1} · subdivision ${beat.gati} · v${beat.accentVelocity}`}
             >
-              {matraLabel(matraIndex, gatiStride)}
+              {matraLabel(
+                matraIndex,
+                anchorStride(beat.gati, gatiBudgetExceeded ? 1 : 4)
+              )}
             </span>
           );
         })
@@ -1011,22 +1081,174 @@ export interface AccentLaneChoice {
  */
 export function accentLaneChoice(pulseSpans: PulseSpan[]): AccentLaneChoice {
   if (pulseSpans.some((span) => span.kind === "jathiPulse")) {
-    return { kind: "jathiPulse", label: "generator · grouping" };
+    return { kind: "jathiPulse", label: "gen · grouping" };
   }
-  return { kind: "gatiBeat", label: "generator · subdivision" };
+  return { kind: "gatiBeat", label: "gen · subdivision" };
+}
+
+type TimelineRhythmRawCell = {
+  key: string;
+  sectionKey: string;
+  span: PulseSpan;
+  cell: ResolvedRhythmCell;
+  startAkshara: number;
+  endAkshara: number;
+};
+
+export type CrossSectionRhythmTieChain = {
+  ownerKey: string;
+  /** Additive only when every source cell uses the same pulse duration. */
+  pulseLen: number | null;
+  sourceCells: number;
+  sourceSpans: number;
+  sourceSections: number;
+  velocity: number | null;
+};
+
+export type CrossSectionRhythmTieChains = ReadonlyMap<
+  string,
+  CrossSectionRhythmTieChain
+>;
+
+function rhythmRawCellKey(
+  span: PulseSpan,
+  cell: ResolvedRhythmCell,
+  fallbackIndex: number
+): string {
+  return `${span.id}-${fallbackIndex}-${cell.index}-${cell.start}-${cell.len}`;
+}
+
+function rhythmRawCellsForSection(
+  section: ResolvedSectionRun,
+  kind: PulseSpan["kind"],
+  rhythmBySpanId: Map<number, ResolvedRhythmSpan>
+): TimelineRhythmRawCell[] {
+  const sectionKey = `${section.sectionIndex}:${section.startBeat}:${section.endBeat}`;
+  return section.pulseSpans
+    .filter((span) => span.kind === kind)
+    .flatMap((span) => {
+      const resolved = rhythmBySpanId.get(span.id);
+      const renderSpanLen = resolved?.spanLen ?? span.matraLen;
+      const renderCells = resolved?.cells?.length
+        ? resolved.cells
+        : [
+            {
+              index: 0,
+              start: 0,
+              len: span.matraLen,
+              rest: false,
+              tiedFromPrevious: false,
+              tiedToNext: false,
+            },
+          ];
+      return renderCells.map((cell, index) => ({
+        key: rhythmRawCellKey(span, cell, index),
+        sectionKey,
+        span,
+        cell,
+        startAkshara:
+          span.start + span.duration * (cell.start / renderSpanLen),
+        endAkshara:
+          span.start +
+          span.duration * ((cell.start + cell.len) / renderSpanLen),
+      }));
+    });
+}
+
+/**
+ * Join only validated, sounding tie handshakes that cross an authored section
+ * seam. Each section keeps its own grid and visual fragment, while the opener
+ * owns the chain's single accessible note. No first/last-cycle wrap is
+ * considered here.
+ */
+export function buildCrossSectionRhythmTieChains(
+  sections: readonly ResolvedSectionRun[],
+  rhythmBySpanId: Map<number, ResolvedRhythmSpan>
+): CrossSectionRhythmTieChains {
+  const rawCells = [...sections]
+    .sort(
+      (left, right) =>
+        left.startBeat - right.startBeat || left.sectionIndex - right.sectionIndex
+    )
+    .flatMap((section) => {
+      const lane = accentLaneChoice(section.pulseSpans);
+      return rhythmRawCellsForSection(section, lane.kind, rhythmBySpanId).sort(
+        (left, right) =>
+          left.startAkshara - right.startAkshara ||
+          left.span.id - right.span.id ||
+          left.cell.start - right.cell.start
+      );
+    });
+  const result = new Map<string, CrossSectionRhythmTieChain>();
+  let chain: TimelineRhythmRawCell[] = [];
+
+  const finishChain = () => {
+    if (chain.length < 2) {
+      chain = [];
+      return;
+    }
+    const sectionCount = new Set(chain.map((raw) => raw.sectionKey)).size;
+    if (sectionCount > 1) {
+      const pulseDurations = chain.map(
+        (raw) =>
+          (raw.endAkshara - raw.startAkshara) / raw.cell.len
+      );
+      const firstPulseDuration = pulseDurations[0]!;
+      const hasSharedPulseUnit = pulseDurations.every(
+        (duration) => Math.abs(duration - firstPulseDuration) < 1e-9
+      );
+      const metadata: CrossSectionRhythmTieChain = {
+        ownerKey: chain[0]!.key,
+        pulseLen: hasSharedPulseUnit
+          ? chain.reduce((sum, raw) => sum + raw.cell.len, 0)
+          : null,
+        sourceCells: chain.length,
+        sourceSpans: new Set(chain.map((raw) => raw.span.id)).size,
+        sourceSections: sectionCount,
+        velocity: chain[0]!.cell.velocity ?? null,
+      };
+      for (const raw of chain) {
+        result.set(raw.key, metadata);
+      }
+    }
+    chain = [];
+  };
+
+  for (let index = 0; index < rawCells.length; index += 1) {
+    const current = rawCells[index]!;
+    const next = rawCells[index + 1];
+    const joinsNext =
+      next !== undefined &&
+      current.cell.tiedToNext &&
+      next.cell.tiedFromPrevious &&
+      !current.cell.rest &&
+      !next.cell.rest &&
+      Math.abs(current.endAkshara - next.startAkshara) < 1e-9;
+    if (joinsNext) {
+      if (chain.length === 0) chain.push(current);
+      if (chain.at(-1)?.key !== next.key) chain.push(next);
+    } else if (chain.length > 0) {
+      finishChain();
+    }
+  }
+  finishChain();
+  return result;
 }
 
 export function RhythmLayerLane({
   section,
   rhythmBySpanId,
   playheadAkshara,
+  crossSectionTieChains,
 }: {
   section: ResolvedSectionRun;
   rhythmBySpanId: Map<number, ResolvedRhythmSpan>;
   playheadAkshara: number | null;
+  crossSectionTieChains?: CrossSectionRhythmTieChains;
 }) {
   const beatSpan = section.endBeat - section.startBeat + 1;
   const sectionStartAkshara = section.startBeat - 1;
+  const sectionEndAkshara = sectionStartAkshara + beatSpan;
 
   const renderRow = (kind: PulseSpan["kind"], label: ReactNode) => {
     const spans = section.pulseSpans.filter((span) => span.kind === kind);
@@ -1040,42 +1262,17 @@ export function RhythmLayerLane({
       velocity: number | null;
       sourceCells: number;
       sourceSpans: number;
+      startsFromPrevious: boolean;
       continues: boolean;
+      crossSectionChain: CrossSectionRhythmTieChain | null;
     };
-    type RawCell = {
-      key: string;
-      span: PulseSpan;
-      cell: ResolvedRhythmCell;
-      startAkshara: number;
-      endAkshara: number;
-    };
-    const rawCells: RawCell[] = spans.flatMap((span) => {
-      const resolved = rhythmBySpanId.get(span.id);
-      const renderSpanLen = resolved?.spanLen ?? span.matraLen;
-      const renderCells =
-        resolved?.cells?.length
-          ? resolved.cells
-          : [{
-              index: 0,
-              start: 0,
-              len: span.matraLen,
-              rest: false,
-              tiedFromPrevious: false,
-              tiedToNext: false,
-            }];
-      return renderCells.map((cell, index) => ({
-        key: `${span.id}-${index}-${cell.start}-${cell.len}`,
-        span,
-        cell,
-        startAkshara:
-          span.start + span.duration * (cell.start / renderSpanLen),
-        endAkshara:
-          span.start +
-          span.duration * ((cell.start + cell.len) / renderSpanLen),
-      }));
-    });
+    const rawCells = rhythmRawCellsForSection(
+      section,
+      kind,
+      rhythmBySpanId
+    );
     const visualCells: VisualCell[] = [];
-    let previousRaw: RawCell | null = null;
+    let previousRaw: TimelineRhythmRawCell | null = null;
     for (const raw of rawCells) {
       const previousVisual = visualCells.at(-1);
       const joinsPrevious =
@@ -1104,10 +1301,18 @@ export function RhythmLayerLane({
           velocity: raw.cell.rest ? null : raw.cell.velocity ?? null,
           sourceCells: 1,
           sourceSpans: 1,
+          startsFromPrevious: raw.cell.tiedFromPrevious,
           continues: raw.cell.tiedToNext,
+          crossSectionChain: crossSectionTieChains?.get(raw.key) ?? null,
         });
       }
       previousRaw = raw;
+    }
+    const visualCellsByHostSpan = new Map<number, VisualCell[]>();
+    for (const cell of visualCells) {
+      const hosted = visualCellsByHostSpan.get(cell.hostSpanId);
+      if (hosted) hosted.push(cell);
+      else visualCellsByHostSpan.set(cell.hostSpanId, [cell]);
     }
 
     return (
@@ -1115,10 +1320,16 @@ export function RhythmLayerLane({
         {spans.map((span) => {
           const left = ((span.start - sectionStartAkshara) / beatSpan) * 100;
           const width = (span.duration / beatSpan) * 100;
+          const hostedVisualCells = visualCellsByHostSpan.get(span.id) ?? [];
+          const hostsCrossSpanChain = hostedVisualCells.some(
+            (cell) => cell.sourceSpans > 1 || cell.crossSectionChain !== null
+          );
 
           return (
             <span
-              className={`rhythm-layer-span is-${span.kind}`}
+              className={`rhythm-layer-span is-${span.kind}${
+                hostsCrossSpanChain ? " has-cross-span-chain" : ""
+              }`}
               key={`${span.kind}-${span.id}`}
               style={{
                 left: `${clamp(left, 0, 100)}%`,
@@ -1126,9 +1337,15 @@ export function RhythmLayerLane({
               }}
               title={pulseSpanLabel(span)}
             >
-              {visualCells
-                .filter((cell) => cell.hostSpanId === span.id)
-                .map((cell) => {
+              {hostedVisualCells.map((cell) => {
+                const chain = cell.crossSectionChain;
+                const isCrossSectionContinuation =
+                  chain !== null && chain.ownerKey !== cell.key;
+                const usesMixedPulseUnits = chain?.pulseLen === null;
+                const renderedPulseLen = chain?.pulseLen ?? cell.matraLen;
+                const renderedSourceCells = chain?.sourceCells ?? cell.sourceCells;
+                const renderedSourceSpans = chain?.sourceSpans ?? cell.sourceSpans;
+                const renderedVelocity = chain?.velocity ?? cell.velocity;
                 const active =
                   playheadAkshara !== null &&
                   playheadAkshara >= cell.startAkshara &&
@@ -1136,60 +1353,158 @@ export function RhythmLayerLane({
                 const cellClasses = [
                   active ? "is-active" : "",
                   cell.rest ? "is-rest" : "",
-                  cell.sourceCells > 1 ? "is-tied-chain" : "",
+                  renderedSourceCells > 1 ||
+                  cell.startsFromPrevious ||
+                  cell.continues
+                    ? "is-tied-chain"
+                    : "",
+                  cell.startsFromPrevious ? "is-chain-open-left" : "",
+                  cell.continues ? "is-chain-open-right" : "",
                 ]
                   .filter(Boolean)
                   .join(" ");
-                const cellLabel = cell.rest ? "R" : cell.matraLen;
+                // Badges speak in beats, not raw matra counts: 8 pulses
+                // on a Subdivision-20 grid is "2/5" of a beat. Rests carry
+                // no badge (the gap reads itself); cells narrower than 3%
+                // of the row hide theirs (the title keeps exact pulses).
+                const rowSharePercent =
+                  ((cell.endAkshara - cell.startAkshara) / beatSpan) * 100;
+                const cellLabel = cell.rest
+                  ? ""
+                  : isCrossSectionContinuation || cell.startsFromPrevious
+                    ? ""
+                    : usesMixedPulseUnits
+                      ? "↔"
+                      : rowSharePercent < 3
+                        ? ""
+                        : formatBeatFraction(renderedPulseLen, section.gati);
                 const tieTitle =
-                  cell.sourceCells > 1
-                    ? ` · one sustain across ${cell.sourceSpans} span${
-                        cell.sourceSpans === 1 ? "" : "s"
+                  renderedSourceCells > 1
+                    ? ` · across ${renderedSourceSpans} span${
+                        renderedSourceSpans === 1 ? "" : "s"
+                      }${
+                        chain !== null
+                          ? ` and ${chain.sourceSections} section${
+                              chain.sourceSections === 1 ? "" : "s"
+                            }`
+                          : ""
                       }`
-                    : cell.continues
-                      ? " · sustain continues beyond this row"
-                      : "";
+                    : cell.startsFromPrevious && cell.continues
+                      ? " · sustain continues through this row"
+                      : cell.startsFromPrevious
+                        ? " · sustain ends in this row"
+                        : cell.continues
+                          ? " · sustain continues beyond this row"
+                          : "";
                 // Accent shading: sounding cells tint by their inherited
                 // authored velocity (the same value realized MIDI gets).
                 // Velocity-less cells (legacy payloads) keep the default look.
                 const velocityStyle =
-                  cell.velocity !== null
+                  renderedVelocity !== null
                     ? ({
-                        "--velocity-mix": `${Math.round((cell.velocity / 127) * 95)}%`,
+                        "--velocity-mix": `${Math.round((renderedVelocity / 127) * 95)}%`,
                       } as CSSProperties)
                     : undefined;
                 const velocityTitle =
-                  cell.velocity !== null ? ` · velocity ${cell.velocity}` : "";
+                  renderedVelocity !== null ? ` · velocity ${renderedVelocity}` : "";
                 const cellLeft =
                   ((cell.startAkshara - span.start) / span.duration) * 100;
                 const cellWidth =
                   ((cell.endAkshara - cell.startAkshara) / span.duration) * 100;
-                const pulseNoun = cell.matraLen === 1 ? "pulse" : "pulses";
+                const opensAtSectionStart =
+                  chain !== null &&
+                  cell.startsFromPrevious &&
+                  Math.abs(cell.startAkshara - sectionStartAkshara) < 1e-9;
+                const opensAtSectionEnd =
+                  chain !== null &&
+                  cell.continues &&
+                  Math.abs(cell.endAkshara - sectionEndAkshara) < 1e-9;
+                // Ordinary cells keep 1.5px breathing room on both sides.
+                // Cross-section fragments instead cover the source span's
+                // 1px border and meet the clipped section edge exactly, so
+                // adjacent section-local tracks read as one sustained note.
+                const horizontalCellStyle: CSSProperties = opensAtSectionStart
+                  ? opensAtSectionEnd
+                    ? { left: "-1px", right: "-1px" }
+                    : {
+                        left: "-1px",
+                        width: `calc(${cellWidth}% - 0.5px)`,
+                      }
+                  : opensAtSectionEnd
+                    ? {
+                        left: `calc(${cellLeft}% + 1.5px)`,
+                        right: "-1px",
+                      }
+                    : {
+                        left: `calc(${cellLeft}% + 1.5px)`,
+                        width: `calc(${cellWidth}% - 3px)`,
+                      };
+                const pulseNoun = renderedPulseLen === 1 ? "pulse" : "pulses";
+                const beatPhrase = usesMixedPulseUnits
+                  ? ""
+                  : ` (${formatBeatFraction(renderedPulseLen, section.gati)} beat${
+                      renderedPulseLen > section.gati ? "s" : ""
+                    })`;
                 const accessibleLabel = cell.rest
-                  ? `rest for ${cell.matraLen} ${pulseNoun}`
-                  : `note for ${cell.matraLen} ${pulseNoun}${
-                      cell.sourceSpans > 1
-                        ? ` across ${cell.sourceSpans} spans`
+                  ? `rest for ${renderedPulseLen} ${pulseNoun}`
+                  : usesMixedPulseUnits
+                    ? `note sustaining across ${renderedSourceSpans} spans and ${
+                        chain!.sourceSections
+                      } sections${
+                        renderedVelocity !== null
+                          ? `, velocity ${renderedVelocity}`
+                          : ""
+                      }`
+                  : `${
+                      cell.startsFromPrevious ? "sustain continuation" : "note"
+                    } for ${renderedPulseLen} ${pulseNoun}${beatPhrase}${
+                      renderedSourceSpans > 1
+                        ? ` across ${renderedSourceSpans} spans`
                         : ""
                     }${
-                      cell.velocity !== null ? `, velocity ${cell.velocity}` : ""
+                      chain !== null
+                        ? ` and ${chain.sourceSections} sections`
+                        : ""
+                    }${
+                      renderedVelocity !== null ? `, velocity ${renderedVelocity}` : ""
                     }`;
 
                 return (
                   <i
                     className={cellClasses || undefined}
                     data-testid="rhythm-layer-cell"
-                    data-source-cells={cell.sourceCells}
-                    data-source-spans={cell.sourceSpans}
+                    data-source-cells={renderedSourceCells}
+                    data-source-spans={renderedSourceSpans}
+                    data-source-sections={chain?.sourceSections}
+                    data-pulse-unit={usesMixedPulseUnits ? "mixed" : undefined}
+                    data-open-section-left={
+                      opensAtSectionStart ? "true" : undefined
+                    }
+                    data-open-section-right={
+                      opensAtSectionEnd ? "true" : undefined
+                    }
+                    data-tie-chain-owner={
+                      chain === null
+                        ? undefined
+                        : isCrossSectionContinuation
+                          ? "false"
+                          : "true"
+                    }
                     key={cell.key}
-                    role="img"
-                    aria-label={accessibleLabel}
+                    role={isCrossSectionContinuation ? undefined : "img"}
+                    aria-label={
+                      isCrossSectionContinuation ? undefined : accessibleLabel
+                    }
+                    aria-hidden={isCrossSectionContinuation || undefined}
                     style={{
-                      left: `calc(${cellLeft}% + 1.5px)`,
-                      width: `calc(${cellWidth}% - 3px)`,
+                      ...horizontalCellStyle,
                       ...velocityStyle,
                     }}
-                    title={`${cell.matraLen} ${pulseNoun}${
+                    title={`${
+                      usesMixedPulseUnits
+                        ? "one sustain"
+                        : `${renderedPulseLen} ${pulseNoun}`
+                    }${
                       cell.rest ? " · rest" : ""
                     }${tieTitle}${velocityTitle}`}
                   >

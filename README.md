@@ -14,13 +14,16 @@ group weights express tuplets of any ratio starting anywhere
 holds, `E(k,n)` Euclidean sugar, and stroke-class names. The editor computes
 the structure a pattern needs and applies it in one click. Later cycles can
 evolve through deterministic Barlow add/remove operations and whole-beat
-rotation, bounded by a drift leash and structural playability guards (see
+rotation, bounded by an authored density corridor, a drift leash, and
+structural playability guards (see
 [docs/DUMKA_EVOLUTION.md](docs/DUMKA_EVOLUTION.md)).
 
 The **Evolve** editor turns that fold into an authored score. Put a pin on one
-cycle or stretch a family across a range, give it an exact intensity quota,
-and optionally confine it to a contiguous beat window. Its composition strip
-shows cached onset density plus applied/skipped engine trace ticks; selecting a
+cycle or stretch a family across a range, choose an operation quota or a
+versioned perceptual target for each active cycle, and optionally confine it to
+a contiguous beat window. Its composition strip
+shows cached onset density inside the authored corridor plus applied/skipped
+and corridor-clamp trace ticks; selecting a
 directive scrubs stopped preview to its cycle for an honest before/after visual
 comparison. Playback still starts through the ordinary transport path; Evolve
 does not claim a separate stopped-audition engine.
@@ -33,14 +36,26 @@ Fragment, Consolidate, or Euclid operation can still reshape a larger window.
 Gaps retain the legacy stochastic layer, and an empty plan replays every older
 trajectory byte-for-byte.
 
-When a sustained tuplet child is rejected at a current Subdivision/Grouping
-fence, the visual builder offers **Articulate crossing notes** beside the
-error when exactly one tuplet can repair that fence; no block selection is
-required. The explicit repair rewrites it into detached, grid-sized notes and
-supports tuplets nested or positioned after beat one. If several tuplets cross
-other fences, the action remains localized to the first rejected sustain
-instead of editing an unrelated group. For valid committed notation, its
-Euclidean seed
+Perceptual target mode searches the legal prefix of a deterministic family's
+operator path—including a zero-operation hold—and chooses the smallest prefix
+nearest the requested directive-local rhythm distance. Multiple active rows
+compose, so no one row alone bounds the final whole-cycle change. The fixed-point `v1` score
+combines attack, sounding occupancy, circular timing displacement, metrical
+phase, syncopation, ratio complexity, density, and stroke-class change. The
+editor reports realized versus target magnitude and tolerance; the target
+replaces intensity, while density and projection guards remain absolute. See
+[docs/DUMKA_PERCEPTUAL_DISTANCE.md](docs/DUMKA_PERCEPTUAL_DISTANCE.md) for the
+exact model, limitations, and calibration protocol.
+
+Tuplet sustains can cross beat and Grouping boundaries. The generator emits a
+paired tie handshake at each structural seam, transport plays the chain as one
+note, and the timeline joins it into one visual note. **Articulate** remains an
+optional selected-group gesture when detached attacks are the intended style;
+it is no longer a repair required for playback. In the Pattern view, a
+top-level group's **Span** uses whole existing beat blocks to its right instead
+of lengthening the cycle; growing replaces covered blocks, while shrinking
+returns the released time as rest. For valid committed notation,
+the Euclidean seed
 roller preserves each physical beat's exact local grid, even when the pattern's
 cycle-wide requirement is a larger least common multiple. If a committed
 generator request is rejected, the disabled Play control keeps the exact
@@ -112,7 +127,9 @@ set boundaries and grids; open **Generator** to lower density or choose a seed
 mode; open **Evolve** to schedule deterministic changes across cycles. The
 timeline's generator lane is the resolved output used for playback;
 its cells shade by the accent velocity the notes inherit (hover a cell for the
-exact value).
+exact value). In Dum-Ka's Density panel, set the minimum and maximum onset
+density the evolving piece may use. The 0–100% default preserves earlier
+trajectories exactly.
 
 To route another instrument, choose it in Audio & MIDI Setup or connect the
 `Dum-Ka MIDI` virtual source in a DAW or MIDI monitor. **MIDI Panic** (`⌘.`)

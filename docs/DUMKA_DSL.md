@@ -31,6 +31,17 @@ multiply). Compilation uses arbitrary-precision rational intermediates and
 only converts after the authored Subdivision limit is proved, so nothing
 quantizes and deeply nested weights return a diagnostic instead of overflowing.
 
+Raw text keeps that literal rule: changing a top-level `@n` can change the
+cycle length. The visual Pattern builder's top-level **Span** control is a
+timeline gesture instead. Growing a group consumes whole following blocks so
+the cycle keeps its existing beats; shrinking inserts rest for the released
+time. A span that would end inside an unsplit block is rejected rather than
+silently compressing it. An unchanged following block that begins with a hold
+also fails closed, because consuming or releasing the prior block would rebind
+that hold. Nested Span remains a relative weight inside its fixed parent. To
+retain all existing material, shift-select the intended beat range first,
+choose **Group**, then change **Count**.
+
 Caps: 128 beats, per-beat Subdivision 64 (the platform's authored maximum),
 512 weight, 64-slot Euclid, 16 nesting levels, 4096 Unicode code points, and
 4096 actual expanded nodes. Diagnostics carry 1-based line and column.
@@ -56,45 +67,33 @@ dumka pattern parse error at line 2, column 7: weight must be 1-512
 dumka structure mismatch: pattern needs Subdivision 5 (or a multiple); the section has 4
 ```
 
-## Sustains and the span ceiling (M1)
+## Sustains across structural spans (M3.9)
 
-Generated notes cannot tie across structural spans (a platform invariant).
-With the per-beat recipe, a note or hold therefore lives inside one beat;
-an authored Grouping tile (3/4/5/6/7/9/11 steps) raises the ceiling to its
-tile. A hold that would cross reports:
+Notes may sustain across adjacent beat or Grouping spans. The projector splits
+the duration at each structural seam and emits a paired tie: the left chunk is
+`tiedToNext`, the right chunk is `tiedFromPrevious`, and both are sounding.
+The generic generator validator rejects every dangling, silent, first-span
+incoming, or last-span outgoing half. Transport merges a valid chain into one
+audible note using its opener's pitch and velocity, and the timeline renders
+one joined note with one pulse badge.
 
-```
-dumka structure mismatch: a note sustains across the span boundary at beat 1; split the note or keep the hold inside one beat or Grouping tile
-```
+For example, `[x x x x x]@2` is a legal five-in-the-time-of-two phrase on two
+per-beat Subdivision-5 spans. The middle note crosses the beat seam without an
+extra attack. A single note can cross several adjacent spans; a tie cannot wrap
+from the end of a cycle to its beginning.
 
-Tuplet **onsets** crossing beats are fine: articulate the notes inside
-their slots. When a flat k:w group of notes and rests crosses a structural
-boundary, the builder offers **Articulate**. It preserves the outer ratio,
-stroke names, and authored rests while shortening notes on the authored grid
-and filling the remainder of their slots with rests. For example, under
-ordinary per-beat spans `[x x x x x]@2` becomes
-`[[x .] [x .] [x .] [x .] [x .]]@2`. Equal-duration note children share the
-smallest safe slot divisor; in unequal-weight groups only crossing notes are
-refined.
-The calculation keeps every direct note before the next actual generator-span
-end and uses the same current Subdivision and
-Grouping spans sent to preview/playback, so it also handles shorter Grouping
-tiles, compatible larger Subdivisions, nested groups, and groups beginning
-later in the cycle. The rewritten notation is compiler-preflighted before the
-button is offered. This is an explicit authoring action, not an automatic
-rewrite, and the engine's span fence remains unchanged. Groups containing a
-nested group or hold still require selecting the inner flat tuplet or editing
-the hold explicitly.
+The builder's selected-group **Articulate** gesture is still available as an
+explicit stylistic rewrite. It shortens the selected flat group's notes on the
+authored grid and fills the remainder with rests, so `[x x x x x]@2` can become
+`[[x .] [x .] [x .] [x .] [x .]]@2` when detached attacks are desired. It is
+not an error repair and is never applied automatically.
 
-The canonical example (quintuplet onsets across beats three and four, each
-note detached):
+The reference example (quintuplet onsets across beats three and four, each
+note deliberately detached) remains:
 
 ```
 [dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2
 ```
-
-Relaxing the cross-span tie fence is the named platform extension that
-lifts this ceiling (see [ROADMAP.md](ROADMAP.md)).
 
 ## Examples
 
@@ -103,12 +102,8 @@ dum . ka .                                # four-on-the-floor call/answer, S=1
 [dum . . ka] [. . ka .] [dum . ka .] [x x . x]   # the default pattern, S=4
 E(3,8)@4                                  # tresillo stretched over four beats, S=2
 [x x] . [x x x] .                         # duplet, rest, triplet, rest, S=6
-x@2 _ . .                                 # a two-beat note (hold inside... spans!)
+x@2 _ . .                                 # a two-beat note, tied across its seam
 ```
-
-(That last example needs a Grouping tile of 4 or plays only under a
-structure whose spans contain beats one and two together; per-beat spans
-report the sustain diagnostic instead.)
 
 ## Determinism
 

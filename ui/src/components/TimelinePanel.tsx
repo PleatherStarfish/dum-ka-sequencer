@@ -6,6 +6,7 @@
  * unchanged.
  */
 import {
+  automationTargetDef,
   AutomationTargetDef,
 } from "../automationTargets";
 import {
@@ -36,12 +37,16 @@ import {
   GatiMatraLane,
   JathiPulseLane,
   RhythmLayerLane,
+  TimelineLaneLabelsColumn,
   TimelinePlayheadOverlay,
+  accentLaneChoice,
+  buildCrossSectionRhythmTieChains,
+  type TimelineLaneLabelEntry,
 } from "./TimelineLanes";
 import {
   BoundaryRail,
 } from "./WeightEditors";
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 // The playhead's local active-beat state changes throughout playback, while
 // these lanes depend only on resolved score/playback data. Memoized seams keep
@@ -182,6 +187,73 @@ export function TimelinePanel({
   // The playhead updates this once per beat. Keeping it inside the timeline
   // prevents a purely visual highlight from invalidating the entire App tree.
   const [activeBeat, setActiveBeat] = useState(-1);
+  const crossSectionRhythmTieChains = useMemo(
+    () =>
+      buildCrossSectionRhythmTieChains(
+        renderedResolvedSections,
+        renderedTimelineLayerModel.rhythmBySpanId
+      ),
+    [
+      renderedResolvedSections,
+      renderedTimelineLayerModel.rhythmBySpanId,
+    ]
+  );
+
+  const firstResolvedSection = renderedResolvedSections[0] ?? null;
+  // One source for the label rail: these conditions MUST mirror the lane
+  // stack rendered inside every section below; the panel test pins the
+  // rail's classes against a rendered section's rows so drift fails CI.
+  const timelineLaneLabelEntries: TimelineLaneLabelEntry[] = [];
+  if (firstResolvedSection) {
+    timelineLaneLabelEntries.push({
+      key: "beats",
+      className: "is-beat-ruler",
+      label: "beats",
+    });
+    timelineLaneLabelEntries.push({
+      key: "gati",
+      className: "is-gati-matras",
+      label: firstResolvedSection.customSubdivision
+        ? "custom subdivision"
+        : `subdivision ${firstResolvedSection.gati}`,
+    });
+    timelineLaneLabelEntries.push({
+      key: "jathi",
+      className: "is-jathi-pulses",
+      label: firstResolvedSection.jathi
+        ? `grouping ${firstResolvedSection.jathi}`
+        : "grouping none",
+    });
+    for (const track of visibleTimelineAutomationTracks) {
+      timelineLaneLabelEntries.push({
+        key: `auto-${track.target}`,
+        className: "is-automation-layer",
+        label: `auto ${automationTargetDef(track.target, automationTargetDefs).label}`,
+      });
+    }
+    if (
+      renderedTimelineLayerModel.showCoherentRhythmLayer ||
+      (timelineRenderSyncing && rhythmPlaybackEnabled)
+    ) {
+      timelineLaneLabelEntries.push({
+        key: "rhythm",
+        className: "is-rhythm-layer",
+        label: accentLaneChoice(firstResolvedSection.pulseSpans).label,
+      });
+    }
+    if (
+      (renderedTimelineLayerModel.showChannelHocketTransportRenderLayers ||
+        timelineRenderSyncing) &&
+      (channelHocketEnabled ||
+        renderedTimelineLayerModel.visibleChannelHocketEvents.length > 0)
+    ) {
+      timelineLaneLabelEntries.push({
+        key: "channel",
+        className: "is-channel-layer",
+        label: "channel",
+      });
+    }
+  }
 
   return (
       <section
@@ -371,6 +443,8 @@ export function TimelinePanel({
             onBoundaryOpen={openBoundaryDetail}
             onBoundaryRemove={removeBoundaryAfterBeat}
           />
+          <div className="timeline-lane-frame">
+          <TimelineLaneLabelsColumn entries={timelineLaneLabelEntries} />
           <div
             className={`resolved-lane${timelineRenderSyncing ? " is-syncing" : ""}`}
             style={{
@@ -433,6 +507,7 @@ export function TimelinePanel({
                         section={section}
                         rhythmBySpanId={renderedTimelineLayerModel.rhythmBySpanId}
                         playheadAkshara={playheadAkshara}
+                        crossSectionTieChains={crossSectionRhythmTieChains}
                       />
                     )}
                     {(renderedTimelineLayerModel.showChannelHocketTransportRenderLayers ||
@@ -453,6 +528,7 @@ export function TimelinePanel({
                 </section>
               );
             })}
+          </div>
           </div>
         </div>
       </section>

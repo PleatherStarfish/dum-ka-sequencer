@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectiveTraceEntry, EvolutionDirective } from "../bridge";
 import {
   DEFAULT_DIRECTIVE_OPTIONS,
+  DEFAULT_PERCEPTUAL_MAGNITUDE,
   MAX_EVOLUTION_DIRECTIVES,
 } from "../dumkaEvolvePlan";
 import { MAX_STOPPED_PREVIEW_CYCLE } from "../timelineModel";
@@ -183,6 +184,70 @@ describe("EvolvePlanEditor", () => {
     ]);
   });
 
+  it("shows the corridor band, authors a paired override, and labels clamps", () => {
+    const onPlanChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[directive({ family: "fragment" })]}
+        planLengthCycles={8}
+        totalBeats={4}
+        densityFloor={20}
+        densityCeiling={60}
+        inheritedOptions={{ densityFloor: 20, densityCeiling: 60 }}
+        initialSelectedId={1}
+        trace={[
+          {
+            cycle: 5,
+            directiveId: 1,
+            family: "fragment",
+            requested: 2,
+            applied: 1,
+            skipped: "none",
+            corridorClamp: { limit: "ceiling", densityPercent: 60 },
+          },
+        ]}
+        cachedPreviews={[
+          {
+            cycle: 5,
+            preview: {
+              densityCorridor: { floor: 30, ceiling: 55 },
+              spans: [
+                {
+                  spanId: 1,
+                  spanLen: 4,
+                  cells: [
+                    { index: 0, start: 0, len: 2, rest: false, tiedFromPrevious: false, tiedToNext: false },
+                    { index: 1, start: 2, len: 2, rest: true, tiedFromPrevious: false, tiedToNext: false },
+                  ],
+                },
+              ],
+            },
+          },
+        ]}
+        onPlanChange={onPlanChange}
+      />
+    );
+
+    expect(
+      screen.getByRole("group", {
+        name: /Cycle 5 composition: 1 onset, 25% density; corridor 30% through 55%/,
+      })
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Fragment: 1/2, ceiling corridor 60%")
+    ).toBeTruthy();
+    expect(screen.getByText("Inherit global · 20–60%")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Override density corridor"));
+    expect(onPlanChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        options: expect.objectContaining({
+          densityFloor: 20,
+          densityCeiling: 60,
+        }),
+      }),
+    ]);
+  });
+
   it("toggles before and after audition around the selected directive", () => {
     const onPreviewCycleChange = vi.fn();
     const onAuditionCycle = vi.fn();
@@ -269,6 +334,217 @@ describe("EvolvePlanEditor", () => {
     ]);
   });
 
+  it("authors a perceptual step target and reports the backend directive result", () => {
+    const onPlanChange = vi.fn();
+    const view = render(
+      <EvolvePlanEditor
+        plan={[directive({ pacing: "linear" })]}
+        planLengthCycles={12}
+        totalBeats={4}
+        initialSelectedId={1}
+        onPlanChange={onPlanChange}
+      />
+    );
+
+    const mode = screen.getByLabelText("Step size mode") as HTMLSelectElement;
+    expect(mode.value).toBe("operationQuota");
+    expect(screen.getByLabelText("Directive intensity")).toBeTruthy();
+    fireEvent.change(mode, { target: { value: "perceptual" } });
+    expect(onPlanChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        intensity: 32,
+        pacing: "perCycle",
+        magnitude: DEFAULT_PERCEPTUAL_MAGNITUDE,
+      }),
+    ]);
+
+    view.rerender(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            pacing: "perCycle",
+            magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+          }),
+        ]}
+        planLengthCycles={12}
+        totalBeats={4}
+        previewCycle={5}
+        initialSelectedId={1}
+        trace={[
+          {
+            cycle: 5,
+            directiveId: 1,
+            family: "syncopate",
+            requested: 4,
+            applied: 3,
+            skipped: "none",
+            perceptual: {
+              modelVersion: "v1",
+              actualMilli: 4_800,
+              targetMilli: 5_000,
+              toleranceMilli: 500,
+              reached: true,
+              exhausted: false,
+            },
+          },
+        ]}
+        onPlanChange={onPlanChange}
+      />
+    );
+
+    expect(screen.queryByLabelText("Directive intensity")).toBeNull();
+    expect(screen.queryByLabelText("Directive transition")).toBeNull();
+    expect(
+      screen.getByText(/Calibrates this directive's incremental rhythm change/)
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/final whole-cycle distance can be larger/)
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("status", {
+        name: /Cycle 5 directive change: realized 4\.8, target 5\.0 plus or minus 0\.5, within tolerance/,
+      })
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        "Syncopate: 3/4, realized 4.8 vs target 5.0 ±0.5, within tolerance"
+      )
+    ).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Target magnitude"), {
+      target: { value: "7.2" },
+    });
+    fireEvent.blur(screen.getByLabelText("Target magnitude"));
+    expect(onPlanChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        magnitude: expect.objectContaining({ targetMilli: 7_200 }),
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Step size mode"), {
+      target: { value: "operationQuota" },
+    });
+    const lastPlan = onPlanChange.mock.calls.at(-1)?.[0] as EvolutionDirective[];
+    expect(lastPlan[0]).not.toHaveProperty("magnitude");
+    expect(lastPlan[0]!.intensity).toBe(32);
+  });
+
+  it("shows lifetime scoring work and rejects an edit beyond the engine budget", () => {
+    const onPlanChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            fromCycle: 1,
+            toCycle: 16,
+            pacing: "perCycle",
+            magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+          }),
+        ]}
+        planLengthCycles={16}
+        totalBeats={4}
+        initialSelectedId={1}
+        onPlanChange={onPlanChange}
+      />
+    );
+
+    expect(
+      screen.getByLabelText(
+        "272 of 4,096 lifetime scores used; 3,824 remaining"
+      )
+    ).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Maximum operations"), {
+      target: { value: "256" },
+    });
+    fireEvent.blur(screen.getByLabelText("Maximum operations"));
+
+    expect(onPlanChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "dumka perceptual plan reserves 4112 scoring operations, exceeding the limit of 4096"
+    );
+  });
+
+  it("reports the selected directive trace for the displayed cycle", () => {
+    const plan = [
+      directive({
+        pacing: "perCycle",
+        magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+      }),
+    ];
+    const trace: DirectiveTraceEntry[] = [
+      {
+        cycle: 5,
+        directiveId: 1,
+        family: "syncopate",
+        requested: 4,
+        applied: 3,
+        skipped: "none",
+        perceptual: {
+          modelVersion: "v1",
+          actualMilli: 4_800,
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          reached: true,
+          exhausted: false,
+        },
+      },
+      {
+        cycle: 9,
+        directiveId: 1,
+        family: "syncopate",
+        requested: 8,
+        applied: 7,
+        skipped: "none",
+        perceptual: {
+          modelVersion: "v1",
+          actualMilli: 12_300,
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          reached: false,
+          exhausted: true,
+        },
+      },
+    ];
+    const view = render(
+      <EvolvePlanEditor
+        plan={plan}
+        planLengthCycles={12}
+        totalBeats={4}
+        previewCycle={5}
+        initialSelectedId={1}
+        trace={trace}
+        onPlanChange={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByRole("status", {
+        name: /Cycle 5 directive change: realized 4\.8/,
+      })
+    ).toBeTruthy();
+    expect(screen.queryByText("12.3")).toBeNull();
+
+    view.rerender(
+      <EvolvePlanEditor
+        plan={plan}
+        planLengthCycles={12}
+        totalBeats={4}
+        previewCycle={9}
+        initialSelectedId={1}
+        trace={trace}
+        onPlanChange={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByRole("status", {
+        name: /Cycle 9 directive change: realized 12\.3/,
+      })
+    ).toBeTruthy();
+    expect(screen.queryByText("4.8")).toBeNull();
+  });
+
   it("keeps Stochastic ranges on their per-cycle probability semantics", () => {
     const view = render(
       <EvolvePlanEditor
@@ -286,6 +562,13 @@ describe("EvolvePlanEditor", () => {
         onPlanChange={vi.fn()}
       />
     );
+    expect((screen.getByLabelText("Step size mode") as HTMLSelectElement).value).toBe(
+      "operationQuota"
+    );
+    expect((screen.getByLabelText("Step size mode") as HTMLSelectElement).disabled).toBe(
+      true
+    );
+    expect(screen.getByText("Stochastic directives use operation quota.")).toBeTruthy();
     expect(screen.queryByLabelText("Directive transition")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Smooth across 4 cycles" })
@@ -362,6 +645,15 @@ describe("EvolvePlanEditor", () => {
         applied: 0,
         skipped: "projection",
       },
+      {
+        cycle: 5,
+        directiveId: 0,
+        family: "stochastic",
+        requested: 0,
+        applied: 0,
+        skipped: "none",
+        corridorClamp: { limit: "floor", densityPercent: 40 },
+      },
     ];
     render(
       <EvolvePlanEditor
@@ -415,6 +707,9 @@ describe("EvolvePlanEditor", () => {
     expect(
       screen.getByLabelText("Fragment: 0/1, projection").className
     ).toContain("is-skipped");
+    expect(
+      screen.getByLabelText("Stochastic: 0/0, floor corridor 40%")
+    ).toBeTruthy();
     const onset = screen.getByTitle("1 onsets");
     expect(onset).toBeTruthy();
     expect(onset.parentElement?.style.getPropertyValue("--density-percent")).toBe(
@@ -428,7 +723,7 @@ describe("EvolvePlanEditor", () => {
     ).toBeTruthy();
     expect(
       screen.getByRole("group", {
-        name: "Cycle 6 composition: 4 onsets, 100% density",
+        name: "Cycle 6 composition: 4 onsets, 100% density; corridor 0% through 100%",
       })
     ).toBeTruthy();
     expect(
@@ -436,7 +731,7 @@ describe("EvolvePlanEditor", () => {
         '.evolve-plan-onset-bar[title="4 onsets"]'
       ) as HTMLElement).style.height
     ).toBe("100%");
-    expect(document.querySelectorAll(".evolve-plan-trace")).toHaveLength(2);
+    expect(document.querySelectorAll(".evolve-plan-trace")).toHaveLength(3);
   });
 
   it("caps and virtualizes extreme extents without dropping authored directives", () => {

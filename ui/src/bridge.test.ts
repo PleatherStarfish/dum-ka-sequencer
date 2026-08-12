@@ -59,6 +59,7 @@ describe("bridge lossless seed DTO normalization", () => {
       history: ["7", "18446744073709551615"],
     });
     expect(preview.trace).toEqual([]);
+    expect(preview.densityCorridor).toBeNull();
   });
 
   it("preserves directive trace entries at the invoke boundary", async () => {
@@ -75,12 +76,14 @@ describe("bridge lossless seed DTO normalization", () => {
           skipped: "projection",
         },
       ],
+      densityCorridor: { floor: 20, ceiling: 60 },
     });
 
     const preview = await bridge.generatorPreview({} as bridge.GeneratorPreviewRequest);
     expect(preview.trace).toEqual([
       expect.objectContaining({ directiveId: 41, applied: 1, skipped: "projection" }),
     ]);
+    expect(preview.densityCorridor).toEqual({ floor: 20, ceiling: 60 });
   });
 
   it("offers only Dum-Ka extensions so pickers never invite Caesura files", () => {
@@ -111,6 +114,8 @@ describe("bridge lossless seed DTO normalization", () => {
         pattern: "[dum@3 ka] [. ka] [dum ka dum ka dum]@2",
         evolutionRate: 0,
         driftLeash: 25,
+        densityFloor: 0,
+        densityCeiling: 100,
         barlowTemperature: 0,
         weightBarlowRemove: 3,
         weightBarlowAdd: 3,
@@ -141,6 +146,8 @@ describe("bridge lossless seed DTO normalization", () => {
       pattern: "[dum@3 ka] [. ka] [dum ka dum ka dum]@2",
       evolutionRate: 0,
       driftLeash: 25,
+      densityFloor: 0,
+      densityCeiling: 100,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,

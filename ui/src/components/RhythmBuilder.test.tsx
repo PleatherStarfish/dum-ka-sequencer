@@ -80,7 +80,7 @@ describe("RhythmBuilder", () => {
     expect(onCommit).toHaveBeenCalledWith("[x . . x . . x .] . x .");
   });
 
-  it("edits a group's ratio through the count and span fields", () => {
+  it("edits a group's count without changing its span", () => {
     const onCommit = vi.fn();
     render(
       <RhythmBuilder
@@ -94,18 +94,73 @@ describe("RhythmBuilder", () => {
     });
     expect(handle.textContent).toBe("3:2");
     fireEvent.click(handle);
+    expect(
+      (screen.getByRole("button", { name: "Ungroup" }) as HTMLButtonElement)
+        .disabled
+    ).toBe(true);
 
     fireEvent.change(screen.getByLabelText("Group count"), {
       target: { value: "4" },
     });
     fireEvent.blur(screen.getByLabelText("Group count"));
     expect(onCommit).toHaveBeenCalledWith("[x x x x]@2 .");
+  });
 
-    fireEvent.change(screen.getByLabelText("Element weight"), {
+  it("spans existing top-level beats instead of adding beats", () => {
+    const onCommit = vi.fn();
+    const pattern =
+      "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]";
+    const view = render(
+      <RhythmBuilder pattern={pattern} disabled={false} onCommit={onCommit} />
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "group 5: 5 in the time of 1" })
+    );
+    expect(
+      screen.getByText(
+        "Span uses existing beats to the right. Growing replaces covered blocks; shrinking leaves rest."
+      )
+    ).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Group span in existing beats"), {
+      target: { value: "2" },
+    });
+    fireEvent.blur(screen.getByLabelText("Group span in existing beats"));
+    const twoBeatPattern =
+      "[dum . . ka] [. . ka . x]@2 [x x . x]";
+    expect(onCommit).toHaveBeenLastCalledWith(twoBeatPattern);
+
+    view.rerender(
+      <RhythmBuilder
+        pattern={twoBeatPattern}
+        disabled={false}
+        onCommit={onCommit}
+      />
+    );
+    expect(view.container.querySelectorAll(".rb-ruler > span")).toHaveLength(4);
+    fireEvent.change(screen.getByLabelText("Group span in existing beats"), {
       target: { value: "3" },
     });
-    fireEvent.blur(screen.getByLabelText("Element weight"));
-    expect(onCommit).toHaveBeenCalledWith("[x x x]@3 .");
+    fireEvent.blur(screen.getByLabelText("Group span in existing beats"));
+    expect(onCommit).toHaveBeenLastCalledWith(
+      "[dum . . ka] [. . ka . x]@3"
+    );
+  });
+
+  it("keeps a nested group's span parent-relative", () => {
+    const onCommit = vi.fn();
+    render(
+      <RhythmBuilder pattern="[[x x] x]" disabled={false} onCommit={onCommit} />
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "group 1: 2 in the time of 1" })
+    );
+
+    fireEvent.change(screen.getByLabelText("Group relative span"), {
+      target: { value: "2" },
+    });
+    fireEvent.blur(screen.getByLabelText("Group relative span"));
+    expect(onCommit).toHaveBeenCalledWith("[[x x]@2 x]");
   });
 
   it("builds and explicitly articulates a 5:2 group through the commit path", () => {
@@ -171,7 +226,6 @@ describe("RhythmBuilder", () => {
       <RhythmBuilder
         pattern={pattern}
         disabled={false}
-        previewError="dumka structure mismatch: a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile"
         projectionSpans={Array.from({ length: 5 }, () => ({
           spanLen: 20,
           subdivision: 20,
@@ -189,14 +243,12 @@ describe("RhythmBuilder", () => {
     );
   });
 
-  it("does not present a crossing sustain as a mandatory repair", () => {
-    const boundaryError =
-      "dumka structure mismatch: a note sustains across the span boundary at beat 1; split the note or keep the hold inside one beat or Grouping tile";
+  it("does not turn a preview error into a mandatory articulation repair", () => {
     render(
       <RhythmBuilder
         pattern="[x x x x x]@2"
         disabled={false}
-        previewError={boundaryError}
+        previewError="generator preview failed"
         projectionSpans={FIVE_GRID_TWO_BEATS}
         onCommit={vi.fn()}
       />

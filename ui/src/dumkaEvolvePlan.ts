@@ -2,6 +2,7 @@ import type {
   DirectiveBeatRange,
   DirectiveEuclidRestPolicy,
   DirectiveFamily,
+  DirectiveMagnitude,
   DirectiveOptions,
   DirectivePacing,
   DirectiveRotateDirection,
@@ -12,6 +13,7 @@ import type {
 export type {
   DirectiveEuclidRestPolicy as EuclidRestPolicy,
   DirectiveFamily,
+  DirectiveMagnitude,
   DirectiveOptions,
   DirectivePacing,
   DirectiveRotateDirection as RotateDirection,
@@ -34,6 +36,22 @@ export const DIRECTIVE_FAMILIES = [
 
 /** Mirrors cseq-rhythm's public MAX_EVOLUTION_DIRECTIVES validation bound. */
 export const MAX_EVOLUTION_DIRECTIVES = 256;
+export const MAX_PERCEPTUAL_DISTANCE_MILLI = 100_000;
+export const MAX_PERCEPTUAL_OPERATIONS = 256;
+/** Mirrors the engine's cumulative, lifetime prefix-scoring admission bound. */
+export const MAX_PERCEPTUAL_SCORING_WORK = 4_096;
+
+const U64_MAX = (1n << 64n) - 1n;
+
+export const DEFAULT_PERCEPTUAL_MAGNITUDE: Readonly<
+  Extract<DirectiveMagnitude, { mode: "perceptual" }>
+> = {
+  mode: "perceptual",
+  modelVersion: "v1",
+  targetMilli: 5_000,
+  toleranceMilli: 500,
+  maxOperations: 16,
+};
 
 export const DIRECTIVE_FAMILY_LABELS: Record<DirectiveFamily, string> = {
   barlowRemove: "Remove",
@@ -83,6 +101,70 @@ function clamp(value: unknown, min: number, max: number, fallback: number): numb
   return Math.min(max, Math.max(min, integer(value, fallback)));
 }
 
+function saturatingU64(value: number): bigint {
+  if (!Number.isFinite(value) || value <= 0) return 0n;
+  const integerValue = BigInt(Math.round(value));
+  return integerValue > U64_MAX ? U64_MAX : integerValue;
+}
+
+function saturatingAddU64(left: bigint, right: bigint): bigint {
+  const sum = left + right;
+  return sum > U64_MAX ? U64_MAX : sum;
+}
+
+function saturatingMulU64(left: bigint, right: bigint): bigint {
+  if (left === 0n || right === 0n) return 0n;
+  return left > U64_MAX / right ? U64_MAX : left * right;
+}
+
+/**
+ * Maximum model scores reserved by one row over its complete inclusive range.
+ * P0 is scored before each row's 1..=maxOperations prefix search.
+ */
+export function perceptualDirectiveScoringWork(
+  directive: Pick<
+    EvolutionDirective,
+    "enabled" | "fromCycle" | "toCycle" | "magnitude"
+  >
+): bigint {
+  if (!directive.enabled || directive.magnitude?.mode !== "perceptual") return 0n;
+  const first = saturatingU64(directive.fromCycle);
+  const last = saturatingU64(directive.toCycle);
+  if (last < first) return 0n;
+  const activeCycles = saturatingAddU64(last - first, 1n);
+  const scoresPerCycle = saturatingAddU64(
+    saturatingU64(directive.magnitude.maxOperations),
+    1n
+  );
+  return saturatingMulU64(activeCycles, scoresPerCycle);
+}
+
+/** Aggregate lifetime score reservation, using the engine's saturating u64 math. */
+export function perceptualScoringWork(
+  plan: readonly Pick<
+    EvolutionDirective,
+    "enabled" | "fromCycle" | "toCycle" | "magnitude"
+  >[]
+): bigint {
+  return plan.reduce(
+    (total, directive) =>
+      saturatingAddU64(total, perceptualDirectiveScoringWork(directive)),
+    0n
+  );
+}
+
+export function perceptualScoringWorkError(
+  plan: readonly Pick<
+    EvolutionDirective,
+    "enabled" | "fromCycle" | "toCycle" | "magnitude"
+  >[]
+): string | null {
+  const requested = perceptualScoringWork(plan);
+  return requested > BigInt(MAX_PERCEPTUAL_SCORING_WORK)
+    ? `dumka perceptual plan reserves ${requested.toString()} scoring operations, exceeding the limit of ${MAX_PERCEPTUAL_SCORING_WORK}`
+    : null;
+}
+
 function normalizeOverride(
   value: unknown,
   min: number,
@@ -125,12 +207,57 @@ export function normalizeDirectivePacing(
     : DEFAULT_DIRECTIVE_PACING;
 }
 
-function cloneDirective(row: EvolutionDirective): EvolutionDirective {
+export function normalizeDirectiveMagnitude(
+  value: unknown,
+  family: DirectiveFamily
+): EvolutionDirective["magnitude"] {
+  if (family === "stochastic" || typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const source = value as Partial<Extract<DirectiveMagnitude, { mode: "perceptual" }>> & {
+    mode?: unknown;
+  };
+  if (source.mode !== "perceptual" || source.modelVersion !== "v1") {
+    return undefined;
+  }
   return {
+    mode: "perceptual",
+    modelVersion: "v1",
+    targetMilli: clamp(
+      source.targetMilli,
+      0,
+      MAX_PERCEPTUAL_DISTANCE_MILLI,
+      DEFAULT_PERCEPTUAL_MAGNITUDE.targetMilli
+    ),
+    toleranceMilli: clamp(
+      source.toleranceMilli,
+      0,
+      MAX_PERCEPTUAL_DISTANCE_MILLI,
+      DEFAULT_PERCEPTUAL_MAGNITUDE.toleranceMilli
+    ),
+    maxOperations: clamp(
+      source.maxOperations,
+      1,
+      MAX_PERCEPTUAL_OPERATIONS,
+      DEFAULT_PERCEPTUAL_MAGNITUDE.maxOperations
+    ),
+  };
+}
+
+function withMagnitude<T extends EvolutionDirective>(
+  row: T,
+  magnitude: EvolutionDirective["magnitude"]
+): T {
+  const { magnitude: _magnitude, ...base } = row;
+  return (magnitude === undefined ? base : { ...base, magnitude }) as T;
+}
+
+function cloneDirective(row: EvolutionDirective): EvolutionDirective {
+  return withMagnitude({
     ...row,
     scope: row.scope ? { ...row.scope } : null,
     options: { ...row.options },
-  };
+  }, normalizeDirectiveMagnitude(row.magnitude, row.family));
 }
 
 function dense(plan: readonly EvolutionDirective[]): EvolutionDirective[] {
@@ -177,7 +304,8 @@ export function normalizeEvolutionPlan(
           lenBeats: Math.max(1, integer(row.scope.lenBeats, 1)),
         }
       : null;
-    return {
+    const magnitude = normalizeDirectiveMagnitude(row.magnitude, row.family);
+    return withMagnitude({
       ...row,
       id,
       order: Math.max(0, integer(row.order, sourceIndex)),
@@ -185,11 +313,14 @@ export function normalizeEvolutionPlan(
       fromCycle,
       toCycle: Math.max(fromCycle, integer(row.toCycle, fromCycle)),
       intensity: clamp(row.intensity, 0, 100, 25),
-      pacing: normalizeDirectivePacing(row.pacing, row.family),
+      pacing:
+        magnitude?.mode === "perceptual"
+          ? DEFAULT_DIRECTIVE_PACING
+          : normalizeDirectivePacing(row.pacing, row.family),
       scope,
       options: normalizeDirectiveOptions(row.options),
       sourceIndex,
-    };
+    }, magnitude);
   });
 
   return normalized
@@ -213,6 +344,10 @@ export function validateEvolutionPlan(plan: readonly EvolutionDirective[]): Plan
     };
   }
   const normalized = normalizeEvolutionPlan(plan);
+  const workError = perceptualScoringWorkError(normalized);
+  if (workError !== null) {
+    return { ok: false, message: workError };
+  }
   for (let left = 0; left < normalized.length; left += 1) {
     for (let right = left + 1; right < normalized.length; right += 1) {
       const a = normalized[left]!;
@@ -337,8 +472,31 @@ export function setPacing(
 ): PlanEditResult {
   return replace(plan, id, (row) => ({
     ...row,
-    pacing: normalizeDirectivePacing(pacing, row.family),
+    pacing:
+      row.magnitude?.mode === "perceptual"
+        ? DEFAULT_DIRECTIVE_PACING
+        : normalizeDirectivePacing(pacing, row.family),
   }));
+}
+
+export function setMagnitude(
+  plan: readonly EvolutionDirective[],
+  id: number,
+  magnitude: DirectiveMagnitude | undefined
+): PlanEditResult {
+  return replace(plan, id, (row) => {
+    const normalized = normalizeDirectiveMagnitude(magnitude, row.family);
+    return withMagnitude(
+      {
+        ...row,
+        pacing:
+          normalized?.mode === "perceptual"
+            ? DEFAULT_DIRECTIVE_PACING
+            : row.pacing,
+      },
+      normalized
+    );
+  });
 }
 
 /** Turn one deterministic pin into an inclusive four-cycle gentle range. */
@@ -352,6 +510,13 @@ export function smoothDirectiveOverFourCycles(
     return {
       ok: false,
       message: "Stochastic directives use a per-cycle probability and cannot be smoothed",
+    };
+  }
+  if (source.magnitude?.mode === "perceptual") {
+    return {
+      ok: false,
+      message:
+        "Perceptual directives target each active cycle and cannot use transition pacing",
     };
   }
   return replace(plan, id, (row) => ({

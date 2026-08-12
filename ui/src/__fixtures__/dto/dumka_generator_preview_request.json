@@ -137,6 +137,8 @@
     "pattern": "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2",
     "evolutionRate": 15,
     "driftLeash": 30,
+    "densityFloor": 20,
+    "densityCeiling": 60,
     "barlowTemperature": 0,
     "weightBarlowRemove": 3,
     "weightBarlowAdd": 3,
@@ -164,6 +166,8 @@
         "options": {
           "barlowTemperature": 0,
           "fillComplexity": null,
+          "densityFloor": null,
+          "densityCeiling": null,
           "euclidMaxRun": null,
           "euclidInvert": null,
           "euclidRestPolicy": null,
@@ -186,6 +190,8 @@
         "options": {
           "barlowTemperature": null,
           "fillComplexity": null,
+          "densityFloor": 20,
+          "densityCeiling": 60,
           "euclidMaxRun": null,
           "euclidInvert": null,
           "euclidRestPolicy": null,
@@ -208,10 +214,40 @@
         "options": {
           "barlowTemperature": null,
           "fillComplexity": 70,
+          "densityFloor": null,
+          "densityCeiling": null,
           "euclidMaxRun": null,
           "euclidInvert": null,
           "euclidRestPolicy": null,
           "rotateDirection": "earlier"
+        }
+      },
+      {
+        "id": 104,
+        "order": 3,
+        "enabled": false,
+        "fromCycle": 17,
+        "toCycle": 19,
+        "family": "rotate",
+        "pacing": "perCycle",
+        "magnitude": {
+          "mode": "perceptual",
+          "modelVersion": "v1",
+          "targetMilli": 5000,
+          "toleranceMilli": 500,
+          "maxOperations": 16
+        },
+        "intensity": 99,
+        "scope": null,
+        "options": {
+          "barlowTemperature": null,
+          "fillComplexity": null,
+          "densityFloor": null,
+          "densityCeiling": null,
+          "euclidMaxRun": null,
+          "euclidInvert": null,
+          "euclidRestPolicy": null,
+          "rotateDirection": "later"
         }
       }
     ],

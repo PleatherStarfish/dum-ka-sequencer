@@ -585,10 +585,10 @@ export function EvolutionPanels({
             <p>
               <b>Fill complexity</b> biases the figure size: 0 always takes
               the simplest true tuplet, 100 draws over every legal size.
-              Figures charge the drift leash like adds and removes, and a
-              fragment whose sustain would cross a span boundary is skipped
-              for that cycle. Finer-than-grid tuplets stay gated on the
-              platform upsample extension (ROADMAP M6+).
+              Figures charge the drift leash like adds and removes. Sustains
+              may cross structural spans as paired ties; only genuinely
+              unprojectable geometry is skipped for that cycle. Finer-than-grid
+              tuplets stay gated on the platform upsample extension (ROADMAP M6+).
             </p>
           </>
         }

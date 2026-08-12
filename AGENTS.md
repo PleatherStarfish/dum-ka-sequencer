@@ -48,7 +48,8 @@ still supported.
   `GeneratorCycleContext`; no wall clock, OS entropy, global mutable state, or
   float-dependent randomness.
 - Generator cells are ordered, non-overlapping, sequentially indexed, and tile
-  each input span exactly. No tie may enter from another span.
+  each input span exactly. A tie may cross only as a paired, sounding interior
+  handshake; no tie may enter the first span or leave the final span.
 - Identity-seeded decisions must not depend on draw order. Adding/skipping a
   draw may not perturb unrelated cells.
 - `generator_enabled: false` must preserve the feature-off byte-identity

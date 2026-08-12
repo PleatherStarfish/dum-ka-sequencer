@@ -510,6 +510,40 @@ mod tests {
             }
         }
 
+        fn projection_case(
+            text: &str,
+            cycle_beats: u32,
+            spans: Vec<GeneratorSpanInput>,
+        ) -> serde_json::Value {
+            let seed = parse(text)
+                .and_then(|tree| compile(&tree))
+                .expect("projection contract pattern compiles");
+            let resolved = resolve_seed_cells(&seed, cycle_beats, &spans)
+                .expect("projection contract structure resolves");
+            let span_inputs = spans
+                .iter()
+                .map(|span| {
+                    serde_json::json!({
+                        "spanId": span.span_id,
+                        "spanLen": span.span_len,
+                        "subdivision": span.subdivision,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "pattern": text,
+                "outcome": outcome(text),
+                "projection": {
+                    "cycleBeats": cycle_beats,
+                    "spans": span_inputs,
+                    "outcome": {
+                        "ok": true,
+                        "spans": resolved,
+                    },
+                },
+            })
+        }
+
         let mut cancelled = "x".to_string();
         for _ in 0..super::super::dsl::MAX_DEPTH {
             cancelled = format!("[{cancelled} _@512]");
@@ -532,13 +566,28 @@ mod tests {
             "x 😀".to_string(),
             "x\u{feff}x".to_string(),
         ];
-        let cases = patterns
+        let mut cases = patterns
             .into_iter()
             .map(|pattern| {
                 let result = outcome(&pattern);
                 serde_json::json!({ "pattern": pattern, "outcome": result })
             })
             .collect::<Vec<_>>();
+        cases.push(projection_case(
+            "[x x x x x]@2",
+            2,
+            vec![span(10, 5, 5), span(11, 5, 5)],
+        ));
+        cases.push(projection_case(
+            "x _ _ .",
+            4,
+            vec![
+                span(20, 1, 1),
+                span(21, 1, 1),
+                span(22, 1, 1),
+                span(23, 1, 1),
+            ],
+        ));
         let rendered = format!(
             "{}\n",
             serde_json::to_string_pretty(&cases).expect("serialize parser contract")
@@ -666,6 +715,52 @@ mod tests {
         assert_eq!(
             flags,
             vec![(false, true), (true, true), (true, true), (true, false)]
+        );
+    }
+
+    #[test]
+    fn two_beat_quintuplet_sustains_through_the_beat_boundary() {
+        let resolved = resolve_seed_cells(
+            &compiled("[x x x x x]@2"),
+            2,
+            &[span(10, 5, 5), span(11, 5, 5)],
+        )
+        .unwrap();
+
+        let left = &resolved[0].cells;
+        let right = &resolved[1].cells;
+        assert_eq!(
+            left.iter()
+                .map(|cell| (
+                    cell.start,
+                    cell.len,
+                    cell.rest,
+                    cell.tied_from_previous,
+                    cell.tied_to_next,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 2, false, false, false),
+                (2, 2, false, false, false),
+                (4, 1, false, false, true),
+            ]
+        );
+        assert_eq!(
+            right
+                .iter()
+                .map(|cell| (
+                    cell.start,
+                    cell.len,
+                    cell.rest,
+                    cell.tied_from_previous,
+                    cell.tied_to_next,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 1, false, true, false),
+                (1, 2, false, false, false),
+                (3, 2, false, false, false),
+            ]
         );
     }
 

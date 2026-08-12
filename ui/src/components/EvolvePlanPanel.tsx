@@ -15,6 +15,7 @@ export interface EvolvePlanPanelProps {
   planLengthCycles: number;
   cycleBeats: number;
   playbackStructureLocked: boolean;
+  previewCycle?: number;
   cachedPreviews?: readonly EvolutionCachedPreview[];
   trace?: readonly DirectiveTraceEntry[];
   inheritedOptions?: EvolutionInheritedOptions;
@@ -39,6 +40,7 @@ export function EvolvePlanPanel({
   planLengthCycles,
   cycleBeats,
   playbackStructureLocked,
+  previewCycle = 0,
   cachedPreviews = [],
   trace = [],
   inheritedOptions,
@@ -139,6 +141,7 @@ export function EvolvePlanPanel({
           planLengthCycles={planLengthCycles}
           totalBeats={cycleBeats}
           disabled={disabled}
+          previewCycle={previewCycle}
           cachedPreviews={cachedPreviews}
           trace={trace}
           inheritedOptions={inheritedOptions}

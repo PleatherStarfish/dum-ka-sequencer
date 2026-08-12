@@ -169,6 +169,8 @@ evolution fold.
 | `generator.dumka.seedMode` | Generator seed mode | enum `locked`, `perCycle`, `history` | `PatchGeneratorConfig.seedMode` | Persistence, deterministic trajectory replay | Structural/discrete |
 | `generator.dumka.evolutionRate` | Evolution rate | percent `0..100` | `PatchGeneratorConfig.evolutionRate` | Persistence, preview, playback (rate 0 = seed verbatim) | Current (`generator.dumka.evolutionRate`, cycleStart) |
 | `generator.dumka.driftLeash` | Drift leash | percent `0..100` | `PatchGeneratorConfig.driftLeash` | Persistence, preview, playback, leash invariants | Current (`generator.dumka.driftLeash`, cycleStart) |
+| `generator.dumka.densityFloor` | Density corridor floor | percent `0..100`, ≤ ceiling | `PatchGeneratorConfig.densityFloor` | Persistence, preview/playback fold, normalization and clamp trace | Current (`generator.dumka.densityFloor`, cycleStart) |
+| `generator.dumka.densityCeiling` | Density corridor ceiling | percent `0..100`, ≥ floor | `PatchGeneratorConfig.densityCeiling` | Persistence, preview/playback fold, Fragment/Consolidate plateau | Current (`generator.dumka.densityCeiling`, cycleStart) |
 | `generator.dumka.barlowTemperature` | Barlow temperature | percent `0..100` | `PatchGeneratorConfig.barlowTemperature` | Persistence, preview, playback, pool-widening determinism | Current (`generator.dumka.barlowTemperature`, cycleStart) |
 | `generator.dumka.weightBarlowRemove` | Remove weight | weight `0..100` | `PatchGeneratorConfig.weightBarlowRemove` | Persistence, preview, playback (default 3) | Structural |
 | `generator.dumka.weightBarlowAdd` | Add weight | weight `0..100` | `PatchGeneratorConfig.weightBarlowAdd` | Persistence, preview, playback (default 3) | Structural |
@@ -184,6 +186,7 @@ evolution fold.
 | `generator.dumka.euclidRestPolicy` | Reshape rest policy | enum `tied`, `silent` | `PatchGeneratorConfig.euclidRestPolicy` | Persistence, preview, playback | Structural/discrete |
 | `generator.dumka.plan` | Evolve lane pins/ranges + inspector | ordered directive rows: family, cycles ≥1, intensity `0..100`, pacing, optional beat scope/options | `PatchGeneratorConfig.plan` | Persistence normalization/warnings, deterministic preview/playback fold, preview trace | Structural tuple; deliberately not an automation target |
 | `generator.dumka.plan[*].pacing` | Evolve Transition control | enum `perCycle`, `linear`, `easeInOut`; absent defaults `perCycle`; Stochastic accepts only `perCycle` | `EvolutionDirective.pacing` | Legacy default identity, tolerant malformed-row warning, strict DTO validation, gradual schedule properties, preview/playback parity | Structural/discrete; not automation |
+| `generator.dumka.plan[*].options.densityFloor/Ceiling` | Directive corridor override | paired percentages `0..100`, floor ≤ ceiling, or both absent | `DirectiveOptions.densityFloor` / `densityCeiling` | Strict/tolerant persistence fences, deterministic normalization, clamp trace | Structural/discrete; inherits global rails when absent |
 | `generator.dumka.planLengthCycles` | Evolve view extent | integer `0..u32::MAX` (`0` = automatic UI extent) | `PatchGeneratorConfig.planLengthCycles` | Persistence and editor canvas only; engine ignores it | UI-only structural |
 
 ## Accent Settings

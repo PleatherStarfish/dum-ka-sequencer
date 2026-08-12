@@ -244,8 +244,13 @@ test.describe("timeline/playback parity", () => {
     ]);
 
     await expect(
-      page.locator(".aligned-timeline-row.is-jathi-pulses .aligned-timeline-label")
+      page.locator(".timeline-lane-label-cell.is-jathi-pulses")
     ).toHaveText(["grouping 4"]);
+    // The row itself keeps the accessible name after the label moved to
+    // the panel-level rail.
+    await expect(
+      page.locator(".aligned-timeline-row.is-jathi-pulses").first()
+    ).toHaveAttribute("aria-label", "grouping 4");
 
     const cells = page.getByTestId("jathi-pulse-cell");
     await expect(cells).toHaveCount(jathiSpans.length);
@@ -589,7 +594,9 @@ test.describe("timeline/playback parity", () => {
         }),
         parseError: await errorFor(request(dumka("[x"), spans20, 4)),
         beatsError: await errorFor(request(dumka("x . x ."), spans20, 3)),
-        sustainError: await errorFor(request(dumka("x _ x ."), spans4, 4)),
+        sustain: await driver.invoke("generator_preview", {
+          request: request(dumka("x _ x ."), spans4, 4),
+        }),
         subdivisionMetadataError: await errorFor(
           request(
             dumka(articulated),
@@ -655,9 +662,16 @@ test.describe("timeline/playback parity", () => {
     expect(results.beatsError).toBe(
       "dumka structure mismatch: pattern spans 4 beats but the cycle has 3"
     );
-    expect(results.sustainError).toBe(
-      "dumka structure mismatch: a note sustains across the span boundary at beat 1; split the note or keep the hold inside one beat or Grouping tile"
-    );
+    expect(results.sustain.spans[0].cells.at(-1)).toMatchObject({
+      rest: false,
+      tiedFromPrevious: false,
+      tiedToNext: true,
+    });
+    expect(results.sustain.spans[1].cells[0]).toMatchObject({
+      rest: false,
+      tiedFromPrevious: true,
+      tiedToNext: false,
+    });
     expect(results.subdivisionMetadataError).toBe(
       "dumka structure mismatch: spans carry 80 steps over 4 beats; a uniform per-beat Subdivision is required"
     );
@@ -900,7 +914,12 @@ test.describe("timeline/playback parity", () => {
     expect(results.history.seed).toEqual({
       seed: "301863032735174168",
       source: "new",
-      history: ["17", "9007199254740995", "301863032735174168"],
+      history: [
+        "9007199254740995",
+        "2128267588419207165",
+        "3977028428741929007",
+        "301863032735174168",
+      ],
     });
     expect(results.cycleStartValues).toEqual(Array(8).fill(0));
     expect(results.unknownKindError).toContain("unknown generator kind");
@@ -1077,4 +1096,50 @@ test.describe("timeline/playback parity", () => {
     expect(driver.lastGeneratorPreviewRequest?.cycle).toBe(2);
     expect(state.sections.length).toBe(state.preview?.sectionStartBeats.length);
   });
+});
+
+test("the playhead travels inside the track region, never the label rail", async ({
+  page,
+}) => {
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+  await page.getByTestId("transport-play").click();
+  await waitForPlaying(page);
+
+  // The playhead is a zero-width span whose line is a pseudo-element; its
+  // screen position is lane.x + the rAF-driven translate3d offset. Wait
+  // for the first live position (opacity flips to 1), then sample.
+  const playhead = page.getByTestId("timeline-playhead");
+  await expect
+    .poll(async () =>
+      playhead.evaluate((node) => (node as HTMLElement).style.opacity)
+    )
+    .toBe("1");
+
+  // Regression: with a per-row label gutter, fraction × parent-width
+  // mapped the playhead over the FULL row (rail included), so it started
+  // a rail-width behind the audible beat and converged only by cycle end.
+  // It must always sit within the track region.
+  for (let sample = 0; sample < 3; sample += 1) {
+    const offset = await playhead.evaluate((node) => {
+      const transform = (node as HTMLElement).style.transform;
+      const match = /translate3d\((-?[\d.]+)px/.exec(transform);
+      return match ? Number(match[1]) : Number.NaN;
+    });
+    const cellBox = await page
+      .getByTestId("gati-matra-cell")
+      .first()
+      .boundingBox();
+    const laneBox = await page.locator(".resolved-lane").boundingBox();
+    expect(Number.isNaN(offset)).toBe(false);
+    expect(cellBox).not.toBeNull();
+    expect(laneBox).not.toBeNull();
+    const playheadScreenX = laneBox!.x + offset;
+    expect(playheadScreenX).toBeGreaterThanOrEqual(cellBox!.x - 1);
+    expect(playheadScreenX).toBeLessThanOrEqual(
+      laneBox!.x + laneBox!.width + 1
+    );
+    await page.waitForTimeout(150);
+  }
 });

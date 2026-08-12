@@ -41,7 +41,7 @@ import {
   FALLBACK_GLOBAL_SEED,
 } from "./patchIo";
 import { DEFAULT_DUMKA_PATTERN } from "./dumkaPattern";
-import { normalizeEvolutionPlan } from "./dumkaEvolvePlan";
+import { normalizeEvolutionPlan, validateEvolutionPlan } from "./dumkaEvolvePlan";
 import { MAX_STOPPED_PREVIEW_CYCLE } from "./timelineModel";
 
 describe("beat-lock articulation normalization", () => {
@@ -1522,6 +1522,8 @@ describe("patchIo", () => {
       pattern,
       evolutionRate: 40,
       driftLeash: 60,
+      densityFloor: 0,
+      densityCeiling: 100,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,
@@ -1698,6 +1700,257 @@ describe("patchIo", () => {
     expect(normalizePatchEvolutionPlan(normalized.plan).plan).toEqual(normalized.plan);
   });
 
+  it("preserves absent operation quotas and fails closed on malformed perceptual pacing", () => {
+    const normalized = normalizePatchEvolutionPlan([
+      {
+        id: 1,
+        order: 0,
+        enabled: true,
+        fromCycle: 1,
+        toCycle: 1,
+        family: "barlowRemove",
+        intensity: 25,
+      },
+      {
+        id: 2,
+        order: 1,
+        enabled: true,
+        fromCycle: 2,
+        toCycle: 2,
+        family: "barlowAdd",
+        intensity: 25,
+        magnitude: { mode: "operationQuota" },
+      },
+      {
+        id: 3,
+        order: 2,
+        enabled: true,
+        fromCycle: 3,
+        toCycle: 6,
+        family: "rotate",
+        pacing: "perCycle",
+        intensity: 91,
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v1",
+          targetMilli: 101_000.4,
+          toleranceMilli: -12,
+          maxOperations: 900,
+        },
+      },
+      {
+        id: 4,
+        order: 3,
+        enabled: true,
+        fromCycle: 7,
+        toCycle: 10,
+        family: "fragment",
+        pacing: "linear",
+        intensity: 25,
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v1",
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          maxOperations: 16,
+        },
+      },
+      {
+        id: 5,
+        order: 4,
+        enabled: true,
+        fromCycle: 11,
+        toCycle: 11,
+        family: "stochastic",
+        intensity: 25,
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v1",
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          maxOperations: 16,
+        },
+      },
+      {
+        id: 6,
+        order: 5,
+        enabled: true,
+        fromCycle: 12,
+        toCycle: 12,
+        family: "euclid",
+        intensity: 25,
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v1",
+          targetMilli: "5_000",
+          toleranceMilli: 500,
+          maxOperations: 16,
+        },
+      },
+      {
+        id: 7,
+        order: 6,
+        enabled: true,
+        fromCycle: 13,
+        toCycle: 13,
+        family: "consolidate",
+        intensity: 25,
+        magnitude: { mode: "futureMode" },
+      },
+      {
+        id: 8,
+        order: 7,
+        enabled: true,
+        fromCycle: 14,
+        toCycle: 14,
+        family: "syncopate",
+        intensity: 25,
+        magnitude: {
+          mode: "perceptual",
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          maxOperations: 16,
+        },
+      },
+      {
+        id: 9,
+        order: 8,
+        enabled: true,
+        fromCycle: 15,
+        toCycle: 15,
+        family: "desyncopate",
+        intensity: 25,
+        magnitude: {
+          mode: "perceptual",
+          modelVersion: "v2",
+          targetMilli: 5_000,
+          toleranceMilli: 500,
+          maxOperations: 16,
+        },
+      },
+    ]);
+
+    expect(normalized.droppedMalformed).toBe(6);
+    expect(normalized.plan).toHaveLength(3);
+    expect(normalized.plan[0]).not.toHaveProperty("magnitude");
+    expect(normalized.plan[1]).not.toHaveProperty("magnitude");
+    expect(normalized.plan[2]).toMatchObject({
+      pacing: "perCycle",
+      intensity: 91,
+      magnitude: {
+        mode: "perceptual",
+        modelVersion: "v1",
+        targetMilli: 100_000,
+        toleranceMilli: 0,
+        maxOperations: 256,
+      },
+    });
+    expect(normalizePatchEvolutionPlan(normalized.plan).plan).toEqual(normalized.plan);
+  });
+
+  it("keeps over-budget perceptual rows editable but disables later reservations", () => {
+    const perceptual = {
+      mode: "perceptual",
+      modelVersion: "v1",
+      targetMilli: 5_000,
+      toleranceMilli: 500,
+      maxOperations: 16,
+    };
+    const rows = [
+      {
+        id: 1,
+        order: 0,
+        enabled: true,
+        fromCycle: 1,
+        toCycle: 240,
+        family: "fragment",
+        pacing: "perCycle",
+        intensity: 25,
+        magnitude: perceptual,
+      },
+      {
+        id: 2,
+        order: 1,
+        enabled: true,
+        fromCycle: 241,
+        toCycle: 241,
+        family: "rotate",
+        pacing: "perCycle",
+        intensity: 25,
+        magnitude: perceptual,
+      },
+    ];
+
+    const normalized = normalizePatchEvolutionPlan(rows);
+    expect(normalized.disabledOverBudget).toBe(1);
+    expect(normalized.plan).toMatchObject([
+      { id: 1, enabled: true },
+      { id: 2, enabled: false },
+    ]);
+    expect(validateEvolutionPlan(normalized.plan).ok).toBe(true);
+    expect(normalizePatchEvolutionPlan(normalized.plan).plan).toEqual(
+      normalized.plan
+    );
+
+    const raw = makeProjectFixture() as unknown as Record<string, unknown>;
+    const project = raw.project as { tracks: Array<Record<string, unknown>> };
+    const target = project.tracks.find((track) => track.id === "track-active")!;
+    target.generator = { kind: "dumka", pattern: "x . x .", plan: rows };
+    const loaded = readPatchDocument(raw);
+    expect(loaded.loadWarnings).toContain(
+      "Over-budget Dum-Ka perceptual directives were disabled."
+    );
+  });
+
+  it("normalizes paired density corridors and drops malformed overrides", () => {
+    const normalized = normalizePatchEvolutionPlan([
+      {
+        id: 1,
+        order: 0,
+        enabled: true,
+        fromCycle: 1,
+        toCycle: 1,
+        family: "fragment",
+        intensity: 25,
+        options: { densityFloor: 20, densityCeiling: 60 },
+      },
+      {
+        id: 2,
+        order: 1,
+        enabled: true,
+        fromCycle: 2,
+        toCycle: 2,
+        family: "barlowAdd",
+        intensity: 25,
+        options: { densityFloor: 40 },
+      },
+      {
+        id: 3,
+        order: 2,
+        enabled: true,
+        fromCycle: 3,
+        toCycle: 3,
+        family: "barlowRemove",
+        intensity: 25,
+        options: { densityFloor: 70, densityCeiling: 30 },
+      },
+    ]);
+
+    expect(normalized.droppedMalformed).toBe(2);
+    expect(normalized.plan).toHaveLength(1);
+    expect(normalized.plan[0]!.options).toMatchObject({
+      densityFloor: 20,
+      densityCeiling: 60,
+    });
+    expect(
+      normalizePatchGeneratorConfig({
+        kind: "dumka",
+        densityFloor: 81,
+        densityCeiling: 62,
+      })
+    ).toMatchObject({ densityFloor: 62, densityCeiling: 62 });
+  });
+
   it("repairs unsafe directive ids without aliasing a valid stable identity", () => {
     const normalized = normalizePatchEvolutionPlan([
       {
@@ -1864,6 +2117,8 @@ describe("patchIo", () => {
       pattern: "  x .  x . ",
       evolutionRate: 0,
       driftLeash: 25,
+      densityFloor: 0,
+      densityCeiling: 100,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,

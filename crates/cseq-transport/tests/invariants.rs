@@ -124,7 +124,11 @@ fn evolution_plan_strategy() -> impl Strategy<Value = Vec<rhythm::EvolutionDirec
                             }
                         });
                         let family = directive_family(family_offset + index);
-                        let pacing = if family == rhythm::DirectiveFamily::Stochastic {
+                        let perceptual = family != rhythm::DirectiveFamily::Stochastic
+                            && pacing_hint == 0
+                            && later;
+                        let pacing = if family == rhythm::DirectiveFamily::Stochastic || perceptual
+                        {
                             rhythm::DirectivePacing::PerCycle
                         } else {
                             match pacing_hint {
@@ -141,11 +145,23 @@ fn evolution_plan_strategy() -> impl Strategy<Value = Vec<rhythm::EvolutionDirec
                             to_cycle,
                             family,
                             pacing,
+                            magnitude: if perceptual {
+                                rhythm::DirectiveMagnitude::Perceptual {
+                                    model_version: rhythm::PerceptualModelVersion::V1,
+                                    target_milli: temperature.saturating_mul(1_000),
+                                    tolerance_milli: complexity.saturating_mul(100),
+                                    max_operations: max_run,
+                                }
+                            } else {
+                                rhythm::DirectiveMagnitude::OperationQuota
+                            },
                             intensity,
                             scope,
                             options: rhythm::DirectiveOptions {
                                 barlow_temperature: Some(temperature),
                                 fill_complexity: Some(complexity),
+                                density_floor: Some(temperature.min(complexity)),
+                                density_ceiling: Some(temperature.max(complexity)),
                                 euclid_max_run: Some(max_run),
                                 euclid_invert: Some(invert),
                                 euclid_rest_policy: Some(if tied {
@@ -196,6 +212,8 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     drift_leash,
                     barlow_temperature,
                     fill_complexity,
+                    density_floor: barlow_temperature.min(fill_complexity),
+                    density_ceiling: barlow_temperature.max(fill_complexity),
                     weight_barlow_remove: weights[0],
                     weight_barlow_add: weights[1],
                     weight_rotate: weights[2],

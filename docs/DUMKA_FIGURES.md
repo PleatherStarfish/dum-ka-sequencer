@@ -81,11 +81,10 @@ every other decision — never draw-order coupled.
 - **Leash**: the onset-set symmetric difference already covers figures —
   fragmenting a note adds `k − 1` onsets, fragmenting a rest run adds `k`,
   consolidation subtracts the same; no metric change, only tests.
-- **Trial projection**: a fragment whose sustain would cross a structural
-  span boundary is illegal; the op is skipped for that cycle (the same
-  stall-not-break rule as everything else). Multi-beat intervals therefore
-  fragment freely when fragment boundaries align with span boundaries and
-  refuse otherwise — the honest on-grid behavior.
+- **Trial projection**: a sustain may cross structural spans as a paired,
+  sounding tie chain. The op is skipped only when its result is genuinely
+  unprojectable (broken tiling, incompatible grid, overlap, or malformed tie),
+  preserving the same stall-not-break rule as every other family.
 - **Interval overlap**: operates only on maximal intervals, so figures can
   never overlap existing onsets by construction; the existing disjointness
   guard stays as the belt-and-suspenders check.

@@ -23,7 +23,7 @@ dum-ka-sequencer/
     cseq-bench/               retained engine benchmarks
   src-tauri/                  commands, validation, menus, machine prefs
   ui/                         React app, patch projection, tests and harnesses
-  fuzz/                       four libFuzzer targets
+  fuzz/                       five libFuzzer targets
   examples/scores/            score fixtures and golden-ledger inputs
 ```
 
@@ -84,8 +84,11 @@ spans, a caller-resolved seed, and a cycle-aware automation sampler. Each
 `GeneratorSpanInput` also carries the exact per-beat Subdivision derived from
 its source `PulseSpan`; this distinguishes a shorter Grouping tile from a real
 grid change without reconstructing rational geometry from preview floats. A
-generator returns ordered cells that exactly tile each input span. Dum-Ka
-requires the metadata to be present and uniform across the cycle. It cannot
+generator returns ordered cells that exactly tile each input span. Adjacent
+spans may form a sounding paired tie handshake: left `tiedToNext` and right
+`tiedFromPrevious`. The validator rejects dangling, silent, first-incoming,
+and final-outgoing halves. Dum-Ka requires the metadata to be present and
+uniform across the cycle. It cannot
 choose its own wall clock, entropy source, or seed lifecycle.
 
 Two variants ship today. Example emits one cell per step: density 100 takes
@@ -97,7 +100,10 @@ the input spans. Its optional ordered evolution plan schedules deterministic
 family quotas and beat scopes inside that same fold. A range may retain the
 legacy per-cycle quota or distribute one fixed start quota through an
 integer-only linear/smoothstep transition; the latter paces operator
-applications and is not a second renderer or an audio crossfade. Empty-plan
+applications and is not a second renderer or an audio crossfade. The fold's
+density corridor is an onset-count invariant shared by stochastic and planned
+families; automation and directive-local overrides are sampled inside the
+historical fold, and trace reports independent corridor clamps. Empty-plan
 dispatch stays on the byte-compatible legacy path. `resolve_generator_cycle_with_trace`
 wraps the exhaustive resolver for stopped authoring preview, while the
 transport-facing `resolve_generator_cycle` delegates to it and returns only
@@ -107,6 +113,21 @@ mirror. Preview calls the trace-returning wrapper and transport calls its
 span-only delegate; both share the same exhaustive dispatch and generator
 implementation, so adding a variant does not create a second preview algorithm. See
 [ADDING_A_GENERATOR.md](ADDING_A_GENERATOR.md).
+
+A deterministic plan row may instead opt into the versioned perceptual
+step-size planner in `dumka/perceptual.rs` + `evolve.rs`. It scores the
+directive's incoming state against every reachable legal operator prefix,
+including the corridor-normalized zero-operation hold, and selects the prefix
+nearest its fixed-point target; equal errors choose the smaller prefix. The
+target replaces intensity, `maxOperations` bounds work, and ordinary scope,
+corridor, interval, and trial-projection guards still admit every candidate.
+Search stops at the first failed frontier or exact target; initial candidate
+count is not a cap because repeatable families can create later candidates.
+The immutable `v1` model combines seven auditable feature distances; its
+current weights are engineering priors, not listener-calibrated results. Each
+active row targets its own ordered contribution, so several same-cycle
+families may compose without claiming a bound on their non-linear aggregate.
+See [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
 
 ### Triggered tracks and Track Flow
 
@@ -158,7 +179,8 @@ React section drafts
     velocities via cseq_transport::rhythm_span_matra_velocities)
   → generator_preview (spans + optional spanVelocities)
   → resolve_generator_cycle_with_trace, then per-cell velocity stamping
-    (spans + authoring-only directive trace)
+    (spans + fold-owned effective density corridor + evolution trace,
+    including authored directives and reserved directiveId 0 legacy clamps)
   → timeline structure + generator lane (accent-shaded cells)
 ```
 
@@ -256,6 +278,20 @@ Evolution directive pacing is part of the v1 plan row. Absence materializes as
 `perCycle` for compatibility. Tolerant patch recall drops an explicitly
 unknown pacing (or a smoothed Stochastic row) with the malformed-row warning;
 the Tauri/Rust invoke boundary remains strict for direct DTO input.
+Directive magnitude is an additive tagged field. Absence or explicit
+`operationQuota` canonicalizes to the historical omitted shape. A
+`perceptual` row must pin `modelVersion: v1`, use `perCycle`, remain within the
+fixed target/tolerance/work bounds, and name a deterministic family; malformed
+combinations fail closed. Preview trace adds the realized/target/tolerance and
+reach/exhaustion truth, while transport continues to consume only the common
+resolved spans.
+Because `v1` requires the Barlow/Sioros metrical context, an unsupported metric
+grid fails authoring validation when any perceptual row is enabled, including
+a future row; disabled rows preserve the legacy unsupported-grid fallback.
+Enabled perceptual rows also reserve a saturating plan-wide lifetime scoring
+budget. The Rust boundary and TypeScript model use the same 4,096-evaluation
+formula (`inclusive cycles × (maxOperations + 1)`); tolerant patch import keeps
+but disables later rows that would exceed it, with a visible load warning.
 
 ## Verification architecture
 

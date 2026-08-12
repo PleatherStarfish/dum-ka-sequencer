@@ -1494,6 +1494,24 @@ export type DirectiveRotateDirection = "earlier" | "later";
 export type DirectiveEuclidRestPolicy = "silent" | "tied";
 export type DirectivePacing = "perCycle" | "linear" | "easeInOut";
 
+/** Optional calibration for one directive's incremental change on each active
+ * cycle. Multiple active directives compose, so the final whole-cycle change
+ * can exceed any individual row's target. Absence is the legacy
+ * operation-quota path and must remain wire-identical. */
+export type DirectiveMagnitude =
+  | { mode: "operationQuota" }
+  | {
+      mode: "perceptual";
+      /** Pins the perceptual feature model used to interpret this score. */
+      modelVersion: "v1";
+      /** Perceptual distance score in thousandths, from 0 through 100_000. */
+      targetMilli: number;
+      /** Accepted distance error in thousandths, from 0 through 100_000. */
+      toleranceMilli: number;
+      /** Search cap, not a requested operation count. */
+      maxOperations: number;
+    };
+
 export interface DirectiveBeatRange {
   /** Zero-based beat offset in the unrotated metric frame. */
   startBeat: number;
@@ -1520,9 +1538,12 @@ export interface EvolutionDirective {
   fromCycle: number;
   toCycle: number;
   family: DirectiveFamily;
+  /** Operation quota; retained but ignored when magnitude is perceptual. */
   intensity: number;
-  /** How a range distributes its intensity. Pins are musically unchanged. */
+  /** Operation-quota range pacing. Perceptual rows require perCycle. */
   pacing: DirectivePacing;
+  /** Missing means operation quota for legacy patch/request compatibility. */
+  magnitude?: DirectiveMagnitude;
   scope: DirectiveBeatRange | null;
   options: DirectiveOptions;
 }
@@ -1610,6 +1631,14 @@ export interface GeneratorPreview {
   spans: ResolvedRhythmSpan[];
   /** Dum-Ka directive observability; empty for cycle 0 and other generators. */
   trace: DirectiveTraceEntry[];
+  /** Backend-owned cycle-effective density rail after automation and active
+   * directive overrides. Absent for other generators and legacy responses. */
+  densityCorridor?: DensityCorridorRange | null;
+}
+
+export interface DensityCorridorRange {
+  floor: number;
+  ceiling: number;
 }
 
 export type DirectiveSkip =
@@ -1634,6 +1663,19 @@ export interface DirectiveTraceEntry {
   skipped: DirectiveSkip;
   /** Independent of skip: a corridor may clamp work before projection does. */
   corridorClamp?: DensityCorridorClamp | null;
+  /** Backend-measured incremental change made by this directive on this cycle,
+   * present for perceptual mode. This is not the final whole-cycle distance
+   * when multiple rows are active. */
+  perceptual?: DirectivePerceptualTrace | null;
+}
+
+export interface DirectivePerceptualTrace {
+  modelVersion: "v1";
+  actualMilli: number;
+  targetMilli: number;
+  toleranceMilli: number;
+  reached: boolean;
+  exhausted: boolean;
 }
 
 export interface ResolvedRhythmSpan {
@@ -2356,6 +2398,7 @@ export async function generatorPreview(
     },
     spans: preview.spans,
     trace: preview.trace ?? [],
+    densityCorridor: preview.densityCorridor ?? null,
   };
 }
 

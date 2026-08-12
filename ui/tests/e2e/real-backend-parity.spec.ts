@@ -90,6 +90,18 @@ interface PlannedGeneratorPreview {
     requested: number;
     applied: number;
     skipped: string;
+    corridorClamp?: {
+      limit: "floor" | "ceiling";
+      densityPercent: number;
+    } | null;
+    perceptual?: {
+      modelVersion: "v1";
+      actualMilli: number;
+      targetMilli: number;
+      toleranceMilli: number;
+      reached: boolean;
+      exhausted: boolean;
+    } | null;
   }>;
 }
 
@@ -537,6 +549,257 @@ test.describe("real backend parity", () => {
     expect(playbackDriver.invokeErrors).toEqual([]);
   });
 
+  test("a perceptually paced Dum-Ka edit keeps stopped preview and playback identical", async ({
+    page,
+  }) => {
+    test.skip(!backend.midiReady, "transport unavailable in this environment");
+    test.setTimeout(90_000);
+
+    await openCaesuraReal(page);
+
+    const generator = await openMainEditor(page, "generator");
+    await generator.getByLabel("Generator kind").selectOption("dumka");
+    const pattern = generator.getByLabel("Dum-Ka pattern");
+    await pattern.fill("x x x x");
+    await pattern.blur();
+    await expect(generator.getByLabel("Required structure")).toHaveText(
+      "needs 4 beats · Subdivision 1"
+    );
+    await generator.getByRole("button", { name: "Apply structure" }).click();
+    await expect(
+      generator.getByRole("button", { name: "Structure ready" })
+    ).toBeDisabled();
+    await closeMainEditor(page);
+
+    const evolve = await openMainEditor(page, "evolve");
+    const addRemove = evolve.getByRole("button", { name: "Add Remove pin" });
+    await addRemove.focus();
+    await addRemove.press("Enter");
+    await expect(
+      evolve.getByRole("button", { name: "Remove, cycle 1, 25%" })
+    ).toBeVisible();
+
+    await evolve.getByLabel("Step size mode").selectOption("perceptual");
+    await fillNumeric(evolve.getByLabel("Maximum operations"), "1");
+    await fillNumeric(evolve.getByLabel("Perceptual tolerance"), "0");
+    // A maximum target makes the one legal Remove prefix strictly closer
+    // than the zero-operation hold, without hard-coding model-v1's score.
+    await fillNumeric(evolve.getByLabel("Target magnitude"), "100");
+
+    type PerceptualPlanRow = {
+      family?: string;
+      magnitude?: {
+        mode?: string;
+        modelVersion?: string;
+        targetMilli?: number;
+        toleranceMilli?: number;
+        maxOperations?: number;
+      };
+    };
+    type PerceptualPreviewRequest = Record<string, unknown> & {
+      cycle?: number;
+      generator?: {
+        kind?: string;
+        plan?: PerceptualPlanRow[];
+      };
+    };
+    const requestMatches = (
+      request: PerceptualPreviewRequest | undefined,
+      targetMilli: number,
+      toleranceMilli: number
+    ) => {
+      const row = request?.generator?.plan?.[0];
+      return (
+        request?.cycle === 1 &&
+        request.generator?.kind === "dumka" &&
+        row?.family === "barlowRemove" &&
+        row.magnitude?.mode === "perceptual" &&
+        row.magnitude.modelVersion === "v1" &&
+        row.magnitude.targetMilli === targetMilli &&
+        row.magnitude.toleranceMilli === toleranceMilli &&
+        row.magnitude.maxOperations === 1
+      );
+    };
+
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        return driver.calls.some((call) => {
+          if (call.command !== "generator_preview") return false;
+          const request = (call.args as { request?: PerceptualPreviewRequest })
+            .request;
+          return requestMatches(request, 100_000, 0);
+        });
+      })
+      .toBe(true);
+
+    const probeDriver = await readRealDriverState(page);
+    const probeCall = probeDriver.calls
+      .filter((call) => call.command === "generator_preview")
+      .findLast((call) => {
+        const request = (call.args as { request?: PerceptualPreviewRequest })
+          .request;
+        return requestMatches(request, 100_000, 0);
+      });
+    expect(probeCall).toBeDefined();
+    const probeRequest = (
+      probeCall!.args as { request: PerceptualPreviewRequest }
+    ).request;
+    const probePreview = await backend.invoke<PlannedGeneratorPreview>(
+      "generator_preview",
+      { request: probeRequest }
+    );
+    const probeTrace = probePreview.trace[0];
+    expect(probeTrace).toMatchObject({
+      cycle: 1,
+      directiveId: 1,
+      family: "barlowRemove",
+      requested: 1,
+      applied: 1,
+    });
+    expect(probeTrace?.perceptual?.modelVersion).toBe("v1");
+    const actualMilli = probeTrace?.perceptual?.actualMilli;
+    expect(actualMilli).toBeDefined();
+    expect(actualMilli!).toBeGreaterThan(0);
+    expect(actualMilli!).toBeLessThanOrEqual(100_000);
+
+    // The UI authors scores in 0.1-unit increments. Calibrate the persisted
+    // target to the nearest representable score and use a one-tenth tolerance
+    // so the real model result must truthfully report that it was reached.
+    const calibratedTargetMilli = Math.round(actualMilli! / 100) * 100;
+    await fillNumeric(
+      evolve.getByLabel("Target magnitude"),
+      String(calibratedTargetMilli / 1_000)
+    );
+    await fillNumeric(evolve.getByLabel("Perceptual tolerance"), "0.1");
+
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        return driver.calls.some((call) => {
+          if (call.command !== "generator_preview") return false;
+          const request = (call.args as { request?: PerceptualPreviewRequest })
+            .request;
+          return requestMatches(request, calibratedTargetMilli, 100);
+        });
+      })
+      .toBe(true);
+
+    const calibratedDriver = await readRealDriverState(page);
+    const calibratedCall = calibratedDriver.calls
+      .filter((call) => call.command === "generator_preview")
+      .findLast((call) => {
+        const request = (call.args as { request?: PerceptualPreviewRequest })
+          .request;
+        return requestMatches(request, calibratedTargetMilli, 100);
+      });
+    expect(calibratedCall).toBeDefined();
+    const calibratedRequest = (
+      calibratedCall!.args as { request: PerceptualPreviewRequest }
+    ).request;
+    const calibratedPreview = await backend.invoke<PlannedGeneratorPreview>(
+      "generator_preview",
+      { request: calibratedRequest }
+    );
+    const calibratedTrace = calibratedPreview.trace[0];
+    expect(calibratedTrace).toEqual({
+      cycle: 1,
+      directiveId: 1,
+      family: "barlowRemove",
+      requested: 1,
+      applied: 1,
+      skipped: "none",
+      perceptual: {
+        modelVersion: "v1",
+        actualMilli,
+        targetMilli: calibratedTargetMilli,
+        toleranceMilli: 100,
+        reached: true,
+        exhausted: false,
+      },
+    });
+    expect(Math.abs(actualMilli! - calibratedTargetMilli)).toBeLessThanOrEqual(
+      100
+    );
+    await expect(
+      evolve.getByRole("status", {
+        name: /Cycle 1 directive change: .* within tolerance/,
+      })
+    ).toBeVisible();
+
+    const seedPreview = await backend.invoke<PlannedGeneratorPreview>(
+      "generator_preview",
+      { request: { ...calibratedRequest, cycle: 0 } }
+    );
+    const onsetCount = (preview: PlannedGeneratorPreview) =>
+      preview.spans
+        .flatMap((span) => span.cells)
+        .filter((cell) => !cell.rest && !cell.tiedFromPrevious).length;
+    expect(onsetCount(seedPreview)).toBe(4);
+    expect(onsetCount(calibratedPreview)).toBe(3);
+
+    await closeMainEditor(page);
+    await expect(page.getByLabel("Stopped cycle selector").locator("output")).toHaveText(
+      "1"
+    );
+    await page.waitForFunction(() => {
+      const state = window.__CAESURA_E2E_STATE__ as E2eState | undefined;
+      return Boolean(
+        state?.timelineLayoutCycle === 1 &&
+          state.timelinePreviewReady &&
+          state.timelineRhythmReady &&
+          state.timelineLayerSourcesCoherent
+      );
+    });
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        const request = driver.lastGeneratorPreviewRequest as
+          | PerceptualPreviewRequest
+          | undefined;
+        if (!requestMatches(request, calibratedTargetMilli, 100)) return false;
+        return JSON.stringify(
+          (driver.lastGeneratorPreview as PlannedGeneratorPreview | null)?.spans
+        );
+      })
+      .toBe(JSON.stringify(calibratedPreview.spans));
+
+    await page.getByTestId("transport-play").click();
+    await waitForPlaying(page);
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await backend.invoke<RealSnapshot>(
+            "transport_get_snapshot"
+          );
+          return snapshot.realizedRhythmEvents.filter(
+            (event) => event.cycle === 1
+          ).length;
+        },
+        { timeout: 20_000, intervals: [100] }
+      )
+      .toBe(calibratedPreview.spans.length);
+
+    const playback = await backend.invoke<RealSnapshot>(
+      "transport_get_snapshot"
+    );
+    const realizedCycleOne = playback.realizedRhythmEvents
+      .filter((event) => event.cycle === 1)
+      .map((event) => event.span)
+      .sort((left, right) => left.spanId - right.spanId);
+    expect(realizedCycleOne).toEqual(
+      [...calibratedPreview.spans].sort(
+        (left, right) => left.spanId - right.spanId
+      )
+    );
+
+    const playbackDriver = await readRealDriverState(page);
+    expect(playbackDriver.lastTrackPlaybackRequest?.generator).toEqual(
+      calibratedRequest.generator
+    );
+    expect(playbackDriver.invokeErrors).toEqual([]);
+  });
+
   test("a gentle Dum-Ka transition reaches the same target through gradual playback", async ({
     page,
   }) => {
@@ -700,6 +963,112 @@ test.describe("real backend parity", () => {
     expect(playbackDriver.invokeErrors).toEqual([]);
   });
 
+  test("a compounding Fragment range plateaus at the authored density ceiling", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await openFreshEightBeatCaesura(page);
+
+    const generator = await openMainEditor(page, "generator");
+    await generator.getByLabel("Generator kind").selectOption("dumka");
+    const pattern = generator.getByLabel("Dum-Ka pattern");
+    await pattern.fill("x _ _ _ x _ _ _");
+    await pattern.blur();
+    await generator.getByRole("button", { name: "Apply structure" }).click();
+    await expect(
+      generator.getByRole("button", { name: "Structure ready" })
+    ).toBeDisabled();
+    await fillNumeric(
+      generator.getByRole("slider", { name: "Dum-Ka density ceiling" }),
+      "50"
+    );
+    await closeMainEditor(page);
+
+    const evolve = await openMainEditor(page, "evolve");
+    const addFragment = evolve.getByRole("button", { name: "Add Fragment pin" });
+    await addFragment.focus();
+    await addFragment.press("Enter");
+    await evolve.getByRole("button", { name: "Smooth across 4 cycles" }).click();
+    await evolve.getByLabel("Directive transition").selectOption("perCycle");
+    await fillNumeric(evolve.getByLabel("Directive intensity"), "100");
+
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        return driver.calls.some((call) => {
+          if (call.command !== "generator_preview") return false;
+          const request = (call.args as {
+            request?: {
+              cycle?: number;
+              generator?: {
+                kind?: string;
+                densityCeiling?: number;
+                plan?: Array<{ family?: string; toCycle?: number }>;
+              };
+            };
+          }).request;
+          return (
+            request?.cycle === 4 &&
+            request.generator?.kind === "dumka" &&
+            request.generator.densityCeiling === 50 &&
+            request.generator.plan?.[0]?.family === "fragment" &&
+            request.generator.plan[0]?.toCycle === 4
+          );
+        });
+      })
+      .toBe(true);
+
+    const authoredDriver = await readRealDriverState(page);
+    const cycleFourCall = authoredDriver.calls
+      .filter((call) => call.command === "generator_preview")
+      .findLast((call) => {
+        const request = (call.args as {
+          request?: {
+            cycle?: number;
+            generator?: { densityCeiling?: number; plan?: unknown[] };
+          };
+        }).request;
+        return (
+          request?.cycle === 4 &&
+          request.generator?.densityCeiling === 50 &&
+          (request.generator.plan?.length ?? 0) > 0
+        );
+      });
+    expect(cycleFourCall).toBeDefined();
+    const authoredRequest = (
+      cycleFourCall!.args as { request: Record<string, unknown> }
+    ).request;
+    const previews: PlannedGeneratorPreview[] = [];
+    for (let cycle = 0; cycle <= 4; cycle += 1) {
+      previews.push(
+        await backend.invoke<PlannedGeneratorPreview>("generator_preview", {
+          request: { ...authoredRequest, cycle },
+        })
+      );
+    }
+    const onsetCount = (preview: PlannedGeneratorPreview) =>
+      preview.spans
+        .flatMap((span) => span.cells)
+        .filter((cell) => !cell.rest && !cell.tiedFromPrevious).length;
+    const counts = previews.map(onsetCount);
+    expect(counts.slice(1).every((count) => count <= 4)).toBe(true);
+    expect(counts[4]).toBe(4);
+    expect(
+      previews
+        .slice(1)
+        .flatMap((preview) => preview.trace)
+        .some((entry) => entry.corridorClamp?.limit === "ceiling")
+    ).toBe(true);
+    await expect(
+      evolve.getByRole("img", { name: /ceiling corridor 50%/ }).first()
+    ).toBeVisible();
+    await expect(
+      evolve.getByRole("group", {
+        name: /Cycle 4 composition: .* corridor 0% through 50%/,
+      })
+    ).toBeVisible();
+  });
+
   test("a random-access History preview matches sequential cycle-two playback", async ({
     page,
   }) => {
@@ -823,13 +1192,11 @@ test.describe("real backend parity", () => {
     expect(playbackDriver.invokeErrors).toEqual([]);
   });
 
-  test("the real backend accepts the repaired mixed 5:2 crossing beat 2", async ({
+  test("the real backend accepts the mixed 5:2 crossing beat 2 as a tie", async ({
     page,
   }) => {
     const plain =
       "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]";
-    const articulated =
-      "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]";
 
     await openFreshEightBeatCaesura(page);
     const generator = await openMainEditor(page, "generator");
@@ -838,18 +1205,15 @@ test.describe("real backend parity", () => {
     await field.fill(plain);
     await field.blur();
     await generator.getByRole("button", { name: "Apply structure" }).click();
-    await expect(generator.locator(".dumka-preview-error")).toContainText(
-      "a note sustains across the span boundary at beat 2"
-    );
+    await expect(generator.locator(".dumka-preview-error")).toHaveCount(0);
 
     await expect(
       generator.getByRole("button", { name: "Articulate", exact: true })
     ).toHaveCount(0);
-    await generator
-      .getByRole("button", { name: "Articulate crossing notes" })
-      .click();
-    await expect(field).toHaveValue(articulated);
-    await expect(generator.locator(".dumka-preview-error")).toHaveCount(0);
+    await expect(
+      generator.getByRole("button", { name: "Articulate crossing notes" })
+    ).toHaveCount(0);
+    await expect(field).toHaveValue(plain);
     await closeMainEditor(page);
 
     await expect
@@ -860,17 +1224,33 @@ test.describe("real backend parity", () => {
           | null;
         return request?.generator?.pattern;
       })
-      .toBe(articulated);
+      .toBe(plain);
     const driver = await readRealDriverState(page);
-    const preview = driver.lastGeneratorPreview as { spans?: unknown[] } | null;
+    const preview = driver.lastGeneratorPreview as {
+      spans?: Array<{
+        cells: Array<{
+          tiedFromPrevious: boolean;
+          tiedToNext: boolean;
+        }>;
+      }>;
+    } | null;
     expect(preview?.spans).toHaveLength(5);
+    expect(
+      preview?.spans?.some((span, index, spans) =>
+        span.cells.some(
+          (cell) =>
+            cell.tiedToNext &&
+            spans[index + 1]?.cells[0]?.tiedFromPrevious === true
+        )
+      )
+    ).toBe(true);
   });
 
-  test("an articulated 5:2 preview reaches real MIDI at the same onsets", async ({
+  test("a tied 5:2 preview reaches real MIDI at the same onsets", async ({
     page,
   }) => {
     test.skip(!backend.midiReady, "transport unavailable in this environment");
-    const pattern = "[[x .] [x .] [x .] [x .] [x .]]@2";
+    const pattern = "[x x x x x]@2";
 
     await openCaesuraReal(page);
     const generator = await openMainEditor(page, "generator");
@@ -902,13 +1282,17 @@ test.describe("real backend parity", () => {
     const preview = beforePlayDriver.lastGeneratorPreview as {
       spans: Array<{
         spanLen: number;
-        cells: Array<{ start: number; rest: boolean }>;
+        cells: Array<{
+          start: number;
+          rest: boolean;
+          tiedFromPrevious: boolean;
+        }>;
       }>;
     };
     let spanStart = 0;
     const previewOnsetMatras = preview.spans.flatMap((span) => {
       const onsets = span.cells
-        .filter((cell) => !cell.rest)
+        .filter((cell) => !cell.rest && !cell.tiedFromPrevious)
         .map((cell) => spanStart + cell.start);
       spanStart += span.spanLen;
       return onsets;

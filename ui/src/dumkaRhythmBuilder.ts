@@ -22,7 +22,6 @@
  */
 import {
   analyzeDumkaPattern,
-  compileDumkaPattern,
   dumkaEuclid,
   parseDumkaPatternNodes,
   DUMKA_MAX_EUCLID_SLOTS,
@@ -346,16 +345,6 @@ function fractionAsGridTicks(
   return scaled % value.den === 0n ? scaled / value.den : null;
 }
 
-function publicFractionAsGridTicks(
-  value: { num: number; den: number },
-  subdivision: bigint
-): bigint | null {
-  return fractionAsGridTicks(
-    { num: BigInt(value.num), den: BigInt(value.den) },
-    subdivision
-  );
-}
-
 function smallestArticulationCellCount(
   durationTicks: bigint,
   ticksToSpanEnd: bigint
@@ -465,8 +454,8 @@ function articulationPlan(
   return cellsByChildId.size > 0 ? { cellsByChildId } : null;
 }
 
-/** Whether a selected flat note/rest group can use the spanning-tuplet escape
- * on the current preview layout, including nested/off-beat groups. */
+/** Whether a selected flat note/rest group can use the optional detached-note
+ * articulation style on the current layout, including nested/off-beat groups. */
 export function canArticulateGroup(
   nodes: BuilderNode[],
   id: number,
@@ -481,47 +470,12 @@ export function canArticulateGroup(
   );
 }
 
-function groupDirectNoteCrossesBoundary(
-  context: ArticulationContext,
-  id: number,
-  boundaryTicks: bigint
-): boolean {
-  const geometry = context.geometries.get(id);
-  if (!geometry || geometry.node.kind !== "group") return false;
-  return geometry.node.children.some((child) => {
-    if (child.kind !== "note") return false;
-    const childGeometry = context.geometries.get(child.id);
-    if (!childGeometry) return false;
-    const startTicks = fractionAsGridTicks(
-      childGeometry.start,
-      context.subdivision
-    );
-    const durationTicks = fractionAsGridTicks(
-      childGeometry.span,
-      context.subdivision
-    );
-    return (
-      startTicks !== null &&
-      durationTicks !== null &&
-      startTicks < boundaryTicks &&
-      startTicks + durationTicks > boundaryTicks
-    );
-  });
-}
-
 function preflightedArticulatableGroupIds(
   nodes: BuilderNode[],
-  context: ArticulationContext,
-  boundaryTicks: bigint | null = null
+  context: ArticulationContext
 ): number[] {
   const ids: number[] = [];
   for (const id of context.geometries.keys()) {
-    if (
-      boundaryTicks !== null &&
-      !groupDirectNoteCrossesBoundary(context, id, boundaryTicks)
-    ) {
-      continue;
-    }
     const plan = articulationPlan(context, id);
     if (
       plan !== null &&
@@ -544,60 +498,12 @@ export function articulatableGroupIds(
   return preflightedArticulatableGroupIds(nodes, context);
 }
 
-/** Reproduce the resolver's first sounding event that crosses the exact current
- * span layout. This is deliberately derived from ticks instead of the Rust
- * diagnostic's `beat` number, which truncates fractional Grouping fences. */
-function firstCrossedSpanEnd(
-  nodes: BuilderNode[],
-  context: ArticulationContext
-): bigint | null {
-  const compiled = compileDumkaPattern(printBuilderPattern(nodes));
-  if (!compiled.ok) return null;
-  for (const event of compiled.compiled.events) {
-    const startTicks = publicFractionAsGridTicks(
-      event.start,
-      context.subdivision
-    );
-    const durationTicks = publicFractionAsGridTicks(
-      event.dur,
-      context.subdivision
-    );
-    if (startTicks === null || durationTicks === null) return null;
-    const spanEnd = context.spanEnds.find((end) => end > startTicks);
-    if (spanEnd === undefined) return null;
-    if (startTicks + durationTicks > spanEnd) return spanEnd;
-  }
-  return null;
-}
-
-/** Ordered, fully preflighted articulation candidates that cross the same exact
- * span end as the resolver's current first boundary error. An unrelated later
- * tuplet is therefore never offered as a direct repair for an earlier sustain. */
-export function articulatableGroupIdsForBoundaryError(
-  nodes: BuilderNode[],
-  projectionSpans: readonly BuilderProjectionSpan[]
-): number[] {
-  const context = buildArticulationContext(nodes, projectionSpans);
-  if (context === null) return [];
-  const boundaryTicks = firstCrossedSpanEnd(nodes, context);
-  return boundaryTicks === null
-    ? []
-    : preflightedArticulatableGroupIds(nodes, context, boundaryTicks);
-}
-
 /** Whether any group crosses a fence in the current preview layout. */
 export function hasArticulatableGroup(
   nodes: BuilderNode[],
   projectionSpans: readonly BuilderProjectionSpan[]
 ): boolean {
   return articulatableGroupIds(nodes, projectionSpans).length > 0;
-}
-
-/** True when the backend's current projection error is the cross-span fence
- * that Articulate can help resolve. Match the stable diagnostic clause so an
- * invoke wrapper prefix or a different beat number cannot hide the hint. */
-export function isDumkaSpanBoundaryError(message: string | null | undefined): boolean {
-  return message?.includes("a note sustains across the span boundary") ?? false;
 }
 
 function finish(nodes: BuilderNode[], focus: BuilderNode): BuilderOpResult {
@@ -649,7 +555,112 @@ export function setWeight(
   const next = clone(nodes);
   const found = locate(next, id);
   if (!found) return { ok: false, message: "select an element" };
+  if (found.node.kind === "group" && found.parent === null) {
+    return {
+      ok: false,
+      message: "use Span to fit a top-level group into existing beats",
+    };
+  }
   found.node.weight = weight;
+  return finish(next, found.node);
+}
+
+function startsWithHold(node: BuilderNode): boolean {
+  if (node.kind === "hold") return true;
+  const first = node.children[0];
+  return node.kind === "group" && first !== undefined && startsWithHold(first);
+}
+
+function followingHoldMessage(): BuilderOpResult {
+  return {
+    ok: false,
+    message:
+      "span would change a following hold outside the covered beats; split or replace that hold first",
+  };
+}
+
+/**
+ * Changes a top-level group's span without changing the pattern's beat count.
+ *
+ * Growing extends to the right over whole existing sibling blocks. A target
+ * that would stop inside a block fails closed instead of silently squeezing or
+ * truncating that block. Shrinking fills the released beats with a rest, since
+ * material previously overwritten by a larger span cannot be reconstructed.
+ * Nested group weights remain parent-relative and use `setWeight` instead.
+ */
+export function setGroupSpan(
+  nodes: BuilderNode[],
+  id: number,
+  span: number
+): BuilderOpResult {
+  if (!Number.isInteger(span) || span < 1 || span > DUMKA_MAX_WEIGHT) {
+    return { ok: false, message: `span must be 1-${DUMKA_MAX_WEIGHT}` };
+  }
+  const next = clone(nodes);
+  const found = locate(next, id);
+  if (!found || found.node.kind !== "group") {
+    return { ok: false, message: "select a group to change its span" };
+  }
+  if (found.parent !== null) {
+    return {
+      ok: false,
+      message: "only a top-level group can span existing beats",
+    };
+  }
+  const currentSpan = found.node.weight;
+  if (span === currentSpan) return finish(next, found.node);
+
+  if (span > currentSpan) {
+    const needed = span - currentSpan;
+    let covered = 0;
+    let consumed = 0;
+    for (
+      let index = found.index + 1;
+      index < found.siblings.length && covered < needed;
+      index += 1
+    ) {
+      covered += found.siblings[index]!.weight;
+      consumed += 1;
+    }
+    if (covered < needed) {
+      return {
+        ok: false,
+        message: `not enough following pattern time to span ${span} beats`,
+      };
+    }
+    if (covered !== needed) {
+      return {
+        ok: false,
+        message:
+          "span must end at an existing block edge; split or regroup the following block first",
+      };
+    }
+    const firstUnconsumed = found.siblings[found.index + 1 + consumed];
+    if (firstUnconsumed && startsWithHold(firstUnconsumed)) {
+      return followingHoldMessage();
+    }
+    found.node.weight = span;
+    found.siblings.splice(found.index + 1, consumed);
+    return finish(next, found.node);
+  }
+
+  const released = currentSpan - span;
+  const firstUnchanged = found.siblings[found.index + 1];
+  if (firstUnchanged && startsWithHold(firstUnchanged)) {
+    return followingHoldMessage();
+  }
+  found.node.weight = span;
+  found.siblings.splice(
+    found.index + 1,
+    0,
+    ...Array.from({ length: released }, (): BuilderNode => ({
+      id: 0,
+      kind: "rest",
+      stroke: "",
+      weight: 1,
+      children: [],
+    }))
+  );
   return finish(next, found.node);
 }
 
@@ -733,6 +744,16 @@ export function ungroupNode(nodes: BuilderNode[], id: number): BuilderOpResult {
   const found = locate(next, id);
   if (!found || found.node.kind !== "group") {
     return { ok: false, message: "select a group to ungroup" };
+  }
+  const childWeight = found.node.children.reduce(
+    (sum, child) => sum + child.weight,
+    0
+  );
+  if (childWeight !== found.node.weight) {
+    return {
+      ok: false,
+      message: "this tuplet cannot be ungrouped without changing timing",
+    };
   }
   found.siblings.splice(found.index, 1, ...found.node.children);
   return finish(next, found.node.children[0] ?? next[0]!);

@@ -56,8 +56,8 @@ export interface GeneratorEditorProps {
   /** The single authored per-beat Subdivision when the score has the plain
    * one-section shape, else null; lets the row explain compatible multiples. */
   dumkaAuthoredSubdivision: number | null;
-  /** Exact current generator fences; shared with preview/playback so the
-   * builder can repair a tuplet against Grouping as well as beat cuts. */
+  /** Exact current generator spans; shared with preview/playback so optional
+   * Articulate styling can honor Grouping as well as beat cuts. */
   dumkaProjectionSpans: readonly BuilderProjectionSpan[];
   /** Authored score summary; edited in the dedicated Evolve surface. */
   dumkaPlan?: readonly EvolutionDirective[];

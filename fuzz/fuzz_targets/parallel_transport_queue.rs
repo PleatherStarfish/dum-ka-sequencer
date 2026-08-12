@@ -202,7 +202,9 @@ fn evolution_plan(u: &mut Unstructured<'_>) -> Vec<cseq_rhythm::EvolutionDirecti
             let first = common::small_u64(u, 1, MAX_CYCLES);
             let second = common::small_u64(u, 1, MAX_CYCLES);
             let family = directive_family(family_offset + index);
-            let pacing = if family == cseq_rhythm::DirectiveFamily::Stochastic {
+            let perceptual = family != cseq_rhythm::DirectiveFamily::Stochastic
+                && common::boolish(u);
+            let pacing = if family == cseq_rhythm::DirectiveFamily::Stochastic || perceptual {
                 cseq_rhythm::DirectivePacing::PerCycle
             } else {
                 match common::index(u, 3) {
@@ -218,6 +220,13 @@ fn evolution_plan(u: &mut Unstructured<'_>) -> Vec<cseq_rhythm::EvolutionDirecti
                     len_beats: common::small_u32(u, 1, 4 - start),
                 }
             });
+            let density_override = if common::boolish(u) {
+                let first = common::small_u32(u, 0, 100);
+                let second = common::small_u32(u, 0, 100);
+                Some((first.min(second), first.max(second)))
+            } else {
+                None
+            };
             cseq_rhythm::EvolutionDirective {
                 id: index as u64 + 1,
                 order: index as u32,
@@ -226,6 +235,16 @@ fn evolution_plan(u: &mut Unstructured<'_>) -> Vec<cseq_rhythm::EvolutionDirecti
                 to_cycle: first.max(second),
                 family,
                 pacing,
+                magnitude: if perceptual {
+                    cseq_rhythm::DirectiveMagnitude::Perceptual {
+                        model_version: cseq_rhythm::PerceptualModelVersion::V1,
+                        target_milli: common::small_u32(u, 0, 100_000),
+                        tolerance_milli: common::small_u32(u, 0, 100_000),
+                        max_operations: common::small_u32(u, 1, 32),
+                    }
+                } else {
+                    cseq_rhythm::DirectiveMagnitude::OperationQuota
+                },
                 intensity: common::small_u32(u, 0, 100),
                 scope,
                 options: cseq_rhythm::DirectiveOptions {
@@ -233,6 +252,8 @@ fn evolution_plan(u: &mut Unstructured<'_>) -> Vec<cseq_rhythm::EvolutionDirecti
                         .then(|| common::small_u32(u, 0, 100)),
                     fill_complexity: common::boolish(u)
                         .then(|| common::small_u32(u, 0, 100)),
+                    density_floor: density_override.map(|(floor, _)| floor),
+                    density_ceiling: density_override.map(|(_, ceiling)| ceiling),
                     euclid_max_run: common::boolish(u)
                         .then(|| common::small_u32(u, 1, 8)),
                     euclid_invert: common::boolish(u)
@@ -285,6 +306,8 @@ fn track_rhythm(u: &mut Unstructured<'_>) -> RhythmPlaybackConfig {
         })
     } else {
         let plan = evolution_plan(u);
+        let first_density_limit = common::small_u32(u, 0, 100);
+        let second_density_limit = common::small_u32(u, 0, 100);
         cseq_rhythm::GeneratorConfig::Dumka(cseq_rhythm::DumkaGeneratorParams {
             pattern: DUMKA_FUZZ_PATTERNS[common::index(u, DUMKA_FUZZ_PATTERNS.len())].to_string(),
             evolution_rate: common::small_u32(u, 0, 100),
@@ -298,6 +321,8 @@ fn track_rhythm(u: &mut Unstructured<'_>) -> RhythmPlaybackConfig {
             weight_fragment: common::small_u32(u, 0, 100),
             weight_consolidate: common::small_u32(u, 0, 100),
             fill_complexity: common::small_u32(u, 0, 100),
+            density_floor: first_density_limit.min(second_density_limit),
+            density_ceiling: first_density_limit.max(second_density_limit),
             weight_euclid: common::small_u32(u, 0, 100),
             euclid_max_run: common::small_u32(u, 1, 8),
             euclid_invert: common::small_u32(u, 0, 100),

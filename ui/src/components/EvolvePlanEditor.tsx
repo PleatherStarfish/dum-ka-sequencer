@@ -16,14 +16,19 @@ import {
   DIRECTIVE_FAMILIES,
   DIRECTIVE_FAMILY_LABELS,
   DIRECTIVE_PACING_LABELS,
+  DEFAULT_PERCEPTUAL_MAGNITUDE,
   MAX_EVOLUTION_DIRECTIVES,
+  MAX_PERCEPTUAL_OPERATIONS,
+  MAX_PERCEPTUAL_SCORING_WORK,
   addPin,
   duplicateDirective,
   moveDirective,
+  perceptualScoringWork,
   removeDirective,
   reorder,
   resizeRange,
   setIntensity,
+  setMagnitude,
   setDensityCorridor,
   setOptions,
   setPacing,
@@ -50,7 +55,7 @@ const VIEWPORT_OVERSCAN = 3;
 
 export interface EvolutionCachedPreview {
   cycle: number;
-  preview: Pick<GeneratorPreview, "spans">;
+  preview: Pick<GeneratorPreview, "spans" | "densityCorridor">;
 }
 
 export type EvolutionInheritedOptions = Partial<
@@ -71,6 +76,8 @@ export interface EvolvePlanEditorProps {
   planLengthCycles: number;
   totalBeats: number;
   disabled?: boolean;
+  /** Cycle currently displayed by the stopped preview/scrubber. */
+  previewCycle?: number;
   cachedPreviews?: readonly EvolutionCachedPreview[];
   trace?: readonly DirectiveTraceEntry[];
   inheritedOptions?: EvolutionInheritedOptions;
@@ -118,10 +125,21 @@ const familyOptionFields: Partial<
 };
 
 function directiveTitle(row: EvolutionDirective): string {
+  const magnitude =
+    row.magnitude?.mode === "perceptual"
+      ? `${formatPerceptualScore(row.magnitude.targetMilli)} perceptual target`
+      : `${row.intensity}%`;
   if (row.fromCycle === row.toCycle) {
-    return `${DIRECTIVE_FAMILY_LABELS[row.family]}, cycle ${row.fromCycle}, ${row.intensity}%`;
+    return `${DIRECTIVE_FAMILY_LABELS[row.family]}, cycle ${row.fromCycle}, ${magnitude}`;
   }
-  return `${DIRECTIVE_FAMILY_LABELS[row.family]}, cycles ${row.fromCycle} through ${row.toCycle}, ${row.intensity}%, ${DIRECTIVE_PACING_LABELS[row.pacing].toLowerCase()}`;
+  if (row.magnitude?.mode === "perceptual") {
+    return `${DIRECTIVE_FAMILY_LABELS[row.family]}, cycles ${row.fromCycle} through ${row.toCycle}, ${magnitude}`;
+  }
+  return `${DIRECTIVE_FAMILY_LABELS[row.family]}, cycles ${row.fromCycle} through ${row.toCycle}, ${magnitude}, ${DIRECTIVE_PACING_LABELS[row.pacing].toLowerCase()}`;
+}
+
+function formatPerceptualScore(milli: number): string {
+  return (milli / 1_000).toFixed(1);
 }
 
 function transitionHelp(row: EvolutionDirective): string {
@@ -215,7 +233,10 @@ function traceEntryLabel(
   const corridor = entry.corridorClamp
     ? `, ${entry.corridorClamp.limit} corridor ${entry.corridorClamp.densityPercent}%`
     : "";
-  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
+  const perceptual = entry.perceptual
+    ? `, realized ${formatPerceptualScore(entry.perceptual.actualMilli)} vs target ${formatPerceptualScore(entry.perceptual.targetMilli)} ±${formatPerceptualScore(entry.perceptual.toleranceMilli)}${entry.perceptual.reached ? ", within tolerance" : entry.perceptual.exhausted ? ", nearest legal step" : ""}`
+    : "";
+  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${perceptual}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
   if (
     !directive ||
     directive.pacing === "perCycle" ||
@@ -320,6 +341,7 @@ export function EvolvePlanEditor({
   planLengthCycles,
   totalBeats,
   disabled = false,
+  previewCycle = 0,
   cachedPreviews = [],
   trace = [],
   inheritedOptions = {},
@@ -351,6 +373,19 @@ export function EvolvePlanEditor({
   const visibleRangeCallbackRef = useRef(onVisibleCycleRangeChange);
 
   const selected = plan.find((row) => row.id === selectedId) ?? null;
+  const perceptualMagnitude =
+    selected?.magnitude?.mode === "perceptual" ? selected.magnitude : null;
+  const selectedPerceptualTrace = selected
+    ? trace.find(
+        (entry) =>
+          entry.cycle === previewCycle &&
+          entry.directiveId === selected.id &&
+          entry.perceptual
+      )?.perceptual ?? null
+    : null;
+  const perceptualWorkUsed = perceptualScoringWork(plan);
+  const perceptualWorkRemaining =
+    BigInt(MAX_PERCEPTUAL_SCORING_WORK) - perceptualWorkUsed;
   const planAtCapacity = plan.length >= MAX_EVOLUTION_DIRECTIVES;
   const lastPreviewableCycle = plan.reduce(
     (max, row) => Math.max(max, Math.min(MAX_STOPPED_PREVIEW_CYCLE, row.toCycle)),
@@ -388,7 +423,16 @@ export function EvolvePlanEditor({
     ? DIRECTIVE_FAMILIES.filter((family) => plan.some((row) => row.family === family))
     : DIRECTIVE_FAMILIES;
   const previewByCycle = useMemo(
-    () => new Map(cachedPreviews.map((entry) => [entry.cycle, previewMetrics(entry)])),
+    () =>
+      new Map(
+        cachedPreviews.map((entry) => [
+          entry.cycle,
+          {
+            ...previewMetrics(entry),
+            corridor: entry.preview.densityCorridor ?? null,
+          },
+        ])
+      ),
     [cachedPreviews]
   );
   const traceByCycle = useMemo(() => {
@@ -894,7 +938,11 @@ export function EvolvePlanEditor({
                         aria-hidden="true"
                         onPointerDown={(event) => beginDrag(event as unknown as PointerEvent<HTMLButtonElement>, row, "resize-start")}
                       />
-                      <b>{row.intensity}%</b>
+                      <b>
+                        {row.magnitude?.mode === "perceptual"
+                          ? formatPerceptualScore(row.magnitude.targetMilli)
+                          : `${row.intensity}%`}
+                      </b>
                       <ScopeGlyph row={row} totalBeats={totalBeats} />
                       <i
                         className="evolve-plan-resize is-end"
@@ -916,8 +964,11 @@ export function EvolvePlanEditor({
                 .map((entry) => traceEntryLabel(entry, directiveById.get(entry.directiveId)))
                 .join("; ");
               const densityPercent = Math.round((metrics?.density ?? 0) * 100);
+              const effectiveFloor = metrics?.corridor?.floor ?? densityFloor;
+              const effectiveCeiling =
+                metrics?.corridor?.ceiling ?? densityCeiling;
               const compositionLabel = metrics
-                ? `Cycle ${cycle} composition: ${metrics.onsets} ${metrics.onsets === 1 ? "onset" : "onsets"}, ${densityPercent}% density; corridor ${densityFloor}% through ${densityCeiling}%${traceTitle ? `. ${traceTitle}` : ""}`
+                ? `Cycle ${cycle} composition: ${metrics.onsets} ${metrics.onsets === 1 ? "onset" : "onsets"}, ${densityPercent}% density; corridor ${effectiveFloor}% through ${effectiveCeiling}%${traceTitle ? `. ${traceTitle}` : ""}`
                 : `Cycle ${cycle} composition not cached${traceTitle ? `. ${traceTitle}` : ""}`;
               return (
                 <span
@@ -928,8 +979,8 @@ export function EvolvePlanEditor({
                   style={{
                     gridColumn: cycle + 2,
                     "--density-percent": `${densityPercent}%`,
-                    "--corridor-floor": `${densityFloor}%`,
-                    "--corridor-height": `${Math.max(0, densityCeiling - densityFloor)}%`,
+                    "--corridor-floor": `${effectiveFloor}%`,
+                    "--corridor-height": `${Math.max(0, effectiveCeiling - effectiveFloor)}%`,
                   } as CSSProperties}
                   title={traceTitle || (metrics ? `${metrics.onsets} onsets` : `Cycle ${cycle} not cached`)}
                 >
@@ -1024,19 +1075,21 @@ export function EvolvePlanEditor({
               </label>
 
               <div className="evolve-plan-field-grid">
-                <label>
-                  <span>Intensity</span>
-                  <NumericField
-                    aria-label="Directive intensity"
-                    value={selected.intensity}
-                    min={0}
-                    max={100}
-                    step={1}
-                    size="compact"
-                    disabled={disabled}
-                    onValueCommit={(value) => commit(setIntensity(plan, selected.id, value), selected.id)}
-                  />
-                </label>
+                {perceptualMagnitude === null ? (
+                  <label>
+                    <span>Intensity</span>
+                    <NumericField
+                      aria-label="Directive intensity"
+                      value={selected.intensity}
+                      min={0}
+                      max={100}
+                      step={1}
+                      size="compact"
+                      disabled={disabled}
+                      onValueCommit={(value) => commit(setIntensity(plan, selected.id, value), selected.id)}
+                    />
+                  </label>
+                ) : null}
                 <label>
                   <span>Order</span>
                   <NumericField
@@ -1101,7 +1154,149 @@ export function EvolvePlanEditor({
                 </label>
               </div>
 
-              {selected.family !== "stochastic" && selected.fromCycle === selected.toCycle ? (
+              <fieldset className="evolve-plan-magnitude">
+                <legend>Step size</legend>
+                <label>
+                  <span>Mode</span>
+                  <select
+                    aria-label="Step size mode"
+                    value={perceptualMagnitude ? "perceptual" : "operationQuota"}
+                    disabled={disabled || selected.family === "stochastic"}
+                    onChange={(event) =>
+                      commit(
+                        setMagnitude(
+                          plan,
+                          selected.id,
+                          event.currentTarget.value === "perceptual"
+                            ? { ...DEFAULT_PERCEPTUAL_MAGNITUDE }
+                            : undefined
+                        ),
+                        selected.id
+                      )
+                    }
+                  >
+                    <option value="operationQuota">Operation quota</option>
+                    {selected.family !== "stochastic" ? (
+                      <option value="perceptual">Perceptual target</option>
+                    ) : null}
+                  </select>
+                </label>
+                {selected.family === "stochastic" ? (
+                  <p>Stochastic directives use operation quota.</p>
+                ) : perceptualMagnitude ? (
+                  <>
+                    <div className="evolve-plan-perceptual-fields">
+                      <label>
+                        <span>Target magnitude</span>
+                        <NumericField
+                          aria-label="Target magnitude"
+                          value={perceptualMagnitude.targetMilli / 1_000}
+                          min={0}
+                          max={100}
+                          step={0.1}
+                          numericMode="decimal"
+                          size="compact"
+                          disabled={disabled}
+                          onValueCommit={(value) =>
+                            updateSelected((row) =>
+                              setMagnitude(plan, row.id, {
+                                ...perceptualMagnitude,
+                                targetMilli: Math.round(value * 1_000),
+                              })
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Tolerance</span>
+                        <NumericField
+                          aria-label="Perceptual tolerance"
+                          value={perceptualMagnitude.toleranceMilli / 1_000}
+                          min={0}
+                          max={100}
+                          step={0.1}
+                          numericMode="decimal"
+                          size="compact"
+                          disabled={disabled}
+                          onValueCommit={(value) =>
+                            updateSelected((row) =>
+                              setMagnitude(plan, row.id, {
+                                ...perceptualMagnitude,
+                                toleranceMilli: Math.round(value * 1_000),
+                              })
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Max operations</span>
+                        <NumericField
+                          aria-label="Maximum operations"
+                          value={perceptualMagnitude.maxOperations}
+                          min={1}
+                          max={MAX_PERCEPTUAL_OPERATIONS}
+                          step={1}
+                          size="compact"
+                          disabled={disabled}
+                          onValueCommit={(value) =>
+                            updateSelected((row) =>
+                              setMagnitude(plan, row.id, {
+                                ...perceptualMagnitude,
+                                maxOperations: value,
+                              })
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                    <p>
+                      Scores use 0.0–100.0. Calibrates this directive&apos;s
+                      incremental rhythm change on each active cycle, not an
+                      audio crossfade. Active rows compose, so the final
+                      whole-cycle distance can be larger. Max operations limits
+                      each search. Model v1.
+                    </p>
+                    <p
+                      className="evolve-plan-perceptual-budget"
+                      aria-label={`${perceptualWorkUsed.toLocaleString("en-US")} of ${MAX_PERCEPTUAL_SCORING_WORK.toLocaleString("en-US")} lifetime scores used; ${perceptualWorkRemaining.toLocaleString("en-US")} remaining`}
+                    >
+                      Score budget: {perceptualWorkUsed.toLocaleString("en-US")} /{" "}
+                      {MAX_PERCEPTUAL_SCORING_WORK.toLocaleString("en-US")} used
+                      · {perceptualWorkRemaining.toLocaleString("en-US")} left
+                    </p>
+                    {selectedPerceptualTrace ? (
+                      <div
+                        className="evolve-plan-perceptual-result"
+                        role="status"
+                        aria-label={`Cycle ${previewCycle} directive change: realized ${formatPerceptualScore(selectedPerceptualTrace.actualMilli)}, target ${formatPerceptualScore(selectedPerceptualTrace.targetMilli)} plus or minus ${formatPerceptualScore(selectedPerceptualTrace.toleranceMilli)}, ${selectedPerceptualTrace.reached ? "within tolerance" : selectedPerceptualTrace.exhausted ? "nearest legal step" : "closest result"}`}
+                      >
+                        <span>Cycle {previewCycle}</span>
+                        <strong>
+                          {formatPerceptualScore(selectedPerceptualTrace.actualMilli)}
+                        </strong>
+                        <span>Target</span>
+                        <strong>
+                          {formatPerceptualScore(selectedPerceptualTrace.targetMilli)} ±
+                          {formatPerceptualScore(selectedPerceptualTrace.toleranceMilli)}
+                        </strong>
+                        <em>
+                          {selectedPerceptualTrace.reached
+                            ? "Within tolerance"
+                            : selectedPerceptualTrace.exhausted
+                              ? "Nearest legal step"
+                              : "Closest result"}
+                        </em>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <p>Intensity sets the operation quota for each active cycle.</p>
+                )}
+              </fieldset>
+
+              {selected.family !== "stochastic" &&
+              perceptualMagnitude === null &&
+              selected.fromCycle === selected.toCycle ? (
                 <button
                   type="button"
                   className="evolve-plan-smooth"
@@ -1112,7 +1307,9 @@ export function EvolvePlanEditor({
                 </button>
               ) : null}
 
-              {selected.family !== "stochastic" && selected.fromCycle < selected.toCycle ? (
+              {selected.family !== "stochastic" &&
+              perceptualMagnitude === null &&
+              selected.fromCycle < selected.toCycle ? (
                 <div className="evolve-plan-transition">
                   <label>
                     <span>Transition</span>

@@ -388,5 +388,261 @@
       "ok": false
     },
     "pattern": "x﻿x"
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 2
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 4
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 6
+            }
+          },
+          {
+            "cls": "x",
+            "dur": {
+              "den": 5,
+              "num": 2
+            },
+            "start": {
+              "den": 5,
+              "num": 8
+            }
+          }
+        ],
+        "requiredSubdivision": 5,
+        "totalBeats": 2
+      },
+      "ok": true
+    },
+    "pattern": "[x x x x x]@2",
+    "projection": {
+      "cycleBeats": 2,
+      "outcome": {
+        "ok": true,
+        "spans": [
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 2,
+                "rest": false,
+                "start": 0,
+                "tiedFromPrevious": false,
+                "tiedToNext": false
+              },
+              {
+                "index": 1,
+                "len": 2,
+                "rest": false,
+                "start": 2,
+                "tiedFromPrevious": false,
+                "tiedToNext": false
+              },
+              {
+                "index": 2,
+                "len": 1,
+                "rest": false,
+                "start": 4,
+                "tiedFromPrevious": false,
+                "tiedToNext": true
+              }
+            ],
+            "spanId": 10,
+            "spanLen": 5
+          },
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 1,
+                "rest": false,
+                "start": 0,
+                "tiedFromPrevious": true,
+                "tiedToNext": false
+              },
+              {
+                "index": 1,
+                "len": 2,
+                "rest": false,
+                "start": 1,
+                "tiedFromPrevious": false,
+                "tiedToNext": false
+              },
+              {
+                "index": 2,
+                "len": 2,
+                "rest": false,
+                "start": 3,
+                "tiedFromPrevious": false,
+                "tiedToNext": false
+              }
+            ],
+            "spanId": 11,
+            "spanLen": 5
+          }
+        ]
+      },
+      "spans": [
+        {
+          "spanId": 10,
+          "spanLen": 5,
+          "subdivision": 5
+        },
+        {
+          "spanId": 11,
+          "spanLen": 5,
+          "subdivision": 5
+        }
+      ]
+    }
+  },
+  {
+    "outcome": {
+      "compiled": {
+        "events": [
+          {
+            "cls": "x",
+            "dur": {
+              "den": 1,
+              "num": 3
+            },
+            "start": {
+              "den": 1,
+              "num": 0
+            }
+          }
+        ],
+        "requiredSubdivision": 1,
+        "totalBeats": 4
+      },
+      "ok": true
+    },
+    "pattern": "x _ _ .",
+    "projection": {
+      "cycleBeats": 4,
+      "outcome": {
+        "ok": true,
+        "spans": [
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 1,
+                "rest": false,
+                "start": 0,
+                "tiedFromPrevious": false,
+                "tiedToNext": true
+              }
+            ],
+            "spanId": 20,
+            "spanLen": 1
+          },
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 1,
+                "rest": false,
+                "start": 0,
+                "tiedFromPrevious": true,
+                "tiedToNext": true
+              }
+            ],
+            "spanId": 21,
+            "spanLen": 1
+          },
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 1,
+                "rest": false,
+                "start": 0,
+                "tiedFromPrevious": true,
+                "tiedToNext": false
+              }
+            ],
+            "spanId": 22,
+            "spanLen": 1
+          },
+          {
+            "cells": [
+              {
+                "index": 0,
+                "len": 1,
+                "rest": true,
+                "start": 0,
+                "tiedFromPrevious": false,
+                "tiedToNext": false
+              }
+            ],
+            "spanId": 23,
+            "spanLen": 1
+          }
+        ]
+      },
+      "spans": [
+        {
+          "spanId": 20,
+          "spanLen": 1,
+          "subdivision": 1
+        },
+        {
+          "spanId": 21,
+          "spanLen": 1,
+          "subdivision": 1
+        },
+        {
+          "spanId": 22,
+          "spanLen": 1,
+          "subdivision": 1
+        },
+        {
+          "spanId": 23,
+          "spanLen": 1,
+          "subdivision": 1
+        }
+      ]
+    }
   }
 ]

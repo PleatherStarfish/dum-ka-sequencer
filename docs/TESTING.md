@@ -99,11 +99,32 @@ atomic. An unexpected P9 difference is a regression.
 
 - A generator change needs pure determinism/tiling tests, exhaustive variant
   coverage, DTO/normalizer coverage, and at least a UI or e2e smoke.
+- A cross-span tie change needs exact projector vectors on both sides of the
+  Rust-generated contract, dangling-handshake rejection, overlay/note-group
+  proof, the tied-quintuplet MIDI golden, and mock plus real playback parity.
+- A density-corridor change needs randomized every-family fold coverage for
+  cycles ≥1, moving-rail normalization/replay, additive clamp trace, the
+  compounding-Fragment plateau, automation/override persistence, and Evolve
+  band/clamp accessibility coverage. Defaults 0/100 must leave legacy goldens
+  unchanged.
 - A cumulative pacing change also needs pinned per-cycle request vectors,
   monotone/exact integer endpoint properties, duration-one compatibility, and
   a semantic adjacent-cycle rhythm-distance assertion. A trace count alone is
   insufficient because one Rotate/Figure/Euclid application may affect many
   notes.
+- A perceptual-pacing change needs fixed-model identity/symmetry/bounds and
+  deterministic replay; anchor comparisons for sustain split, weak/strong
+  fill and displacement, phase ambiguity, syncopation, and ratio complexity;
+  legal prefix zero, repeatable-family search beyond initial candidate count,
+  exact-target early stop, nearest-target and smaller-prefix-tie selection;
+  target replacing intensity; all wire bounds/invalid combinations and
+  unsupported-grid fail-closed activation; corridor and
+  projection-frontier trace truth; the shared 4,096-score lifetime bound
+  (`cycles × (maxOperations + 1)`) in Rust, editor, and tolerant persistence;
+  legacy magnitude omission byte identity;
+  both DTO fixture directions; editor/persistence coverage; and preview versus
+  playback spans from the real backend. Do not adjust `v1` weights in place to
+  make a fixture pass—new calibration requires a new model version.
 - A preview/playback change needs a stale-result test and timeline/MIDI parity
   coverage.
 - A queue rewrite needs note-balance and future-cycle non-rewrite coverage.
@@ -128,7 +149,7 @@ For Dum-Ka gradual ranges, keep all three distinct proofs:
 
 ## Fuzz and deep sweeps
 
-The four libFuzzer targets are documented in [FUZZING.md](FUZZING.md). Compile
+The five libFuzzer targets are documented in [FUZZING.md](FUZZING.md). Compile
 them with the fuzz gate above. A deeper invariant sweep can be run with:
 
 ```bash
@@ -138,6 +159,30 @@ PROPTEST_CASES=4096 cargo test -p cseq-transport --features fuzzing --test invar
 
 Nightly fuzz/chaos/soak jobs complement, rather than replace, the deterministic
 push/PR matrix.
+
+For the M3.9 density rail, run the focused random-access fold benchmark with:
+
+```bash
+scripts/bench.sh generator/dumka-fold-corridor-cycle-10000
+```
+
+The checked-in machine-specific performance baseline remains report-only for
+new cases until a CI-host measurement is promoted; the focused release result
+is recorded in `DUMKA_EVOLUTION.md`.
+
+For perceptual pacing, run both the bounded planner and legal-maximum dense
+distance cases in release mode:
+
+```bash
+scripts/bench.sh generator/dumka-perceptual-planner-cycle-1
+scripts/bench.sh generator/dumka-perceptual-distance-dense-8192
+```
+
+One local release run reported medians of approximately 1.140 ms for the
+32-operation-cap, four-beat planner case and 1.114 ms for the dense 8,192-slot
+distance case. These are report-only machine measurements, not CI thresholds.
+The exact model and calibration policy are in
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
 
 ## CI
 

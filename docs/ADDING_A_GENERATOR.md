@@ -14,7 +14,7 @@ kind-agnostic.
 
 The following contract is copied verbatim from the extraction plan:
 
-> pure fn of (params, ctx); no wall clock/OS entropy/global state/float nondeterminism; identity-seeded with pinned salts (add/skip/reorder draws never perturbs unrelated decisions); seed resolution is caller's job; must replay byte-identical under seed-path; structural postconditions (cells sorted, non-overlapping, tile `[0, span_len)`, sequential index, no cross-span ties, first cell not tied-from-previous); enabled:false ⇒ ledger byte-identical to config that never carried it.
+> pure fn of (params, ctx); no wall clock/OS entropy/global state/float nondeterminism; identity-seeded with pinned salts (add/skip/reorder draws never perturbs unrelated decisions); seed resolution is caller's job; must replay byte-identical under seed-path; structural postconditions (cells sorted, non-overlapping, tile `[0, span_len)`, sequential index, cross-span ties only as paired sounding interior handshakes, no first incoming or final outgoing tie); enabled:false ⇒ ledger byte-identical to config that never carried it.
 
 Treat every clause as an API requirement. In particular, do not consume a
 single mutable RNG stream in traversal order. Derive each decision from stable
@@ -106,7 +106,7 @@ sounds      = draw_rng.next_below(100) < density
 Consequently, changing or skipping one cell's decision cannot shift another
 cell's draw. The module tests pin the 0%, 100%, seed-replay, and seed-change
 cases. The shared resolver then checks span identity, sequential indexes,
-positive contiguous lengths, exact tiling, and the first-cell tie boundary.
+positive contiguous lengths, exact tiling, and paired cross-span tie handshakes.
 
 The UI side was completed by `2b3c401` (editor), `ab63e68` (density automation
 registration), and `419a4fb` (kind-agnostic preview/playback sampling). The
@@ -130,7 +130,7 @@ Add `crates/cseq-rhythm/src/generators/<kind>.rs`, declare the module, and
 re-export its parameter type from `generators/mod.rs`. Implement
 `CycleGenerator` using only `GeneratorCycleContext`. Test parameter validation,
 edge values, deterministic replay, a changed seed, identity stability when an
-unrelated decision is added/reordered, exact tiling, and tie boundaries.
+unrelated decision is added/reordered, exact tiling, and tie handshakes.
 Example proof: `beb921b` (`generators/example.rs`) plus `6532c64` and
 `05b0db8` for invalid-parameter, identity-stability, tiling/tie, and pinned
 64-bit seed-vector regressions.

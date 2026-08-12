@@ -10,7 +10,6 @@ import {
 import {
   articulateGroup,
   articulatableGroupIds,
-  articulatableGroupIdsForBoundaryError,
   builderFromPattern,
   canArticulateGroup,
   classifySelection,
@@ -19,12 +18,12 @@ import {
   groupSelection,
   hasArticulatableGroup,
   insertSibling,
-  isDumkaSpanBoundaryError,
   isValidDumkaStroke,
   patternHasRewritableSugar,
   printBuilderPattern,
   removeSelection,
   setGroupCount,
+  setGroupSpan,
   setLeafKind,
   setStroke,
   setWeight,
@@ -116,21 +115,117 @@ describe("dumkaRhythmBuilder", () => {
     expect(setStroke(nodes, 1, "dum").ok).toBe(false);
   });
 
-  it("wraps a contiguous run in an identity group, then a weight edit makes the tuplet", () => {
+  it("wraps existing beats in an identity group, then count makes the tuplet", () => {
     const nodes = mustBuild("x x x .");
-    const range = siblingRange(nodes, 0, 2);
-    expect(range).toEqual([0, 1, 2]);
+    const range = siblingRange(nodes, 0, 1);
+    expect(range).toEqual([0, 1]);
     const grouped = groupSelection(nodes, range!);
     if (!grouped.ok) throw new Error(grouped.message);
-    expect(printBuilderPattern(grouped.nodes)).toBe("[x x x]@3 .");
+    expect(printBuilderPattern(grouped.nodes)).toBe("[x x]@2 x .");
     // Identity wrap: compiled output is unchanged.
     expect(compileDumkaPattern(printBuilderPattern(grouped.nodes))).toEqual(
       compileDumkaPattern("x x x .")
     );
-    const tuplet = setWeight(grouped.nodes, grouped.focusId, 2);
-    expect(tuplet.ok && printBuilderPattern(tuplet.nodes)).toBe("[x x x]@2 .");
+    const tuplet = setGroupCount(grouped.nodes, grouped.focusId, 3);
+    expect(tuplet.ok && printBuilderPattern(tuplet.nodes)).toBe("[x x x]@2 x .");
     const group = tuplet.ok ? tuplet.nodes[0]! : null;
     expect(group && groupRatio(group)).toEqual({ count: 3, span: 2 });
+    expect(tuplet.ok && tryCommitBuilder(tuplet.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
+  });
+
+  it("grows a top-level group across existing beats without extending the cycle", () => {
+    const pattern =
+      "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]";
+    const nodes = mustBuild(pattern);
+    const twoBeats = setGroupSpan(nodes, 5, 2);
+    if (!twoBeats.ok) throw new Error(twoBeats.message);
+    expect(printBuilderPattern(twoBeats.nodes)).toBe(
+      "[dum . . ka] [. . ka . x]@2 [x x . x]"
+    );
+    expect(tryCommitBuilder(twoBeats.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
+
+    const threeBeats = setGroupSpan(twoBeats.nodes, twoBeats.focusId, 3);
+    if (!threeBeats.ok) throw new Error(threeBeats.message);
+    expect(printBuilderPattern(threeBeats.nodes)).toBe(
+      "[dum . . ka] [. . ka . x]@3"
+    );
+    expect(tryCommitBuilder(threeBeats.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
+    expect(printBuilderPattern(nodes)).toBe(pattern);
+  });
+
+  it("shrinks into rest and refuses to end midway through a following block", () => {
+    const shrunk = setGroupSpan(mustBuild("[x x]@3 x"), 0, 1);
+    expect(shrunk.ok && printBuilderPattern(shrunk.nodes)).toBe(
+      "[x x] . . x"
+    );
+    expect(shrunk.ok && tryCommitBuilder(shrunk.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
+    if (!shrunk.ok) throw new Error(shrunk.message);
+    const regrown = setGroupSpan(shrunk.nodes, shrunk.focusId, 2);
+    expect(regrown.ok && printBuilderPattern(regrown.nodes)).toBe(
+      "[x x]@2 . x"
+    );
+    expect(regrown.ok && tryCommitBuilder(regrown.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
+
+    const weightedFollower = mustBuild("[x x] x@2 .");
+    const midBlock = setGroupSpan(weightedFollower, 0, 2);
+    expect(midBlock).toEqual({
+      ok: false,
+      message:
+        "span must end at an existing block edge; split or regroup the following block first",
+    });
+    const exactEdge = setGroupSpan(weightedFollower, 0, 3);
+    expect(exactEdge.ok && printBuilderPattern(exactEdge.nodes)).toBe(
+      "[x x]@3 ."
+    );
+  });
+
+  it("rejects raw top-level group weights and hold-rebinding spans", () => {
+    expect(setWeight(mustBuild("[x x] ."), 0, 3)).toEqual({
+      ok: false,
+      message: "use Span to fit a top-level group into existing beats",
+    });
+
+    const holdMessage = {
+      ok: false,
+      message:
+        "span would change a following hold outside the covered beats; split or replace that hold first",
+    };
+    expect(setGroupSpan(mustBuild("[x] . _ x"), 0, 2)).toEqual(
+      holdMessage
+    );
+    expect(setGroupSpan(mustBuild("[x]@2 _ x"), 0, 1)).toEqual(
+      holdMessage
+    );
+    expect(setGroupSpan(mustBuild("[x] . [_ x]"), 0, 2)).toEqual(
+      holdMessage
+    );
+  });
+
+  it("keeps nested group span as a parent-relative weight", () => {
+    const nodes = mustBuild("[[x x] x]");
+    const weighted = setWeight(nodes, 1, 2);
+    expect(weighted.ok && printBuilderPattern(weighted.nodes)).toBe(
+      "[[x x]@2 x]"
+    );
+    expect(weighted.ok && tryCommitBuilder(weighted.nodes)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 1 },
+    });
   });
 
   it("splits a weighted leaf into k equal strokes over the same span", () => {
@@ -151,7 +246,7 @@ describe("dumkaRhythmBuilder", () => {
     expect(trimmed.ok && printBuilderPattern(trimmed.nodes)).toBe("[dum]@2 .");
   });
 
-  it("articulates a spanning 5:2 group into one existing-grid tick per note", () => {
+  it("can stylistically articulate a spanning 5:2 group into one grid tick per note", () => {
     const nodes = mustBuild("[x x x x x]@2");
     const projection = perBeatProjection("[x x x x x]@2");
     expect(canArticulateGroup(nodes, 0, projection)).toBe(true);
@@ -180,13 +275,9 @@ describe("dumkaRhythmBuilder", () => {
       spanLen: 5,
       subdivision: 5,
     }));
-    expect(
-      resolveDumkaCells(mustCompile("[x x x x x]@2"), 2, perBeatSpans)
-    ).toEqual({
-      ok: false,
-      message:
-        "a note sustains across the span boundary at beat 1; split the note or keep the hold inside one beat or Grouping tile",
-    });
+    expect(resolveDumkaCells(mustCompile("[x x x x x]@2"), 2, perBeatSpans).ok).toBe(
+      true
+    );
     expect(
       resolveDumkaCells(
         mustCompile(printBuilderPattern(result.nodes)),
@@ -228,7 +319,7 @@ describe("dumkaRhythmBuilder", () => {
     });
   });
 
-  it("articulates an offset group whose original sustain fails at beat 2", () => {
+  it("can articulate an offset group whose sustain crosses beat 2", () => {
     const source = mustBuild("x [x x x x x]@2 x");
     const group = source[1]!;
     const projection = perBeatProjection("x [x x x x x]@2 x");
@@ -239,11 +330,9 @@ describe("dumkaRhythmBuilder", () => {
       spanLen: 5,
       subdivision: 5,
     }));
-    expect(resolveDumkaCells(mustCompile(printBuilderPattern(source)), 4, spans)).toEqual({
-      ok: false,
-      message:
-        "a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile",
-    });
+    expect(resolveDumkaCells(mustCompile(printBuilderPattern(source)), 4, spans).ok).toBe(
+      true
+    );
 
     const result = articulateGroup(source, group.id, projection);
     if (!result.ok) throw new Error(result.message);
@@ -282,7 +371,7 @@ describe("dumkaRhythmBuilder", () => {
     expect(printBuilderPattern(source)).toBe(pattern);
   });
 
-  it("repairs the mixed 5:2 tuplet from the reported five-beat pattern", () => {
+  it("can stylistically articulate the reported mixed 5:2 tuplet", () => {
     const pattern =
       "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]";
     const source = mustBuild(pattern);
@@ -293,15 +382,8 @@ describe("dumkaRhythmBuilder", () => {
       ...span,
     }));
 
-    expect(resolveDumkaCells(mustCompile(pattern), 5, spans)).toEqual({
-      ok: false,
-      message:
-        "a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile",
-    });
+    expect(resolveDumkaCells(mustCompile(pattern), 5, spans).ok).toBe(true);
     expect(canArticulateGroup(source, group.id, projection)).toBe(true);
-    expect(articulatableGroupIdsForBoundaryError(source, projection)).toEqual([
-      group.id,
-    ]);
 
     const result = articulateGroup(source, group.id, projection);
     if (!result.ok) throw new Error(result.message);
@@ -317,27 +399,14 @@ describe("dumkaRhythmBuilder", () => {
     ).toBe(true);
   });
 
-  it("does not localize an earlier unrelated sustain to a later tuplet", () => {
+  it("does not treat an unrelated non-group sustain as an articulation candidate", () => {
     const pattern = "x x@2 [x x x x x]@2";
     const source = mustBuild(pattern);
     const projection = perBeatProjection(pattern);
-    const spans = projection.map((span, index) => ({
-      spanId: index + 1,
-      ...span,
-    }));
-
-    expect(resolveDumkaCells(mustCompile(pattern), 5, spans)).toEqual({
-      ok: false,
-      message:
-        "a note sustains across the span boundary at beat 2; split the note or keep the hold inside one beat or Grouping tile",
-    });
     expect(articulatableGroupIds(source, projection)).toEqual([2]);
-    expect(articulatableGroupIdsForBoundaryError(source, projection)).toEqual(
-      []
-    );
   });
 
-  it("repairs only the crossing note when direct child weights differ", () => {
+  it("articulates only the crossing note when direct child weights differ", () => {
     const pattern = "[x@2 x]@2";
     const source = mustBuild(pattern);
     const projection = perBeatProjection(pattern);
@@ -372,11 +441,8 @@ describe("dumkaRhythmBuilder", () => {
       spanId: index + 1,
       ...span,
     }));
-    expect(resolveDumkaCells(mustCompile(pattern), 2, beforeSpans).ok).toBe(false);
+    expect(resolveDumkaCells(mustCompile(pattern), 2, beforeSpans).ok).toBe(true);
     expect(canArticulateGroup(source, nested.id, projection)).toBe(true);
-    expect(articulatableGroupIdsForBoundaryError(source, projection)).toEqual([
-      nested.id,
-    ]);
 
     const result = articulateGroup(source, nested.id, projection);
     if (!result.ok) throw new Error(result.message);
@@ -392,7 +458,7 @@ describe("dumkaRhythmBuilder", () => {
     ).toBe(true);
   });
 
-  it("keeps the canonical 5:2 repair on a compatible larger grid", () => {
+  it("keeps the canonical detached 5:2 style on a compatible larger grid", () => {
     const pattern = "[x x x x x]@2";
     const source = mustBuild(pattern);
     const projection = perBeatProjection(pattern, 10);
@@ -473,13 +539,6 @@ describe("dumkaRhythmBuilder", () => {
       expect(articulateGroup(nodes, nodes[0]!.id, projection).ok).toBe(false);
       expect(hasArticulatableGroup(nodes, projection)).toBe(false);
     }
-    expect(isDumkaSpanBoundaryError(null)).toBe(false);
-    expect(isDumkaSpanBoundaryError("pattern needs Subdivision 5")).toBe(false);
-    expect(
-      isDumkaSpanBoundaryError(
-        "dumka structure mismatch: a note sustains across the span boundary at beat 1; split it"
-      )
-    ).toBe(true);
   });
 
   it("inserts, removes, and refuses to empty a group or the pattern", () => {
@@ -498,6 +557,15 @@ describe("dumkaRhythmBuilder", () => {
     const flat = ungroupNode(nodes, 0);
     expect(flat.ok && printBuilderPattern(flat.nodes)).toBe("x . ka");
     expect(ungroupNode(nodes, 1).ok).toBe(false);
+    const tuplet = mustBuild("[x x x x x]@2 . .");
+    expect(ungroupNode(tuplet, 0)).toEqual({
+      ok: false,
+      message: "this tuplet cannot be ungrouped without changing timing",
+    });
+    expect(tryCommitBuilder(tuplet)).toMatchObject({
+      ok: true,
+      required: { cycleBeats: 4 },
+    });
 
     // ids 1 (inside the group) and 3 (top level) are not siblings.
     expect(classifySelection(nodes, [1, 3])).toEqual({ kind: "invalid" });

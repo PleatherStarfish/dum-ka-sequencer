@@ -6,10 +6,27 @@ import {
   deriveDumkaBeatSlotCounts,
   dumkaEuclid,
   formatDumkaParseError,
-  formatDumkaStructureError,
   normalizeDumkaPattern,
   resolveDumkaCells,
 } from "./dumkaPattern";
+
+interface ParserProjectionContract {
+  cycleBeats: number;
+  spans: Array<{
+    spanId: number;
+    spanLen: number;
+    subdivision: number | null;
+  }>;
+  outcome: ReturnType<typeof resolveDumkaCells>;
+}
+
+interface ParserContractCase {
+  pattern: string;
+  outcome: ReturnType<typeof compileDumkaPattern>;
+  projection?: ParserProjectionContract;
+}
+
+const parserContractCases = parserContract as ParserContractCase[];
 
 // Every vector and message in this file is pinned against the Rust engine's
 // tests in crates/cseq-rhythm/src/generators/dumka. If either side changes
@@ -31,8 +48,33 @@ function issue(text: string) {
 
 describe("dumkaPattern mirror", () => {
   it("matches the Rust-generated parser/compiler contract corpus", () => {
-    for (const entry of parserContract) {
+    for (const entry of parserContractCases) {
       expect(compileDumkaPattern(entry.pattern), entry.pattern).toEqual(entry.outcome);
+    }
+  });
+
+  it("matches the Rust-generated tied projection contract corpus", () => {
+    const projections = parserContractCases.filter(
+      (entry): entry is ParserContractCase & {
+        projection: ParserProjectionContract;
+      } => entry.projection !== undefined
+    );
+    expect(projections.map((entry) => entry.pattern)).toEqual([
+      "[x x x x x]@2",
+      "x _ _ .",
+    ]);
+
+    for (const entry of projections) {
+      const result = compileDumkaPattern(entry.pattern);
+      if (!result.ok) throw new Error(`contract pattern failed: ${entry.pattern}`);
+      expect(
+        resolveDumkaCells(
+          result.compiled,
+          entry.projection.cycleBeats,
+          entry.projection.spans
+        ),
+        entry.pattern
+      ).toEqual(entry.projection.outcome);
     }
   });
 

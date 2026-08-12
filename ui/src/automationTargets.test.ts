@@ -19,6 +19,8 @@ import {
   channelTransitionAutomationTarget,
   filterAvailableAutomationTargets,
   DUMKA_DRIFT_LEASH_AUTOMATION_TARGET,
+  DUMKA_DENSITY_CEILING_AUTOMATION_TARGET,
+  DUMKA_DENSITY_FLOOR_AUTOMATION_TARGET,
   DUMKA_BARLOW_TEMPERATURE_AUTOMATION_TARGET,
   DUMKA_FILL_COMPLEXITY_AUTOMATION_TARGET,
   DUMKA_EVOLUTION_RATE_AUTOMATION_TARGET,
@@ -119,6 +121,40 @@ describe("buildAutomationTargetDefs (characterization)", () => {
       sampleRate: "cycleStart",
       fallback: 72,
     });
+  });
+
+  it("exposes both Dum-Ka density corridor rails at cycle start", () => {
+    expect(
+      defs
+        .filter((definition) =>
+          [
+            DUMKA_DENSITY_FLOOR_AUTOMATION_TARGET,
+            DUMKA_DENSITY_CEILING_AUTOMATION_TARGET,
+          ].includes(definition.target)
+        )
+        .map(({ target, label, fallback, unit, sampleRate }) => ({
+          target,
+          label,
+          fallback,
+          unit,
+          sampleRate,
+        }))
+    ).toEqual([
+      {
+        target: DUMKA_DENSITY_CEILING_AUTOMATION_TARGET,
+        label: "Density ceiling",
+        fallback: 100,
+        unit: "%",
+        sampleRate: "cycleStart",
+      },
+      {
+        target: DUMKA_DENSITY_FLOOR_AUTOMATION_TARGET,
+        label: "Density floor",
+        fallback: 0,
+        unit: "%",
+        sampleRate: "cycleStart",
+      },
+    ]);
   });
 
   it("exposes the Dum-Ka evolution knobs as cycle-start percent automation", () => {

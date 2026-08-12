@@ -682,3 +682,21 @@ export function filterTriggerDecisions<Event extends { outcome: string }>(
   if (filter === "all") return events.slice();
   return events.filter((event) => event.outcome === filter);
 }
+
+/**
+ * A cell length as a beat quantity: whole beats as an integer ("2"), a
+ * fraction of a beat reduced ("2/5" for 8 pulses on a Subdivision-20
+ * grid), improper fractions kept reduced ("3/2"). The timeline badges
+ * speak in beats because raw matra counts change meaning with every
+ * authored grid.
+ */
+export function formatBeatFraction(pulses: number, subdivision: number): string {
+  const safePulses = Math.max(0, Math.round(pulses));
+  const safeSubdivision = Math.max(1, Math.round(subdivision));
+  if (safePulses === 0) return "0";
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(safePulses, safeSubdivision);
+  const numerator = safePulses / divisor;
+  const denominator = safeSubdivision / divisor;
+  return denominator === 1 ? String(numerator) : `${numerator}/${denominator}`;
+}

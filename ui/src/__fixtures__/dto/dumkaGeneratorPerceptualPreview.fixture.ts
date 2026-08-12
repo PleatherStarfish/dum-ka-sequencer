@@ -3,7 +3,7 @@
 // annotation makes `pnpm typecheck` the Rust↔TS drift gate.
 import type { GeneratorPreview } from "../../bridge";
 
-export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
+export const dumkaGeneratorPerceptualPreviewFixture: GeneratorPreview = {
   "seed": {
     "seed": "20260611",
     "source": "locked",
@@ -17,7 +17,7 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 8,
+          "len": 15,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -25,26 +25,8 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         },
         {
           "index": 1,
-          "start": 8,
-          "len": 7,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 2,
           "start": 15,
-          "len": 1,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 3,
-          "start": 16,
-          "len": 4,
+          "len": 5,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -59,52 +41,16 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 1,
-          "rest": false,
+          "len": 10,
+          "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 114
         },
         {
           "index": 1,
-          "start": 1,
-          "len": 7,
-          "rest": true,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 2,
-          "start": 8,
-          "len": 1,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 3,
-          "start": 9,
-          "len": 1,
-          "rest": true,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 4,
           "start": 10,
-          "len": 6,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 5,
-          "start": 16,
-          "len": 4,
+          "len": 10,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -128,7 +74,7 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 1,
           "start": 4,
-          "len": 2,
+          "len": 4,
           "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -136,7 +82,7 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         },
         {
           "index": 2,
-          "start": 6,
+          "start": 8,
           "len": 4,
           "rest": false,
           "tiedFromPrevious": false,
@@ -145,8 +91,8 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         },
         {
           "index": 3,
-          "start": 10,
-          "len": 5,
+          "start": 12,
+          "len": 4,
           "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -154,18 +100,9 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         },
         {
           "index": 4,
-          "start": 15,
+          "start": 16,
           "len": 4,
           "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 5,
-          "start": 19,
-          "len": 1,
-          "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 96
@@ -179,23 +116,14 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 1,
-          "rest": false,
+          "len": 4,
+          "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 116
         },
         {
           "index": 1,
-          "start": 1,
-          "len": 3,
-          "rest": true,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 2,
           "start": 4,
           "len": 4,
           "rest": false,
@@ -204,26 +132,17 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
           "velocity": 96
         },
         {
-          "index": 3,
+          "index": 2,
           "start": 8,
-          "len": 1,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 4,
-          "start": 9,
-          "len": 1,
+          "len": 4,
           "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 96
         },
         {
-          "index": 5,
-          "start": 10,
+          "index": 3,
+          "start": 12,
           "len": 4,
           "rest": false,
           "tiedFromPrevious": false,
@@ -231,27 +150,9 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
           "velocity": 96
         },
         {
-          "index": 6,
-          "start": 14,
-          "len": 2,
-          "rest": true,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 7,
+          "index": 4,
           "start": 16,
-          "len": 1,
-          "rest": false,
-          "tiedFromPrevious": false,
-          "tiedToNext": false,
-          "velocity": 96
-        },
-        {
-          "index": 8,
-          "start": 17,
-          "len": 3,
+          "len": 4,
           "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -262,20 +163,24 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
   ],
   "trace": [
     {
-      "cycle": 13,
-      "directiveId": 101,
-      "family": "barlowRemove",
-      "requested": 3,
+      "cycle": 17,
+      "directiveId": 104,
+      "family": "rotate",
+      "requested": 16,
       "applied": 0,
-      "skipped": "none",
-      "corridorClamp": {
-        "limit": "floor",
-        "densityPercent": 20
+      "skipped": "exhausted",
+      "perceptual": {
+        "modelVersion": "v1",
+        "actualMilli": 0,
+        "targetMilli": 5000,
+        "toleranceMilli": 500,
+        "reached": false,
+        "exhausted": true
       }
     }
   ],
   "densityCorridor": {
-    "floor": 20,
-    "ceiling": 60
+    "floor": 0,
+    "ceiling": 100
   }
 };

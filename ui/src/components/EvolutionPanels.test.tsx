@@ -16,6 +16,10 @@ function props(overrides: Partial<EvolutionPanelsProps> = {}): EvolutionPanelsPr
     setEvolutionRate: vi.fn(),
     driftLeash: 53,
     setDriftLeash: vi.fn(),
+    densityFloor: 0,
+    setDensityFloor: vi.fn(),
+    densityCeiling: 100,
+    setDensityCeiling: vi.fn(),
     barlowTemperature: 15,
     setBarlowTemperature: vi.fn(),
     fillComplexity: 0,
@@ -60,6 +64,8 @@ describe("EvolutionPanels", () => {
     for (const [name, target] of [
       ["Dum-Ka evolution rate", "generator.dumka.evolutionRate"],
       ["Dum-Ka drift leash", "generator.dumka.driftLeash"],
+      ["Dum-Ka density floor", "generator.dumka.densityFloor"],
+      ["Dum-Ka density ceiling", "generator.dumka.densityCeiling"],
       ["Dum-Ka Barlow temperature", "generator.dumka.barlowTemperature"],
       ["Dum-Ka fill complexity", "generator.dumka.fillComplexity"],
     ] as const) {
@@ -81,6 +87,36 @@ describe("EvolutionPanels", () => {
     ]) {
       expect(screen.getByLabelText(name)).toBeTruthy();
     }
+  });
+
+  it("authors an ordered density corridor and exposes the seed position", () => {
+    const setDensityFloor = vi.fn();
+    const setDensityCeiling = vi.fn();
+    render(
+      <EvolutionPanels
+        {...props({
+          pattern: "x . x .",
+          densityFloor: 20,
+          densityCeiling: 60,
+          setDensityFloor,
+          setDensityCeiling,
+        })}
+      />
+    );
+
+    expect(
+      screen.getByRole("img", {
+        name: "Density corridor 20% through 60%; seed density 50%",
+      })
+    ).toBeTruthy();
+    fireEvent.change(screen.getByRole("slider", { name: "Dum-Ka density floor" }), {
+      target: { value: "55" },
+    });
+    expect(setDensityFloor).toHaveBeenLastCalledWith(55);
+    fireEvent.change(screen.getByRole("slider", { name: "Dum-Ka density ceiling" }), {
+      target: { value: "70" },
+    });
+    expect(setDensityCeiling).toHaveBeenLastCalledWith(70);
   });
 
   it("commits weights through the functional updater with odds shown", () => {

@@ -2,7 +2,13 @@
 // Keep this module free of React and Tauri runtime imports.
 
 import { normalizeDumkaPattern } from "./dumkaPattern";
-import { MAX_EVOLUTION_DIRECTIVES } from "./dumkaEvolvePlan";
+import {
+  MAX_EVOLUTION_DIRECTIVES,
+  MAX_PERCEPTUAL_DISTANCE_MILLI,
+  MAX_PERCEPTUAL_OPERATIONS,
+  MAX_PERCEPTUAL_SCORING_WORK,
+  perceptualDirectiveScoringWork,
+} from "./dumkaEvolvePlan";
 import {
   normalizeLegacyRandomizeSettings,
   type LegacyRandomizeSettings,
@@ -1552,6 +1558,58 @@ function isDirectivePacing(
   );
 }
 
+type NormalizedPatchMagnitude =
+  | { ok: true; magnitude?: EvolutionDirective["magnitude"] }
+  | { ok: false };
+
+function normalizePatchDirectiveMagnitude(
+  value: unknown,
+  family: EvolutionDirective["family"],
+  pacing: EvolutionDirective["pacing"]
+): NormalizedPatchMagnitude {
+  // Absence and the explicit default both project to absence. This preserves
+  // the byte shape of every pre-perceptual operation-quota row.
+  if (value === undefined) return { ok: true };
+  if (!isRecord(value)) return { ok: false };
+  if (value.mode === "operationQuota") return { ok: true };
+  if (
+    value.mode !== "perceptual" ||
+    value.modelVersion !== "v1" ||
+    family === "stochastic" ||
+    pacing !== "perCycle" ||
+    typeof value.targetMilli !== "number" ||
+    !Number.isFinite(value.targetMilli) ||
+    typeof value.toleranceMilli !== "number" ||
+    !Number.isFinite(value.toleranceMilli) ||
+    typeof value.maxOperations !== "number" ||
+    !Number.isFinite(value.maxOperations)
+  ) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    magnitude: {
+      mode: "perceptual",
+      modelVersion: "v1",
+      targetMilli: clamp(
+        Math.round(value.targetMilli),
+        0,
+        MAX_PERCEPTUAL_DISTANCE_MILLI
+      ),
+      toleranceMilli: clamp(
+        Math.round(value.toleranceMilli),
+        0,
+        MAX_PERCEPTUAL_DISTANCE_MILLI
+      ),
+      maxOperations: clamp(
+        Math.round(value.maxOperations),
+        1,
+        MAX_PERCEPTUAL_OPERATIONS
+      ),
+    },
+  };
+}
+
 function nullablePercent(value: unknown): number | null {
   return value === null || value === undefined
     ? null
@@ -1588,6 +1646,7 @@ export interface NormalizeEvolutionPlanResult {
   droppedOverlaps: number;
   droppedMalformed: number;
   droppedExcess: number;
+  disabledOverBudget: number;
 }
 
 /**
@@ -1601,6 +1660,7 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
   let droppedUnknownFamilies = 0;
   let droppedOverlaps = 0;
   let droppedMalformed = 0;
+  let disabledOverBudget = 0;
   const source = Array.isArray(value) ? value : [];
   const droppedExcess = Math.max(0, source.length - MAX_EVOLUTION_DIRECTIVES);
   const candidates = source
@@ -1625,6 +1685,15 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
         !isDirectivePacing(pacing) ||
         (raw.family === "stochastic" && pacing !== "perCycle")
       ) {
+        droppedMalformed += 1;
+        return [];
+      }
+      const magnitude = normalizePatchDirectiveMagnitude(
+        raw.magnitude,
+        raw.family,
+        pacing
+      );
+      if (!magnitude.ok) {
         droppedMalformed += 1;
         return [];
       }
@@ -1690,6 +1759,7 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
           toCycle,
           family: raw.family,
           pacing,
+          ...(magnitude.magnitude ? { magnitude: magnitude.magnitude } : {}),
           intensity: clamp(Math.round(numberValue(raw.intensity, 25)), 0, 100),
           scope,
           options: normalizeDirectiveOptions(raw.options),
@@ -1713,7 +1783,24 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
     }
   }
 
-  const validIds = accepted
+  // Keep authored data editable, but admit enabled perceptual rows only while
+  // their complete lifetime score reservation fits. Authored order is the
+  // deterministic priority; disabled rows reserve no engine work.
+  let admittedWork = 0n;
+  const budgeted = accepted.map((candidate) => {
+    const rowWork = perceptualDirectiveScoringWork(candidate);
+    if (
+      rowWork > 0n &&
+      admittedWork + rowWork > BigInt(MAX_PERCEPTUAL_SCORING_WORK)
+    ) {
+      disabledOverBudget += 1;
+      return { ...candidate, enabled: false };
+    }
+    admittedWork += rowWork;
+    return candidate;
+  });
+
+  const validIds = budgeted
     .map((directive) => directive.sourceId)
     .filter((id) => id > 0);
   let nextId = Math.max(0, ...validIds) + 1;
@@ -1730,7 +1817,7 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
     return allocated;
   };
   return {
-    plan: accepted.map((directive, order) => {
+    plan: budgeted.map((directive, order) => {
       let id = directive.sourceId;
       if (id <= 0 || usedIds.has(id)) {
         id = allocateId();
@@ -1744,6 +1831,7 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
         toCycle: directive.toCycle,
         family: directive.family,
         pacing: directive.pacing,
+        ...(directive.magnitude ? { magnitude: directive.magnitude } : {}),
         intensity: directive.intensity,
         scope: directive.scope,
         options: directive.options,
@@ -1753,6 +1841,7 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
     droppedOverlaps,
     droppedMalformed,
     droppedExcess,
+    disabledOverBudget,
   };
 }
 
@@ -1761,6 +1850,7 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
   let overlaps = false;
   let malformed = false;
   let excess = false;
+  let overBudget = false;
   for (const candidate of generatorCandidates) {
     if (!isRecord(candidate) || candidate.kind !== "dumka") continue;
     const normalized = normalizePatchEvolutionPlan(candidate.plan);
@@ -1768,6 +1858,7 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
     overlaps ||= normalized.droppedOverlaps > 0;
     malformed ||= normalized.droppedMalformed > 0;
     excess ||= normalized.droppedExcess > 0;
+    overBudget ||= normalized.disabledOverBudget > 0;
   }
   const warnings: string[] = [];
   if (unknown) {
@@ -1783,6 +1874,9 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
     warnings.push(
       `Dum-Ka evolution plans were limited to ${MAX_EVOLUTION_DIRECTIVES} directives.`
     );
+  }
+  if (overBudget) {
+    warnings.push("Over-budget Dum-Ka perceptual directives were disabled.");
   }
   return warnings;
 }

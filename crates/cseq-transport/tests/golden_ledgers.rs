@@ -234,6 +234,64 @@ fn golden_dumka_default_pattern() {
     );
 }
 
+/// M3.9 tie-handshake golden: a five-in-the-time-of-two phrase crosses the
+/// per-beat structure seam. The projector emits two tied cells at the seam,
+/// while the transport ledger must contain exactly the five audible notes
+/// authored by the phrase, with no extra re-attack at beat 2.
+fn dumka_tied_quintuplet_score() -> cseq_model::Score {
+    cseq_model::Score::subdivision_switch(
+        "golden-dumka-tied-quintuplet",
+        cseq_model::SubdivisionSwitchSpec {
+            cycle_beats: 2,
+            initial_weights: vec![cseq_model::WeightedSubdivisionChoice {
+                subdivision: 5,
+                weight: 1.0,
+            }],
+            initial_jathi_weights: vec![],
+            initial_custom_subdivision: None,
+            automation: None,
+            inflections: vec![],
+            switch_count_weights: vec![cseq_model::WeightedSwitchCount {
+                count: 0,
+                weight: 1.0,
+            }],
+            seed_mode: cseq_model::SwitchSeedMode::Locked { seed: 20260812 },
+            accent: cseq_model::GatiAccentSpec::default(),
+            pitch: 45,
+            velocity: 96,
+        },
+    )
+}
+
+fn dumka_tied_quintuplet_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "[x x x x x]@2".to_string(),
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 20260812 },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+#[test]
+fn golden_dumka_tied_quintuplet() {
+    assert_golden_rendered(
+        "dumka_tied_quintuplet",
+        render_ledger_for_score(
+            "dumka_tied_quintuplet",
+            dumka_tied_quintuplet_score(),
+            Some(dumka_tied_quintuplet_rhythm()),
+        ),
+    );
+}
+
 /// M3.75 evolution-score golden: cycles 1-12 repeat the seed, cycle 13
 /// removes exactly ceil(15% of eight) Barlow-ranked onsets, and cycle 15
 /// carries the user's scoped last-two-beat Fragment pin. The two-cycle window
@@ -248,6 +306,7 @@ fn dumka_planned_rhythm() -> cseq_transport::RhythmPlaybackConfig {
         to_cycle: cycle,
         family,
         pacing: rhythm::DirectivePacing::PerCycle,
+        magnitude: rhythm::DirectiveMagnitude::OperationQuota,
         intensity,
         scope,
         options: rhythm::DirectiveOptions::default(),
@@ -316,6 +375,7 @@ fn dumka_smoothed_rhythm() -> cseq_transport::RhythmPlaybackConfig {
                 to_cycle: 4,
                 family: rhythm::DirectiveFamily::BarlowRemove,
                 pacing: rhythm::DirectivePacing::EaseInOut,
+                magnitude: rhythm::DirectiveMagnitude::OperationQuota,
                 intensity: 25,
                 scope: None,
                 options: rhythm::DirectiveOptions::default(),

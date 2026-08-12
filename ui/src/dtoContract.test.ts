@@ -18,6 +18,8 @@ import type { TransportSnapshot } from "./bridge";
 import { transportSnapshotFixture } from "./__fixtures__/dto/transportSnapshot.fixture";
 import { subdivisionSwitchPreviewFixture } from "./__fixtures__/dto/subdivisionSwitchPreview.fixture";
 import { dumkaGeneratorPreviewFixture } from "./__fixtures__/dto/dumkaGeneratorPreview.fixture";
+import { dumkaGeneratorLegacyPreviewFixture } from "./__fixtures__/dto/dumkaGeneratorLegacyPreview.fixture";
+import { dumkaGeneratorPerceptualPreviewFixture } from "./__fixtures__/dto/dumkaGeneratorPerceptualPreview.fixture";
 import {
   createNeutralPatchDocument,
   readPatchDocument,
@@ -165,12 +167,66 @@ describe("Dum-Ka directive trace fixture semantics", () => {
         cycle: 13,
         directiveId: 101,
         family: "barlowRemove",
+        requested: 3,
+        applied: 0,
+        skipped: "none",
+        corridorClamp: {
+          limit: "floor",
+          densityPercent: 20,
+        },
+      },
+    ]);
+    expect(dumkaGeneratorPreviewFixture.densityCorridor).toEqual({
+      floor: 20,
+      ceiling: 60,
+    });
+    expect(dumkaGeneratorPreviewFixture.spans).toHaveLength(4);
+  });
+
+  it("keeps behavior-off corridor spans and trace on the legacy path", () => {
+    expect(dumkaGeneratorLegacyPreviewFixture.trace).toEqual([
+      {
+        cycle: 13,
+        directiveId: 101,
+        family: "barlowRemove",
         requested: 2,
         applied: 2,
         skipped: "none",
       },
     ]);
-    expect(dumkaGeneratorPreviewFixture.spans).toHaveLength(4);
+    expect(dumkaGeneratorLegacyPreviewFixture.densityCorridor).toEqual({
+      floor: 0,
+      ceiling: 100,
+    });
+    expect(
+      dumkaGeneratorLegacyPreviewFixture.spans
+        .flatMap((span) => span.cells)
+        .filter((cell) => !cell.rest && !cell.tiedFromPrevious)
+    ).toHaveLength(6);
+  });
+
+  it("carries the versioned perceptual transition result into TypeScript", () => {
+    const entry = dumkaGeneratorPerceptualPreviewFixture.trace.find(
+      (candidate) => candidate.directiveId === 104
+    );
+    expect(entry).toMatchObject({
+      cycle: 17,
+      directiveId: 104,
+      family: "rotate",
+      requested: 16,
+      applied: 0,
+      skipped: "exhausted",
+      perceptual: {
+        modelVersion: "v1",
+        actualMilli: 0,
+        targetMilli: 5_000,
+        toleranceMilli: 500,
+        reached: false,
+        exhausted: true,
+      },
+    });
+    expect(entry?.perceptual?.actualMilli).toBeGreaterThanOrEqual(0);
+    expect(entry?.perceptual?.actualMilli).toBeLessThanOrEqual(100_000);
   });
 });
 

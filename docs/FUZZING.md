@@ -1,6 +1,6 @@
 # Fuzzing
 
-Dum-Ka retains four bounded Rust libFuzzer targets. The manifest,
+Dum-Ka retains five bounded Rust libFuzzer targets. The manifest,
 `scripts/fuzz-targets.sh`, launcher scripts, and committed corpus directories
 must name the same set.
 

@@ -2,7 +2,11 @@
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GatiMatraLane, RhythmLayerLane } from "./TimelineLanes";
+import {
+  GatiMatraLane,
+  RhythmLayerLane,
+  buildCrossSectionRhythmTieChains,
+} from "./TimelineLanes";
 import type { ResolvedBeatView, ResolvedSectionRun } from "../resolvedSections";
 import type { ResolvedRhythmCell, ResolvedRhythmSpan } from "../bridge";
 
@@ -44,7 +48,7 @@ function sectionRun(beats: number, gati: number): ResolvedSectionRun {
   };
 }
 
-describe("GatiMatraLane label thinning", () => {
+describe("GatiMatraLane ruler anchors", () => {
   afterEach(cleanup);
 
   it("keeps every label at ordinary densities", () => {
@@ -56,17 +60,46 @@ describe("GatiMatraLane label thinning", () => {
     expect(cells.every((cell) => cell.textContent !== "")).toBe(true);
   });
 
-  it("thins labels above the density budget but renders every cell", () => {
+  it("labels the beat's principal divisions on a dense grid", () => {
+    const { getAllByTestId } = render(
+      <GatiMatraLane section={sectionRun(4, 20)} playheadAkshara={null} />
+    );
+    const cells = getAllByTestId("gati-matra-cell");
+    expect(cells.length).toBe(80);
+    // anchorStride(20, 4) = 5: quarter-beat anchors 1/6/11/16, per beat.
+    const firstBeat = cells.slice(0, 20);
+    const labels = firstBeat
+      .map((cell, index) => (cell.textContent !== "" ? index + 1 : null))
+      .filter((value): value is number => value !== null);
+    expect(labels).toEqual([1, 6, 11, 16]);
+    expect(
+      firstBeat
+        .filter((cell) => cell.textContent !== "")
+        .every((cell) => cell.classList.contains("is-ruler-anchor"))
+    ).toBe(true);
+    expect(cells.filter((cell) => cell.textContent !== "").length).toBe(16);
+  });
+
+  it("labels only beat starts on a prime grid", () => {
+    const { getAllByTestId } = render(
+      <GatiMatraLane section={sectionRun(4, 7)} playheadAkshara={null} />
+    );
+    const cells = getAllByTestId("gati-matra-cell");
+    // anchorStride(7, 4) = 7: a prime pulse count has no useful interior
+    // division, so only the beat start carries a number.
+    const labeled = cells.filter((cell) => cell.textContent !== "");
+    expect(labeled.length).toBe(4);
+    expect(labeled.every((cell) => cell.textContent === "1")).toBe(true);
+  });
+
+  it("falls back to beat starts when a long section blows the label budget", () => {
     const { getAllByTestId } = render(
       <GatiMatraLane section={sectionRun(4, 35)} playheadAkshara={null} />
     );
     const cells = getAllByTestId("gati-matra-cell");
     expect(cells.length).toBe(140);
     const labeled = cells.filter((cell) => cell.textContent !== "");
-    // stride ⌈140/96⌉ = 2: pulses 1,3,5,…,35 per beat, beat starts included.
-    expect(labeled.length).toBe(4 * 18);
-    expect(cells[0]!.textContent).toBe("1");
-    expect(cells[1]!.textContent).toBe("");
+    expect(labeled.length).toBe(4);
     expect(
       cells
         .filter((cell) => cell.classList.contains("is-beat-start"))
@@ -75,7 +108,7 @@ describe("GatiMatraLane label thinning", () => {
   });
 });
 
-describe("RhythmLayerLane accent shading", () => {
+describe("RhythmLayerLane generator cells", () => {
   afterEach(cleanup);
 
   const laneSection = (): ResolvedSectionRun => ({
@@ -143,6 +176,8 @@ describe("RhythmLayerLane accent shading", () => {
     // Rest cells never shade or advertise a velocity, even when stamped.
     expect((cells[2] as HTMLElement).style.getPropertyValue("--velocity-mix")).toBe("");
     expect(cells[2]!.getAttribute("title")).not.toContain("velocity");
+    // ...and carry no badge: the gap reads itself.
+    expect(cells[2]!.textContent).toBe("");
   });
 
   it("keeps the legacy look for velocity-less cells", () => {
@@ -160,6 +195,213 @@ describe("RhythmLayerLane accent shading", () => {
     const cell = container.querySelector(".rhythm-layer-span i") as HTMLElement;
     expect(cell.style.getPropertyValue("--velocity-mix")).toBe("");
     expect(cell.getAttribute("title")).not.toContain("velocity");
+  });
+
+  it("renders a cross-span tied chain as one visual note and one matra badge", () => {
+    const section = sectionRun(2, 5);
+    const pulseSpan = (id: number, beat: number) => ({
+      id,
+      kind: "gatiBeat" as const,
+      sectionIndex: 0,
+      beat,
+      gati: 5,
+      jathi: null,
+      index: beat - 1,
+      start: beat - 1,
+      duration: 1,
+      startMatra: (beat - 1) * 5,
+      matraLen: 5,
+      subdivision: 5,
+      protectedCuts: [],
+      tags: [],
+      matraVelocities: [111, 96, 96, 96, 96],
+    });
+    section.pulseSpans = [pulseSpan(9, 1), pulseSpan(10, 2)];
+    const rhythmBySpanId = new Map<number, ResolvedRhythmSpan>([
+      [
+        9,
+        {
+          spanId: 9,
+          spanLen: 5,
+          cells: [
+            laneCell({ index: 0, start: 0, len: 2, velocity: 111 }),
+            laneCell({ index: 1, start: 2, len: 2, velocity: 96 }),
+            laneCell({
+              index: 2,
+              start: 4,
+              len: 1,
+              tiedToNext: true,
+              velocity: 96,
+            }),
+          ],
+        },
+      ],
+      [
+        10,
+        {
+          spanId: 10,
+          spanLen: 5,
+          cells: [
+            laneCell({
+              index: 0,
+              start: 0,
+              len: 1,
+              tiedFromPrevious: true,
+              velocity: 80,
+            }),
+            laneCell({ index: 1, start: 1, len: 2, velocity: 96 }),
+            laneCell({ index: 2, start: 3, len: 2, velocity: 96 }),
+          ],
+        },
+      ],
+    ]);
+    const { container, getAllByTestId, getByRole } = render(
+      <RhythmLayerLane
+        section={section}
+        rhythmBySpanId={rhythmBySpanId}
+        playheadAkshara={null}
+      />
+    );
+
+    // Six raw cells describe five audible notes. The paired boundary chunks
+    // share one DOM element and therefore cannot draw an inner stroke/cap.
+    expect(getAllByTestId("rhythm-layer-cell")).toHaveLength(5);
+    const joined = getByRole("img", {
+      name: "note for 2 pulses (2/5 beat) across 2 spans, velocity 96",
+    });
+    // Exact class list: the chain class and nothing else — pins both the
+    // joined rendering and the absence of any legacy per-side tie styling.
+    expect(joined.className).toBe("is-tied-chain");
+    expect(joined.getAttribute("data-source-cells")).toBe("2");
+    expect(joined.getAttribute("data-source-spans")).toBe("2");
+    // Badges speak in beats: 2 pulses on the 5-pulse grid is 2/5.
+    expect(joined.textContent).toBe("2/5");
+    expect((joined as HTMLElement).style.left).toContain("80%");
+    expect((joined as HTMLElement).style.width).toContain("40%");
+    expect(joined.closest(".rhythm-layer-span")!.classList).toContain(
+      "has-cross-span-chain"
+    );
+    expect(
+      container.querySelectorAll(".rhythm-layer-span")[1]!.querySelectorAll("i")
+    ).toHaveLength(2);
+  });
+
+  it("gives a tied note crossing an authored section seam one accessible owner", () => {
+    const firstSection = sectionRun(1, 5);
+    const secondSection: ResolvedSectionRun = {
+      ...sectionRun(1, 5),
+      sectionIndex: 1,
+      startBeat: 2,
+      endBeat: 2,
+      beats: [
+        {
+          ...beatView(2, 5),
+          sectionIndex: 1,
+          sectionStart: true,
+        },
+      ],
+    };
+    const pulseSpan = (id: number, sectionIndex: number, beat: number) => ({
+      id,
+      kind: "gatiBeat" as const,
+      sectionIndex,
+      beat,
+      gati: 5,
+      jathi: null,
+      index: 0,
+      start: beat - 1,
+      duration: 1,
+      startMatra: (beat - 1) * 5,
+      matraLen: 5,
+      subdivision: 5,
+      protectedCuts: [],
+      tags: [],
+      matraVelocities: [111, 96, 96, 96, 96],
+    });
+    firstSection.pulseSpans = [pulseSpan(9, 0, 1)];
+    secondSection.pulseSpans = [pulseSpan(10, 1, 2)];
+    const rhythmBySpanId = new Map<number, ResolvedRhythmSpan>([
+      [
+        9,
+        {
+          spanId: 9,
+          spanLen: 5,
+          cells: [
+            laneCell({ index: 0, start: 0, len: 4, velocity: 111 }),
+            laneCell({
+              index: 1,
+              start: 4,
+              len: 1,
+              tiedToNext: true,
+              velocity: 96,
+            }),
+          ],
+        },
+      ],
+      [
+        10,
+        {
+          spanId: 10,
+          spanLen: 5,
+          cells: [
+            laneCell({
+              index: 0,
+              start: 0,
+              len: 1,
+              tiedFromPrevious: true,
+              velocity: 40,
+            }),
+            laneCell({ index: 1, start: 1, len: 4, velocity: 111 }),
+          ],
+        },
+      ],
+    ]);
+    const crossSectionTieChains = buildCrossSectionRhythmTieChains(
+      [firstSection, secondSection],
+      rhythmBySpanId
+    );
+    const { getAllByRole, getAllByTestId, getByRole } = render(
+      <>
+        <RhythmLayerLane
+          section={firstSection}
+          rhythmBySpanId={rhythmBySpanId}
+          playheadAkshara={null}
+          crossSectionTieChains={crossSectionTieChains}
+        />
+        <RhythmLayerLane
+          section={secondSection}
+          rhythmBySpanId={rhythmBySpanId}
+          playheadAkshara={null}
+          crossSectionTieChains={crossSectionTieChains}
+        />
+      </>
+    );
+
+    // The two section-local fragments preserve each section's geometry, but
+    // only the opener is exposed as a note. Its duration and accent velocity
+    // match the one realized MIDI note group.
+    expect(getAllByTestId("rhythm-layer-cell")).toHaveLength(4);
+    expect(getAllByRole("img")).toHaveLength(3);
+    const owner = getByRole("img", {
+      name: "note for 2 pulses (2/5 beat) across 2 spans and 2 sections, velocity 96",
+    });
+    expect(owner.getAttribute("data-tie-chain-owner")).toBe("true");
+    expect(owner.textContent).toBe("2/5");
+    expect(owner.getAttribute("data-open-section-right")).toBe("true");
+    expect((owner as HTMLElement).style.right).toBe("-1px");
+    expect((owner as HTMLElement).style.getPropertyValue("--velocity-mix")).toBe(
+      "72%"
+    );
+    const continuation = getAllByTestId("rhythm-layer-cell").find(
+      (cell) => cell.getAttribute("data-tie-chain-owner") === "false"
+    );
+    expect(continuation?.getAttribute("aria-hidden")).toBe("true");
+    expect(continuation?.textContent).toBe("");
+    expect(continuation?.getAttribute("data-open-section-left")).toBe("true");
+    expect((continuation as HTMLElement).style.left).toBe("-1px");
+    expect(
+      (continuation as HTMLElement).style.getPropertyValue("--velocity-mix")
+    ).toBe("72%");
   });
 });
 

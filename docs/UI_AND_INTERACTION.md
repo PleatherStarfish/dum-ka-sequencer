@@ -17,9 +17,10 @@ From top to bottom, the app contains:
 6. Automation editor and focused-editor launchers.
 7. MIDI, conflict, and automation diagnostics.
 
-The focused editors are **Sections and Subdivisions**, **Generator**, and
-**Channel Shaper**. Only one main editor is open at a time; closed editors keep
-small launcher summaries without keeping their expensive contents mounted.
+The focused editors are **Sections and Subdivisions**, **Generator**,
+**Evolve**, and **Channel Shaper**. Only one main editor is open at a time;
+closed editors keep small launcher summaries without keeping their expensive
+contents mounted.
 
 ## Transport and setup
 
@@ -92,21 +93,17 @@ glyph — the full name stays in the block's tooltip and accessible name.
 Click selects a block, shift-click extends along
 siblings, and a toolbar edits the selection: note/rest/hold type, stroke
 name, weight, "split into tuplet" (k equal strokes over the block's span),
-identity-weight Group/Ungroup, group count/span (the k:w ratio directly),
-an optional "Articulate" repair, insert, and delete. The
-articulation repair appears for a potentially spanning flat k:w group of notes
-and rests. It preserves authored rests while rewriting notes into grid-aligned
-attacks plus rests. Exact parent geometry and the current preview/playback span
-recipe let nested selections, groups beginning after beat one, compatible
-larger Subdivisions, and shorter Grouping tiles use their real fences. The
-smallest safe slot division is compiler-preflighted before the action appears;
-the engine's span-boundary fence is never relaxed. A current span-boundary
-error with one preflighted repair exposes an error-adjacent **Articulate
-crossing notes** action without requiring a block selection. The action is
-localized to the resolver's first exact failing fence, so a repairable tuplet
-elsewhere is never edited for an unrelated sustain. A
-group containing another group or a hold still requires selecting its inner
-flat tuplet or editing the hold explicitly. Every builder edit prints the tree back to notation
+identity-weight Group/Ungroup, group Count, nested relative Span, and a
+top-level Span gesture that consumes whole following Pattern blocks without
+changing the cycle's beat count. Growing replaces the covered blocks;
+shrinking leaves rest, and a partial-block endpoint or hold that would be
+rebound fails closed. To preserve the material inside every covered beat,
+select that sibling range first and Group it before changing Count. The toolbar also offers
+optional stylistic **Articulate**, insert, and delete. Cross-span sustains are
+legal paired ties, so the editor never demands articulation as a repair.
+Selecting a compatible flat group still exposes the gesture when the author
+wants detached grid-aligned attacks plus rests; its exact parent geometry is
+compiler-preflighted before commit. Every builder edit prints the tree back to notation
 and commits through the textarea's own path — the mirrored compiler
 re-checks the printed text first and an illegal edit is rejected in place
 with the engine's message, so the builder can never author around the
@@ -136,7 +133,8 @@ the engine's exact integer formulas, and an ⓘ-disclosed reference:
   and the Evolution rate slider; the live line converts the rate into
   "about 1 cycle in N" and calls out the all-weights-zero frozen state.
 - **Density (Barlow)** — Remove/Add weights with per-operator odds
-  (weight/total of fired cycles), the Barlow temperature slider, and an
+  (weight/total of fired cycles), the Barlow temperature slider, paired
+  Density floor/ceiling sliders, a corridor band with the seed-density marker, and an
   indispensability lane drawn on the pattern's own required grid: bar
   height = published-table rank, sounding/sustained/silent shading, and
   the actual Remove/Add candidate pools at the current temperature
@@ -156,15 +154,15 @@ the engine's exact integer formulas, and an ⓘ-disclosed reference:
   a live line naming the candidate windows; its reference covers the
   necklace math and the complement rule.
 - **Rotation** — its weight and the unleashed-register explanation.
-- **Guards** — the Drift leash slider with the budget spelled out in real
-  units (⌈leash% × seed onsets⌉ = N slots) plus the trial-projection
-  guarantee.
+- **Guards** — density-corridor precedence, the Drift leash slider with the
+  budget spelled out in real units (⌈leash% × seed onsets⌉ = N slots), and the
+  trial-projection guarantee.
 
 The lanes come from `ui/src/dumkaMetrics.ts`, a TS mirror of barlow.rs and
 sioros.rs pinned byte-for-byte by the Rust-generated
 `dumka_metrics_contract.json` fixture (same scheme as the parser
 contract); they are display-only — playback never runs through them. The
-four sliders keep their `generator.dumka.*` cycle-start automation
+six sliders keep their `generator.dumka.*` cycle-start automation
 targets, weights stay authored-only with serde defaults 3/3/2/0/0, and at
 rate 0 or all-zero weights the seed repeats verbatim. The rhythm builder's
 toolbar also carries an E(k,n) Euclidean fill that expands the same
@@ -175,9 +173,11 @@ Bjorklund necklace as the notation sugar over the selected block's span.
 Evolve is the fourth full-window editor, beside Generator. It authors the
 Dum-Ka generator's ordered directive plan rather than adding automation
 targets. Cycle 0 is a locked seed column; each fixed family lane accepts pins
-or inclusive ranges. A directive carries an exact 0–100 intensity quota, an
-enabled toggle, family options, and an optional contiguous beat
-scope. A range can use legacy **Repeat each cycle** pacing or distribute one fixed
+or inclusive ranges. A directive carries an enabled toggle, family options, an
+optional contiguous beat scope, and a retained 0–100 intensity field used by
+operation-quota mode. Its **Step size** is either that legacy operation quota
+or a versioned perceptual target. A quota range can use **Repeat each cycle**
+pacing or distribute one fixed
 target across its inclusive cycles with **Linear transition** or **Gentle
 transition** pacing. Missing pacing in an older patch recalls as Repeat each
 cycle; Stochastic remains Repeat each cycle because its intensity is a fire probability rather than a target
@@ -187,11 +187,20 @@ because they salt the deterministic draw stream. One score supports up to 256
 directives; the editor and persistence boundary enforce the same limit before
 the engine performs overlap checks or folds a cycle.
 
-Pins render as diamonds, ranges as bars, gradual pacing appears as Linear/Ease
-range treatment, disabled rows as hollow marks, and a beat-strip glyph shows
-scope. The inspector supports numeric range/intensity, pacing, order,
+Pins render as diamonds, ranges as bars, gradual quota pacing appears as
+Linear/Ease range treatment, disabled rows as hollow marks, and a beat-strip
+glyph shows scope. The inspector supports numeric range, order,
 family-specific overrides, whole-cycle/contiguous-beat scope, duplication,
-deletion, and before/after preview comparison. Selecting a directive moves stopped preview to its
+deletion, and before/after preview comparison. Operation quota exposes
+Intensity and Transition. Perceptual target exposes Target magnitude,
+Tolerance, and Max operations on a 0.0–100.0 display scale, pins model `v1`,
+shows the backend's Realized versus Target trace, and displays the plan-wide
+Score budget (used and remaining out of 4,096 lifetime evaluations). An edit
+that would exceed the budget is rejected without changing the score; tolerant
+patch recall preserves but disables later over-budget perceptual rows and
+warns the author. It targets each active
+cycle and therefore hides Transition and smoothing controls; Stochastic cannot
+use it. Selecting a directive moves stopped preview to its
 first cycle; Before selects the preceding cycle and After restores the pin or
 range start. A deterministic pin offers **Smooth across 4 cycles**, which
 atomically extends it to four cycles and selects Gentle transition; ranges use
@@ -209,21 +218,35 @@ instead of attempting an unbounded canvas allocation.
 The composition strip uses a bounded, authoring-only cache populated through
 the same structure-preview and `generator_preview` commands as the timeline.
 It follows the visible canvas, works while the Generator playback toggle is
-off, and shows onset/density marks with one focusable filled trace tick per
+off, and shows onset/density marks against the global corridor band, with one
+focusable filled trace tick per
 applied directive, one hollow tick per skipped directive, and a split
 green/red tick when only part of a requested quota survived projection. A
+corridor clamp is marked independently and names the floor or ceiling that
+limited the operation, even when projection/exhaustion is also true. The
+inspector can override both corridor rails as one paired option. For a
+perceptual row, `requested` is the count of successfully examined nonzero
+prefixes, `applied` is the selected prefix (including zero), and
+reached/exhausted reflects the inclusive
+target tolerance rather than an inferred operation percentage. A
 gradual range labels its current step, including scheduled 0/0 holds; trace
 fractions remain this-cycle work, not a cumulative percentage inferred from a
 partial cache. This cache never
 supplies timeline rows or playback. Generator retains the legacy stochastic knobs, annotated as
 applying only where no plan directive is active, and links directly to Evolve.
 
-Gradual evolution is operation pacing, not an audio crossfade. It spreads a
-fixed number of engine operations across cycle boundaries. One Rotate,
+Gradual quota evolution is operation pacing, not an audio crossfade. It spreads
+a fixed number of engine operations across cycle boundaries. One Rotate,
 Fragment, Consolidate, or Euclid operation can still reshape many notes, so
 these families may retain a pronounced structural step even under eased
-pacing; the composition strip shows the actual result instead of promising a
-universal note-distance bound.
+pacing. Perceptual target is the alternative when one directive's incremental
+change magnitude is the intended constraint: it searches the legal family
+prefix nearest the fixed-point target, including a zero-operation hold, while
+keeping corridor and projection guards absolute. Multiple active rows compose,
+so their final whole-cycle change may be larger than any one target. Its `v1`
+weights are engineering priors rather than
+empirically calibrated thresholds; exact math and limitations are in
+[DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
 
 Generator controls update stopped preview through `generator_preview` and the
 playback request through `track_set_playback`/`parallel_set_playback`; neither
@@ -236,6 +259,14 @@ overlay, and stopped preview stamps identical values from the structure
 preview's per-matra `matraVelocities`, which the UI forwards in the
 `generator_preview` request as `spanVelocities`. Rest cells and velocity-less
 legacy payloads keep the unshaded look.
+Timeline lane rows share a fixed label gutter (labels never overlap row
+content), generator cells badge their length as a reduced beat fraction
+("2/5" for eight pulses on a Subdivision-20 grid; rests and sub-3%-width
+cells carry no badge, exact pulse counts stay in the tooltip), and the
+Subdivision ruler numbers only anchor pulses — the beat start plus its
+principal divisions (quarter-beat anchors 1/6/11/16 at Subdivision 20;
+prime counts label the beat start alone) — leaving other pulses as
+unnumbered ticks.
 Random-access inspection while stopped is bounded to cycles 0 through 10,000
 so cumulative generators cannot turn a recalled patch into unbounded preview
 work. During playback the timeline remains unbounded and may resolve the live

@@ -1,8 +1,8 @@
 //! Markov rhythm engine for filling protected accent spans.
 //!
 //! Gati and jathi create protected pulse spans. This crate does not decide
-//! those spans; it chooses a rhythmic grouping pattern that fits exactly
-//! inside each span without crossing the span boundary.
+//! those spans; it chooses a rhythmic grouping pattern that tiles each span
+//! exactly, with explicit paired ties when a sounding event crosses a seam.
 
 use std::collections::HashMap;
 
@@ -13,13 +13,18 @@ use thiserror::Error;
 pub mod generators;
 pub use generators::dumka::reshape::EuclidRestPolicy;
 pub use generators::{
-    resolve_generator_cycle, resolve_generator_cycle_with_trace, resolve_generator_seed,
-    resolve_generator_seed_at_cycle, BeatRange, CycleGenerator, DirectiveFamily, DirectiveOptions,
-    DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams, EvolutionDirective,
-    ExampleGeneratorParams, GeneratedCell, GeneratedSpan, GeneratorConfig, GeneratorCycleContext,
-    GeneratorCycleResolution, GeneratorError, GeneratorSeedMode, GeneratorSeedResolution,
-    GeneratorSeedSource, GeneratorSpanInput, RotateDirection, DEFAULT_DUMKA_PATTERN,
-    MAX_EVOLUTION_DIRECTIVES,
+    evolution_state, perceptual_distance, resolve_generator_cycle,
+    resolve_generator_cycle_with_trace, resolve_generator_seed, resolve_generator_seed_at_cycle,
+    BeatRange, CycleGenerator, DensityCorridorRange, DirectiveFamily, DirectiveMagnitude,
+    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams,
+    EvolutionDirective, EvolutionState, EvolvedOnset, ExampleGeneratorParams, GeneratedCell,
+    GeneratedSpan, GeneratorConfig, GeneratorCycleContext, GeneratorCycleResolution,
+    GeneratorError, GeneratorSeedMode, GeneratorSeedResolution, GeneratorSeedSource,
+    GeneratorSpanInput, PerceptualBreakdown, PerceptualContext, PerceptualDistance,
+    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualPacingTrace,
+    PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN, LEGACY_EVOLUTION_TRACE_ID,
+    MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
+    MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 
 const fn one_u32() -> u32 {

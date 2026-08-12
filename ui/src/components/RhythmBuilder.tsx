@@ -12,6 +12,7 @@ import {
   patternHasRewritableSugar,
   removeSelection,
   setGroupCount,
+  setGroupSpan,
   setLeafKind,
   setStroke,
   setWeight,
@@ -239,6 +240,19 @@ export function RhythmBuilder({
   const single = info.kind === "single" ? info.node : null;
   const leaf = single && single.kind !== "group" ? single : null;
   const group = single && single.kind === "group" ? single : null;
+  const topLevelGroup = group && nodes.includes(group) ? group : null;
+  const topLevelSpanMax = topLevelGroup
+    ? Math.min(
+        DUMKA_MAX_WEIGHT,
+        nodes
+          .slice(nodes.indexOf(topLevelGroup))
+          .reduce((sum, node) => sum + node.weight, 0)
+      )
+    : DUMKA_MAX_WEIGHT;
+  const canUngroup =
+    group !== null &&
+    group.children.reduce((sum, child) => sum + child.weight, 0) ===
+      group.weight;
   const articulatableGroup =
     group && canArticulateGroup(nodes, group.id, projectionSpans) ? group : null;
   const run = info.kind === "run";
@@ -291,13 +305,31 @@ export function RhythmBuilder({
           <label className="rb-tool-field">
             <span>{group ? "span" : "weight"}</span>
             <NumericField
-              aria-label="Element weight"
+              aria-label={
+                topLevelGroup
+                  ? "Group span in existing beats"
+                  : group
+                    ? "Group relative span"
+                    : "Element weight"
+              }
+              aria-describedby={
+                topLevelGroup ? "rhythm-builder-span-help" : undefined
+              }
               min={1}
-              max={DUMKA_MAX_WEIGHT}
+              max={topLevelSpanMax}
               value={single.weight}
               disabled={disabled}
+              title={
+                topLevelGroup
+                  ? "Uses existing beats to the right"
+                  : undefined
+              }
               onValueCommit={(value) =>
-                apply(setWeight(nodes, single.id, Math.round(value)))
+                apply(
+                  topLevelGroup
+                    ? setGroupSpan(nodes, topLevelGroup.id, Math.round(value))
+                    : setWeight(nodes, single.id, Math.round(value))
+                )
               }
             />
           </label>
@@ -320,7 +352,12 @@ export function RhythmBuilder({
             </label>
             <button
               type="button"
-              disabled={disabled}
+              disabled={disabled || !canUngroup}
+              title={
+                canUngroup
+                  ? undefined
+                  : "This tuplet cannot be ungrouped without changing timing"
+              }
               onClick={() => apply(ungroupNode(nodes, group.id))}
             >
               Ungroup
@@ -459,6 +496,13 @@ export function RhythmBuilder({
           ))}
         </datalist>
       </div>
+
+      {topLevelGroup ? (
+        <p className="rb-hint" id="rhythm-builder-span-help">
+          Span uses existing beats to the right. Growing replaces covered
+          blocks; shrinking leaves rest.
+        </p>
+      ) : null}
 
       {opError ? (
         <p className="rb-op-error" role="alert">

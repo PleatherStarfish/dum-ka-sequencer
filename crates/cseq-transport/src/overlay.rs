@@ -820,6 +820,39 @@ pub(crate) fn silence_pulse(tree: &mut DurationTree, node_id: u64) -> Result<(),
 mod tests {
     use super::*;
 
+    fn test_channel_hocket_spec() -> cseq_rhythm::ChannelHocketSpec {
+        cseq_rhythm::ChannelHocketSpec {
+            order: cseq_rhythm::MarkovOrder::First,
+            channels: vec![1, 2, 3],
+            transitions: vec![
+                cseq_rhythm::ChannelTransition {
+                    from: vec![1],
+                    to: 2,
+                    weight: 1,
+                },
+                cseq_rhythm::ChannelTransition {
+                    from: vec![2],
+                    to: 3,
+                    weight: 1,
+                },
+                cseq_rhythm::ChannelTransition {
+                    from: vec![3],
+                    to: 1,
+                    weight: 1,
+                },
+            ],
+            fallback: 1,
+            fallback_weights: vec![],
+            entry_weights: vec![],
+            seed_mode: cseq_rhythm::RhythmSeedMode::Locked { seed: 1 },
+            global_seed: 1,
+            accent_rules: vec![],
+            position_rules: vec![],
+            assign_mode: cseq_rhythm::ChannelAssignMode::Markov,
+            euclid: None,
+        }
+    }
+
     #[test]
     fn cross_span_tie_chain_emits_one_note_with_its_openers_payload() {
         // These are the three flat playback cells produced by three adjacent
@@ -860,7 +893,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].offset, Rational::new(0, 1));
         assert!(matches!(
-            events[0].kind,
+            &events[0].kind,
             EventKind::NoteOn {
                 channel: 0,
                 pitch: 36,
@@ -869,25 +902,25 @@ mod tests {
         ));
         assert_eq!(events[1].offset, Rational::new(3, 1));
         assert!(matches!(
-            events[1].kind,
+            &events[1].kind,
             EventKind::NoteOff {
                 channel: 0,
                 pitch: 36,
             }
         ));
 
-        let queue = events
+        let mut queue = events
             .iter()
             .map(|event| {
                 let tick = u64::try_from(event.offset.to_integer()).unwrap();
-                match event.kind {
+                match &event.kind {
                     EventKind::NoteOn {
                         channel,
                         pitch,
                         velocity,
-                    } => QueuedEvent::note_on(tick, channel, pitch, velocity),
+                    } => QueuedEvent::note_on(tick, *channel, *pitch, *velocity),
                     EventKind::NoteOff { channel, pitch } => {
-                        QueuedEvent::note_off(tick, channel, pitch)
+                        QueuedEvent::note_off(tick, *channel, *pitch)
                     }
                     EventKind::Cc { .. } => unreachable!("overlay tie proof emits notes only"),
                 }
@@ -897,5 +930,16 @@ mod tests {
         assert_eq!(groups.len(), 1, "hocket/trigger consumers see one chain");
         assert_eq!(groups[0].start_tick, 0);
         assert_eq!(groups[0].end_tick, 3);
+
+        let mut spec = test_channel_hocket_spec();
+        let (hocket_events, _) =
+            apply_channel_hocket_to_queue(&mut queue, 0, 3, &[], &mut spec, 0, None, 3, None)
+                .expect("hocket assignment");
+        assert_eq!(hocket_events.len(), 1, "one assignment per tied chain");
+        assert_eq!(hocket_events[0].start_tick, 0);
+        assert_eq!(hocket_events[0].end_tick, 3);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].bytes[1..3], [36, 71]);
+        assert_eq!(queue[1].bytes[1], 36);
     }
 }

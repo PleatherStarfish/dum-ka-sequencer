@@ -103,16 +103,14 @@ Consolidate, and Euclid can still make a broad structural change in one legal
 application. Exact semantics and trace/UI constraints remain in
 [DUMKA_EVOLVE_PLAN.md](DUMKA_EVOLVE_PLAN.md).
 
-## M3.9 — Tied spans and the density corridor (architecture ready)
+## M3.9 — Tied spans and the density corridor (delivered)
 
-The lasting fix for the two timeline defects: the cross-span tie fence
-becomes a fail-closed pairing handshake (the overlay has merged tied
-cells since M1; sustained tuplets across beats become legal end-to-end,
-and the articulated idiom becomes a style instead of a requirement), and
-a density corridor (floor/ceiling, automatable, plan-aware, traced)
-makes onset density an enforced fold invariant with corridor > plan >
-leash precedence. Transport is explicitly untouched — the evidence and
-the full design live in
+The cross-span tie fence is now a fail-closed pairing handshake (the overlay
+merges tied cells; sustained tuplets across beats are legal end-to-end, and
+the articulated idiom is a style instead of a requirement). The automatable,
+plan-aware density corridor now makes onset density an enforced fold invariant
+with corridor > plan > leash precedence and additive clamp trace. Transport
+production code remained untouched; the evidence and implementation contract live in
 [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md).
 
 ## M4 — Bass payload (the one platform extension)

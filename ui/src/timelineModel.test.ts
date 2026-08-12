@@ -7,6 +7,7 @@ import timelineLanesSource from "./components/TimelineLanes.tsx?raw";
 import previewLimitsRaw from "./__fixtures__/dto/preview_limits.json?raw";
 
 import {
+  formatBeatFraction,
   MAX_STOPPED_PREVIEW_CYCLE,
   TIMELINE_PLAYBACK_LANE_SOURCES,
   TIMELINE_PLAYBACK_LANE_TICK_SPACE,
@@ -224,6 +225,19 @@ describe("timeline coordinate-space contract", () => {
         `lane "${lane}" sources from ticks and must use the tick-space helper`
       ).toBe("tick-via-identity-helper");
     }
+  });
+
+  it("formats cell lengths as reduced beat quantities", () => {
+    // The lane badges speak in beats: raw matra counts change meaning
+    // with every authored grid (8 pulses at Subdivision 20 is 2/5 beat).
+    expect(formatBeatFraction(8, 20)).toBe("2/5");
+    expect(formatBeatFraction(5, 20)).toBe("1/4");
+    expect(formatBeatFraction(4, 20)).toBe("1/5");
+    expect(formatBeatFraction(20, 20)).toBe("1");
+    expect(formatBeatFraction(40, 20)).toBe("2");
+    expect(formatBeatFraction(30, 20)).toBe("3/2");
+    expect(formatBeatFraction(3, 7)).toBe("3/7");
+    expect(formatBeatFraction(0, 20)).toBe("0");
   });
 
   it("maps ticks linearly", () => {

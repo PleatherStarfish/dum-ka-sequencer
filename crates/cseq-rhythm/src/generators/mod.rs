@@ -14,9 +14,14 @@ use thiserror::Error;
 use crate::{mix_seed, ResolvedRhythmCell, ResolvedRhythmSpan, SplitMix64};
 
 pub use dumka::{
-    BeatRange, DirectiveFamily, DirectiveOptions, DirectivePacing, DirectiveSkip,
-    DirectiveTraceEntry, DumkaGeneratorParams, EvolutionDirective, RotateDirection,
-    DEFAULT_DUMKA_PATTERN, MAX_EVOLUTION_DIRECTIVES,
+    evolution_state, perceptual_distance, BeatRange, DirectiveFamily, DirectiveMagnitude,
+    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams,
+    EvolutionDirective, EvolutionState, EvolvedOnset, PerceptualBreakdown, PerceptualContext,
+    PerceptualCycleDistance, PerceptualDistance, PerceptualError, PerceptualModel,
+    PerceptualModelVersion,
+    PerceptualPacingTrace, PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN,
+    LEGACY_EVOLUTION_TRACE_ID, MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI,
+    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use example::ExampleGeneratorParams;
 
@@ -271,10 +276,23 @@ pub fn resolve_generator_cycle(
 /// Generic generator output plus optional authoring trace. Transport keeps
 /// calling [`resolve_generator_cycle`] and therefore receives the identical
 /// span type; stopped preview may opt into this trace-capable view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DensityCorridorRange {
+    pub floor: u32,
+    pub ceiling: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratorCycleResolution {
     pub spans: Vec<GeneratedSpan>,
     pub trace: Vec<DirectiveTraceEntry>,
+    /// Backend-owned cycle-effective density rail. `None` for generators
+    /// without a density corridor.
+    pub density_corridor: Option<DensityCorridorRange>,
+    /// Whole-cycle realized perceptual distance for Dum-Ka previews
+    /// (`None` for other generators, cycle 0, and unsupported grids).
+    pub cycle_distance: Option<PerceptualCycleDistance>,
 }
 
 pub fn resolve_generator_cycle_with_trace(
@@ -282,12 +300,21 @@ pub fn resolve_generator_cycle_with_trace(
     context: &GeneratorCycleContext<'_>,
 ) -> Result<GeneratorCycleResolution, GeneratorError> {
     config.validate()?;
-    let (spans, trace) = match config {
-        GeneratorConfig::Example(params) => (params.generate(context)?, Vec::new()),
-        GeneratorConfig::Dumka(params) => params.generate_with_trace(context)?,
+    let (spans, trace, density_corridor, cycle_distance) = match config {
+        GeneratorConfig::Example(params) => (params.generate(context)?, Vec::new(), None, None),
+        GeneratorConfig::Dumka(params) => {
+            let (spans, trace, density_corridor, cycle_distance) =
+                params.generate_with_trace(context)?;
+            (spans, trace, Some(density_corridor), cycle_distance)
+        }
     };
     validate_generated_spans(context.spans, &spans)?;
-    Ok(GeneratorCycleResolution { spans, trace })
+    Ok(GeneratorCycleResolution {
+        spans,
+        trace,
+        density_corridor,
+        cycle_distance,
+    })
 }
 
 fn validate_generated_spans(
@@ -300,8 +327,9 @@ fn validate_generated_spans(
             actual: spans.len(),
         });
     }
-    let mut previous_boundary: Option<(PulseSpanId, bool, bool)> = None;
-    for (span_index, (input, span)) in inputs.iter().zip(spans).enumerate() {
+    // Validate identity and exact tiling before interpreting tie metadata, so
+    // malformed geometry retains the established, more specific errors.
+    for (input, span) in inputs.iter().zip(spans) {
         if input.span_id != span.span_id || input.span_len != span.span_len {
             return Err(GeneratorError::SpanIdentity {
                 span_id: input.span_id,
@@ -321,47 +349,44 @@ fn validate_generated_spans(
                 span_id: input.span_id,
             });
         }
-
-        let Some(first) = span.cells.first() else {
-            // Zero-length input spans are not produced by the structure
-            // compiler, but preserve the old empty-tiling acceptance while
-            // ensuring no tie can jump across one without a handshake.
-            if previous_boundary.is_some_and(|(_, tied_to_next, _)| tied_to_next) {
-                return Err(GeneratorError::CrossSpanTie {
-                    span_id: input.span_id,
-                });
-            }
-            previous_boundary = None;
-            continue;
-        };
-
-        if span_index == 0 && first.tied_from_previous {
-            return Err(GeneratorError::CrossSpanTie {
-                span_id: input.span_id,
-            });
-        }
-        if let Some((_, previous_tied_to_next, previous_rest)) = previous_boundary {
-            let paired = previous_tied_to_next == first.tied_from_previous;
-            let sounding = !previous_rest && !first.rest;
-            if !paired || (first.tied_from_previous && !sounding) {
-                return Err(GeneratorError::CrossSpanTie {
-                    span_id: input.span_id,
-                });
-            }
-        } else if first.tied_from_previous {
-            return Err(GeneratorError::CrossSpanTie {
-                span_id: input.span_id,
-            });
-        }
-
-        let last = span
-            .cells
-            .last()
-            .expect("a span with a first cell also has a last cell");
-        previous_boundary = Some((input.span_id, last.tied_to_next, last.rest));
     }
 
-    if let Some((span_id, true, _)) = previous_boundary {
+    // Ties form one continuous handshake over the flattened cell stream. The
+    // same rule applies inside a span and at an interior span boundary: the
+    // right cell enters iff the left cell exits, and both must sound. Empty
+    // spans are absolute fences because they cannot carry either half.
+    let mut previous_cell: Option<(PulseSpanId, bool, bool)> = None;
+    for (input, span) in inputs.iter().zip(spans) {
+        if span.cells.is_empty() {
+            if previous_cell.is_some_and(|(_, tied_to_next, _)| tied_to_next) {
+                return Err(GeneratorError::CrossSpanTie {
+                    span_id: input.span_id,
+                });
+            }
+            previous_cell = None;
+            continue;
+        }
+
+        for cell in &span.cells {
+            if let Some((_, previous_tied_to_next, previous_rest)) = previous_cell {
+                let paired = previous_tied_to_next == cell.tied_from_previous;
+                let sounding = !previous_rest && !cell.rest;
+                if !paired || (cell.tied_from_previous && !sounding) {
+                    return Err(GeneratorError::CrossSpanTie {
+                        span_id: input.span_id,
+                    });
+                }
+            } else if cell.tied_from_previous {
+                return Err(GeneratorError::CrossSpanTie {
+                    span_id: input.span_id,
+                });
+            }
+
+            previous_cell = Some((input.span_id, cell.tied_to_next, cell.rest));
+        }
+    }
+
+    if let Some((span_id, true, _)) = previous_cell {
         return Err(GeneratorError::CrossSpanTie { span_id });
     }
     Ok(())
@@ -394,6 +419,10 @@ pub enum GeneratorError {
         second_id: u64,
         cycle: u64,
     },
+    #[error(
+        "dumka perceptual plan reserves {requested} scoring operations, exceeding the limit of {limit}"
+    )]
+    DumkaPerceptualWorkLimit { requested: u64, limit: u64 },
     #[error("generator history mode needs a positive history or new-seed weight")]
     EmptySeedWeights,
     #[error("generator returned {actual} spans, expected {expected}")]
@@ -402,7 +431,7 @@ pub enum GeneratorError {
     SpanIdentity { span_id: PulseSpanId },
     #[error("generator returned invalid cells for span {span_id}")]
     InvalidCells { span_id: PulseSpanId },
-    #[error("generator returned an unpaired cross-span tie at span {span_id}")]
+    #[error("generator returned an unpaired tie at span {span_id}")]
     CrossSpanTie { span_id: PulseSpanId },
 }
 
@@ -410,6 +439,7 @@ pub enum GeneratorError {
 mod tests {
     use super::*;
     use cseq_model::{PulseSpanKind, Rational};
+    use proptest::prelude::*;
 
     fn input(id: u64, len: u32) -> GeneratorSpanInput {
         GeneratorSpanInput {
@@ -514,7 +544,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "generator returned an unpaired cross-span tie at span 42"
+            "generator returned an unpaired tie at span 42"
         );
     }
 
@@ -537,6 +567,177 @@ mod tests {
             ],
         )];
         assert_eq!(validate_generated_spans(&[input(7, 2)], &plain), Ok(()));
+    }
+
+    #[test]
+    fn generated_span_validation_rejects_malformed_same_span_ties() {
+        let invalid = [
+            // The left cell promises a continuation that the right refuses.
+            generated(
+                7,
+                vec![
+                    cell(0, 0, 1, false, false, true),
+                    cell(1, 1, 1, false, false, false),
+                ],
+            ),
+            // The right cell claims a continuation without a left-hand tie.
+            generated(
+                7,
+                vec![
+                    cell(0, 0, 1, false, false, false),
+                    cell(1, 1, 1, false, true, false),
+                ],
+            ),
+            // A paired handshake cannot make either rest part of a note.
+            generated(
+                7,
+                vec![
+                    cell(0, 0, 1, true, false, true),
+                    cell(1, 1, 1, false, true, false),
+                ],
+            ),
+            generated(
+                7,
+                vec![
+                    cell(0, 0, 1, false, false, true),
+                    cell(1, 1, 1, true, true, false),
+                ],
+            ),
+        ];
+
+        for span in invalid {
+            assert_eq!(
+                validate_generated_spans(&[input(7, 2)], &[span]),
+                Err(GeneratorError::CrossSpanTie { span_id: 7 })
+            );
+        }
+    }
+
+    fn assert_complete_tie_handshakes(spans: &[GeneratedSpan]) {
+        let flattened = spans
+            .iter()
+            .flat_map(|span| span.cells.iter().map(move |cell| (span.span_id, cell)))
+            .collect::<Vec<_>>();
+        assert!(!flattened.is_empty());
+        assert!(!flattened[0].1.tied_from_previous);
+        assert!(!flattened.last().unwrap().1.tied_to_next);
+        for pair in flattened.windows(2) {
+            let left = pair[0].1;
+            let right = pair[1].1;
+            assert_eq!(
+                left.tied_to_next, right.tied_from_previous,
+                "tie mismatch between spans {} and {}",
+                pair[0].0, pair[1].0
+            );
+            if left.tied_to_next {
+                assert!(!left.rest && !right.rest);
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn weighted_nested_fractional_sustains_pair_on_beat_and_grouping_boundaries(
+            left_weight in 1u32..=3,
+            right_weight in 1u32..=3,
+        ) {
+            // The nested weighted group sounds from before beat 2 until after
+            // it. Multiplying the outer weight sum by three gives an exact
+            // grid for both the rational tuplet and Grouping-3 spans.
+            let pattern = format!(
+                "[.@{left_weight} [x@2 _]@4 x@{right_weight}]@2"
+            );
+            let outer_weight = left_weight + 4 + right_weight;
+            let subdivision = outer_weight * 3;
+
+            for span_len in [subdivision, 3] {
+                let span_count = 2 * subdivision / span_len;
+                let inputs = (0..span_count)
+                    .map(|index| GeneratorSpanInput {
+                        span_id: u64::from(index + 1),
+                        span_len,
+                        label: None,
+                        section_index: Some(1),
+                        subdivision: Some(subdivision),
+                    })
+                    .collect::<Vec<_>>();
+                let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
+                    pattern: pattern.clone(),
+                    ..Default::default()
+                });
+                let context = GeneratorCycleContext {
+                    track_id: Some("fractional-tie-property"),
+                    cycle: 0,
+                    cycle_beats: 2,
+                    spans: &inputs,
+                    seed: 19,
+                    automation: &|_, _, _| None,
+                };
+                let resolved = resolve_generator_cycle(&config, &context).unwrap();
+                assert_complete_tie_handshakes(&resolved);
+                let has_cross_span_tie = resolved.windows(2).any(|pair| {
+                    pair[0].cells.last().is_some_and(|cell| cell.tied_to_next)
+                        && pair[1]
+                            .cells
+                            .first()
+                            .is_some_and(|cell| cell.tied_from_previous)
+                });
+                prop_assert!(has_cross_span_tie);
+            }
+        }
+    }
+
+    #[test]
+    fn tie_handshake_does_not_relax_span_identity_or_exact_tiling() {
+        let valid_chain = vec![
+            generated(1, vec![cell(0, 0, 1, false, false, true)]),
+            generated(2, vec![cell(0, 0, 1, false, true, false)]),
+        ];
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1)], &valid_chain),
+            Err(GeneratorError::SpanCount {
+                expected: 1,
+                actual: 2,
+            })
+        );
+
+        let mut wrong_identity = valid_chain.clone();
+        wrong_identity[1].span_id = 9;
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1), input(2, 1)], &wrong_identity),
+            Err(GeneratorError::SpanIdentity { span_id: 2 })
+        );
+
+        let mut wrong_index = valid_chain.clone();
+        wrong_index[1].cells[0].index = 3;
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1), input(2, 1)], &wrong_index),
+            Err(GeneratorError::InvalidCells { span_id: 2 })
+        );
+
+        let mut wrong_start = valid_chain.clone();
+        wrong_start[1].cells[0].start = 1;
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1), input(2, 1)], &wrong_start),
+            Err(GeneratorError::InvalidCells { span_id: 2 })
+        );
+
+        let mut zero_length = valid_chain.clone();
+        zero_length[1].cells[0].len = 0;
+        zero_length[1].span_len = 1;
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1), input(2, 1)], &zero_length),
+            Err(GeneratorError::InvalidCells { span_id: 2 })
+        );
+
+        let mut wrong_cover = valid_chain;
+        wrong_cover[1].span_len = 2;
+        assert_eq!(
+            validate_generated_spans(&[input(1, 1), input(2, 2)], &wrong_cover),
+            Err(GeneratorError::InvalidCells { span_id: 2 })
+        );
     }
 
     #[test]
@@ -605,6 +806,7 @@ mod tests {
             to_cycle: 1,
             family: DirectiveFamily::BarlowRemove,
             pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::OperationQuota,
             intensity: 15,
             scope: None,
             options: DirectiveOptions::default(),

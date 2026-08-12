@@ -36,10 +36,15 @@ use crate::{mix_seed, SplitMix64};
 
 use super::barlow::{factor_descending, indispensability, stratification};
 use super::lattice::symmetric_difference;
+use super::perceptual::{
+    perceptual_distance, PerceptualContext, PerceptualCycleDistance, PerceptualModel,
+    PerceptualModelVersion,
+};
 use super::plan::{
     active_directives, pin_quota, rotate_pin_quota, slot_range, DensityCorridorClamp,
-    DensityCorridorLimit, DirectiveFamily, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
-    EvolutionDirective, RangeAccumulator, RotateDirection, SlotRange,
+    DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectivePacing, DirectiveSkip,
+    DirectiveTraceEntry, EvolutionDirective, PerceptualPacingTrace, RangeAccumulator,
+    RotateDirection, SlotRange, LEGACY_EVOLUTION_TRACE_ID,
 };
 use super::sioros::{
     desyncopate_at, legal_desyncopations, legal_syncopations, metrical_levels, syncopation_target,
@@ -49,7 +54,7 @@ use super::{
     DUMKA_BARLOW_TEMPERATURE_TARGET, DUMKA_DENSITY_CEILING_TARGET, DUMKA_DENSITY_FLOOR_TARGET,
     DUMKA_DRIFT_LEASH_TARGET, DUMKA_EVOLUTION_RATE_TARGET, DUMKA_FILL_COMPLEXITY_TARGET,
 };
-use crate::generators::{GeneratorAutomationSampler, GeneratorSpanInput};
+use crate::generators::{DensityCorridorRange, GeneratorAutomationSampler, GeneratorSpanInput};
 use cseq_model::Rational;
 
 const SALT_FIRE: u64 = 0xD0A1_5EED_0001_0001;
@@ -162,7 +167,9 @@ pub struct EvolutionInputs<'a> {
     pub cycle_beats: u32,
 }
 
-fn seed_state(seed: &CompiledSeed) -> EvolutionState {
+/// Convert one compiled Dum-Ka cycle into the canonical state consumed by the
+/// perceptual-distance API and the evolution fold.
+pub fn evolution_state(seed: &CompiledSeed) -> EvolutionState {
     let s = seed.required_subdivision;
     EvolutionState {
         onsets: seed
@@ -181,6 +188,10 @@ fn seed_state(seed: &CompiledSeed) -> EvolutionState {
             .collect(),
         rotation_beats: 0,
     }
+}
+
+fn seed_state(seed: &CompiledSeed) -> EvolutionState {
+    evolution_state(seed)
 }
 
 /// Rebuild a projectable seed from an evolved state (rotation applied).
@@ -262,6 +273,31 @@ impl DensityCorridor {
             None
         }
     }
+
+    const fn percent_range(self) -> DensityCorridorRange {
+        DensityCorridorRange {
+            floor: self.floor_percent,
+            ceiling: self.ceiling_percent,
+        }
+    }
+}
+
+fn normalization_clamp(
+    before: &EvolutionState,
+    after: &EvolutionState,
+    corridor: DensityCorridor,
+) -> Option<DensityCorridorClamp> {
+    match after.onsets.len().cmp(&before.onsets.len()) {
+        std::cmp::Ordering::Less => Some(DensityCorridorClamp {
+            limit: DensityCorridorLimit::Ceiling,
+            density_percent: corridor.ceiling_percent,
+        }),
+        std::cmp::Ordering::Greater => Some(DensityCorridorClamp {
+            limit: DensityCorridorLimit::Floor,
+            density_percent: corridor.floor_percent,
+        }),
+        std::cmp::Ordering::Equal => None,
+    }
 }
 
 fn sampled_density_corridor(
@@ -269,28 +305,44 @@ fn sampled_density_corridor(
     cycle: u64,
     slots: u32,
 ) -> DensityCorridor {
-    let sampled_floor = sampled_percent(
-        inputs,
+    sampled_density_corridor_with_presence(inputs, cycle, slots).0
+}
+
+fn sampled_density_corridor_with_presence(
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    slots: u32,
+) -> (DensityCorridor, bool) {
+    let floor_sample = (inputs.automation)(
         DUMKA_DENSITY_FLOOR_TARGET,
-        inputs.density_floor,
         cycle,
+        f64::from(inputs.density_floor),
     );
-    let sampled_ceiling = sampled_percent(
-        inputs,
+    let ceiling_sample = (inputs.automation)(
         DUMKA_DENSITY_CEILING_TARGET,
-        inputs.density_ceiling,
         cycle,
+        f64::from(inputs.density_ceiling),
     );
+    let sampled_floor = floor_sample
+        .unwrap_or(f64::from(inputs.density_floor))
+        .round()
+        .clamp(0.0, 100.0) as u32;
+    let sampled_ceiling = ceiling_sample
+        .unwrap_or(f64::from(inputs.density_ceiling))
+        .round()
+        .clamp(0.0, 100.0) as u32;
     // Two automation lanes are independent and can cross between authored
     // points. Playback never fails for that transient: the ceiling remains
     // the hard cap and the effective floor contracts to meet it.
-    DensityCorridor::new(sampled_floor.min(sampled_ceiling), sampled_ceiling, slots)
+    (
+        DensityCorridor::new(sampled_floor.min(sampled_ceiling), sampled_ceiling, slots),
+        floor_sample.is_some() || ceiling_sample.is_some(),
+    )
 }
 
 fn directive_density_corridor(
     directive: &EvolutionDirective,
-    inputs: &EvolutionInputs<'_>,
-    cycle: u64,
+    global: DensityCorridor,
     slots: u32,
 ) -> DensityCorridor {
     match (
@@ -298,7 +350,7 @@ fn directive_density_corridor(
         directive.options.density_ceiling,
     ) {
         (Some(floor), Some(ceiling)) => DensityCorridor::new(floor, ceiling, slots),
-        _ => sampled_density_corridor(inputs, cycle, slots),
+        _ => global,
     }
 }
 
@@ -407,6 +459,38 @@ fn state_intervals_disjoint(state: &EvolutionState, slots: u32) -> bool {
     true
 }
 
+/// Validate intervals after the global rotation register is applied. A
+/// rotation wraps onsets onto the cycle, but cycle edges are absolute sustain
+/// fences: durations do not wrap with them. Sorting the physical intervals is
+/// also necessary because wrapping changes their temporal order and can make
+/// two otherwise-disjoint state intervals overlap.
+fn rotated_state_intervals_disjoint(seed: &CompiledSeed, state: &EvolutionState) -> bool {
+    let slots = seed.total_beats.saturating_mul(seed.required_subdivision);
+    if slots == 0 {
+        return false;
+    }
+    let shift = state
+        .rotation_beats
+        .saturating_mul(seed.required_subdivision)
+        % slots;
+    let mut intervals = Vec::with_capacity(state.onsets.len());
+    for onset in &state.onsets {
+        let Some(shifted) = onset.slot.checked_add(shift) else {
+            return false;
+        };
+        let start = shifted % slots;
+        let Some(end) = start.checked_add(onset.dur) else {
+            return false;
+        };
+        if onset.dur == 0 || end > slots {
+            return false;
+        }
+        intervals.push((start, end));
+    }
+    intervals.sort_unstable();
+    intervals.windows(2).all(|pair| pair[0].1 <= pair[1].0)
+}
+
 fn state_slots(state: &EvolutionState) -> Vec<u32> {
     state.onsets.iter().map(|onset| onset.slot).collect()
 }
@@ -416,16 +500,20 @@ fn state_is_projectable(
     state: &EvolutionState,
     inputs: &EvolutionInputs<'_>,
 ) -> bool {
+    if !rotated_state_intervals_disjoint(seed, state) {
+        return false;
+    }
     let projected = state_to_compiled(seed, state);
     super::tree::resolve_seed_cells(&projected, inputs.cycle_beats, inputs.spans).is_ok()
 }
 
 /// Bring inherited state into the active density corridor before this
 /// cycle's operators run. Contraction removes weakest onsets first;
-/// expansion adds strongest genuinely silent pulses first. Every individual
-/// edit is trial-projected, giving normalization the same playability fence
-/// as ordinary evolution while keeping the choice equivalent to temperature
-/// zero (no draw-order-dependent randomness).
+/// expansion adds the strongest missing grid pulses first, splitting an
+/// existing sustain when necessary. Every individual edit is trial-projected,
+/// giving normalization the same playability fence as ordinary evolution
+/// while keeping the choice equivalent to temperature zero (no
+/// draw-order-dependent randomness).
 fn normalize_to_density_corridor(
     seed: &CompiledSeed,
     state: &EvolutionState,
@@ -459,23 +547,41 @@ fn normalize_to_density_corridor(
     }
 
     while current.onsets.len() < corridor.floor_count {
-        let occupied = occupied_slots(&current, slots);
         let mut strongest = (0..slots)
-            .filter(|slot| !occupied[*slot as usize])
+            .filter(|slot| current.onsets.iter().all(|onset| onset.slot != *slot))
             .collect::<Vec<_>>();
         strongest.sort_by_key(|&slot| (std::cmp::Reverse(ranks[slot as usize]), slot));
         let mut changed = false;
         for slot in strongest {
             let mut candidate = current.clone();
-            let insert_at = candidate.onsets.partition_point(|onset| onset.slot < slot);
-            candidate.onsets.insert(
-                insert_at,
+            let covering = candidate
+                .onsets
+                .iter()
+                .position(|onset| onset.slot < slot && slot < onset.slot.saturating_add(onset.dur));
+            let added = if let Some(index) = covering {
+                // A high authored floor can require articulating an existing
+                // sustain. Split it without changing coverage or stroke
+                // class; this is the deterministic, temperature-zero form
+                // of adding the strongest missing onset.
+                let old_end = candidate.onsets[index]
+                    .slot
+                    .saturating_add(candidate.onsets[index].dur);
+                let class = candidate.onsets[index].class.clone();
+                candidate.onsets[index].dur = slot - candidate.onsets[index].slot;
+                EvolvedOnset {
+                    slot,
+                    dur: old_end - slot,
+                    class,
+                }
+            } else {
                 EvolvedOnset {
                     slot,
                     dur: 1,
                     class: fill_class_before(&current, slot),
-                },
-            );
+                }
+            };
+            let insert_at = candidate.onsets.partition_point(|onset| onset.slot < slot);
+            candidate.onsets.insert(insert_at, added);
             if state_is_projectable(seed, &candidate, inputs) {
                 current = candidate;
                 changed = true;
@@ -571,7 +677,8 @@ fn normalize_to_leash(
     fallback
 }
 
-#[allow(clippy::too_many_arguments)] // fold environment; same precedent as apply_generator_to_tree
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)] // direct fold tests use the sampled wrapper
 fn step(
     seed: &CompiledSeed,
     state: &EvolutionState,
@@ -581,9 +688,28 @@ fn step(
     beat_level: u32,
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
-) -> EvolutionState {
+) -> (EvolutionState, Option<DirectiveTraceEntry>) {
+    let slots = seed.total_beats * seed.required_subdivision;
+    let corridor = sampled_density_corridor(inputs, cycle, slots);
+    step_with_corridor(
+        seed, state, seed_slots, ranks, template, beat_level, inputs, cycle, corridor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_with_corridor(
+    seed: &CompiledSeed,
+    state: &EvolutionState,
+    seed_slots: &[u32],
+    ranks: &[u32],
+    template: &[u32],
+    beat_level: u32,
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    corridor: DensityCorridor,
+) -> (EvolutionState, Option<DirectiveTraceEntry>) {
     step_scoped(
-        seed, seed_slots, state, ranks, template, beat_level, inputs, cycle, None,
+        seed, seed_slots, state, ranks, template, beat_level, inputs, cycle, None, corridor,
     )
 }
 
@@ -598,15 +724,26 @@ fn step_scoped(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     window: Option<SlotRange>,
-) -> EvolutionState {
+    corridor: DensityCorridor,
+) -> (EvolutionState, Option<DirectiveTraceEntry>) {
     let drift_leash = sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
     let budget = (drift_leash * seed_slots.len() as u32).div_ceil(100);
     let leashed = normalize_to_leash(seed, state, seed_slots, ranks, inputs, budget);
     let slots = seed.total_beats * seed.required_subdivision;
-    let corridor = sampled_density_corridor(inputs, cycle, slots);
     // Corridor > leash: when the two constraints disagree, normalize the
     // leash first and leave the corridor as the final inherited-state rail.
     let current = normalize_to_density_corridor(seed, &leashed, ranks, inputs, corridor);
+    let normalization_clamp = normalization_clamp(&leashed, &current, corridor);
+    let trace = |requested, applied, skipped, corridor_clamp| DirectiveTraceEntry {
+        cycle,
+        directive_id: LEGACY_EVOLUTION_TRACE_ID,
+        family: DirectiveFamily::Stochastic,
+        requested,
+        applied,
+        skipped,
+        corridor_clamp,
+        perceptual: None,
+    };
 
     let evolution_rate = sampled_percent(
         inputs,
@@ -617,11 +754,17 @@ fn step_scoped(
     if evolution_rate == 0
         || draw(inputs.seed_value, cycle, SALT_FIRE, 100) >= u64::from(evolution_rate)
     {
-        return current;
+        return (
+            current,
+            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+        );
     }
 
     let Some(op) = drawn_op(&inputs.op_weights, inputs.seed_value, cycle) else {
-        return current;
+        return (
+            current,
+            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+        );
     };
     let temperature = sampled_percent(
         inputs,
@@ -631,10 +774,14 @@ fn step_scoped(
     );
 
     let mut candidate = current.clone();
+    let mut successful_clamp = None;
     match op {
         Op::Remove => {
             if current.onsets.len() <= 1 {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             // Weakest-first candidate order; the temperature pool widens
             // toward uniform. Ranks are a permutation, so index 0 at
@@ -646,7 +793,10 @@ fn step_scoped(
                 })
             });
             if order.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             order.sort_by_key(|&index| {
                 (
@@ -676,7 +826,10 @@ fn step_scoped(
                 .collect();
             silent.sort_by_key(|&slot| (std::cmp::Reverse(ranks[slot as usize]), slot));
             if silent.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let slot = silent[pool_pick(silent.len(), temperature, inputs.seed_value, cycle)];
             let class = current
@@ -713,7 +866,11 @@ fn step_scoped(
                 let Some(rotated) =
                     windowed_rotate(&current, window, seed.required_subdivision, direction)
                 else {
-                    return current;
+                    return (
+                        current,
+                        normalization_clamp
+                            .map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                    );
                 };
                 candidate = rotated;
             } else {
@@ -730,7 +887,10 @@ fn step_scoped(
             let onset_slots = state_slots(&current);
             let vectors = legal_syncopations(&onset_slots, template, beat_level, window);
             if vectors.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let vector = vectors[draw(
                 inputs.seed_value,
@@ -740,7 +900,10 @@ fn step_scoped(
             ) as usize];
             let Some(landing) = syncopation_target(&onset_slots, template, vector, beat_level)
             else {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             };
             move_onset(&mut candidate, vector.pulse, landing);
         }
@@ -748,7 +911,10 @@ fn step_scoped(
             let onset_slots = state_slots(&current);
             let pulses = legal_desyncopations(&onset_slots, template, beat_level, window);
             if pulses.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let pulse = pulses[draw(
                 inputs.seed_value,
@@ -758,7 +924,10 @@ fn step_scoped(
             ) as usize];
             let Some((source, _vector)) = desyncopate_at(&onset_slots, template, pulse, beat_level)
             else {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             };
             move_onset(&mut candidate, source, pulse);
         }
@@ -769,11 +938,15 @@ fn step_scoped(
             let intervals =
                 super::figures::ranked_fragment_intervals(&current, slots, ranks, window);
             if intervals.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let interval =
                 intervals[pool_pick(intervals.len(), temperature, inputs.seed_value, cycle)];
             let mut ks = super::figures::k_candidates(interval.len);
+            let unconstrained_k_count = ks.len();
             let headroom = corridor.ceiling_count.saturating_sub(current.onsets.len());
             ks.retain(|&k| {
                 let added = if interval.onset_index.is_some() {
@@ -784,7 +957,24 @@ fn step_scoped(
                 usize::try_from(added).unwrap_or(usize::MAX) <= headroom
             });
             if ks.is_empty() {
-                return current;
+                return (
+                    current,
+                    Some(trace(
+                        1,
+                        0,
+                        DirectiveSkip::None,
+                        Some(DensityCorridorClamp {
+                            limit: DensityCorridorLimit::Ceiling,
+                            density_percent: corridor.ceiling_percent,
+                        }),
+                    )),
+                );
+            }
+            if ks.len() < unconstrained_k_count {
+                successful_clamp = Some(DensityCorridorClamp {
+                    limit: DensityCorridorLimit::Ceiling,
+                    density_percent: corridor.ceiling_percent,
+                });
             }
             let fill_complexity = sampled_percent(
                 inputs,
@@ -811,14 +1001,35 @@ fn step_scoped(
         Op::Consolidate => {
             let runs = super::figures::ranked_consolidate_runs(&current, ranks, window);
             if runs.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let mut run = runs[pool_pick(runs.len(), temperature, inputs.seed_value, cycle)];
+            let unconstrained_count = run.count;
             let removable = current.onsets.len().saturating_sub(corridor.floor_count);
             if removable == 0 {
-                return current;
+                return (
+                    current,
+                    Some(trace(
+                        1,
+                        0,
+                        DirectiveSkip::None,
+                        Some(DensityCorridorClamp {
+                            limit: DensityCorridorLimit::Floor,
+                            density_percent: corridor.floor_percent,
+                        }),
+                    )),
+                );
             }
             run.count = run.count.min(removable.saturating_add(1));
+            if run.count < unconstrained_count {
+                successful_clamp = Some(DensityCorridorClamp {
+                    limit: DensityCorridorLimit::Floor,
+                    density_percent: corridor.floor_percent,
+                });
+            }
             candidate = super::figures::apply_consolidate(&current, &run);
         }
         Op::Euclid => {
@@ -830,7 +1041,10 @@ fn step_scoped(
                 window,
             );
             if windows.is_empty() {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             }
             let window = windows[pool_pick(windows.len(), temperature, inputs.seed_value, cycle)];
             let options = super::reshape::ReshapeOptions {
@@ -847,7 +1061,10 @@ fn step_scoped(
                 rest_policy: inputs.euclid_rest_policy,
             };
             let Some(reshaped) = super::reshape::apply_reshape(&current, &window, &options) else {
-                return current;
+                return (
+                    current,
+                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+                );
             };
             candidate = reshaped;
         }
@@ -856,8 +1073,8 @@ fn step_scoped(
     // Density is the primary authored invariant, including for plan-exempt
     // families and inverted Euclid jumps. Count-preserving operators pass
     // this check without changing their historical trajectory.
-    if corridor.clamp_for(candidate.onsets.len()).is_some() {
-        return current;
+    if let Some(clamp) = corridor.clamp_for(candidate.onsets.len()) {
+        return (current, Some(trace(1, 0, DirectiveSkip::None, Some(clamp))));
     }
 
     // Sustained notes can overlap after a displacement; the projector would
@@ -867,7 +1084,10 @@ fn step_scoped(
         Op::Syncopate | Op::Desyncopate | Op::Fragment | Op::Consolidate | Op::Euclid
     ) && !state_intervals_disjoint(&candidate, slots)
     {
-        return current;
+        return (
+            current,
+            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+        );
     }
 
     // Drift leash: distance of the onset set from the seed, budgeted as a
@@ -889,18 +1109,30 @@ fn step_scoped(
     ) {
         let candidate_slots: Vec<u32> = candidate.onsets.iter().map(|o| o.slot).collect();
         if symmetric_difference(&candidate_slots, seed_slots) > budget {
-            return current;
+            return (
+                current,
+                normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+            );
         }
     }
 
     // Trial projection: an op that would make the pattern unplayable on the
     // actual spans is skipped for this cycle.
-    let projected = state_to_compiled(seed, &candidate);
-    if super::tree::resolve_seed_cells(&projected, inputs.cycle_beats, inputs.spans).is_err() {
-        return current;
+    if !state_is_projectable(seed, &candidate, inputs) {
+        return (
+            current,
+            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+        );
     }
 
-    candidate
+    (
+        candidate,
+        successful_clamp
+            .map(|clamp| trace(1, 1, DirectiveSkip::None, Some(clamp)))
+            .or_else(|| {
+                normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp)))
+            }),
+    )
 }
 
 fn occupied_slots(state: &EvolutionState, slots: u32) -> Vec<bool> {
@@ -1010,15 +1242,51 @@ fn directive_candidate_count(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirectiveApplyError {
-    Skip(DirectiveSkip),
-    Corridor(DensityCorridorClamp),
+struct DirectiveApplyFailure {
+    skipped: DirectiveSkip,
+    corridor_clamp: Option<DensityCorridorClamp>,
 }
 
-impl From<DirectiveSkip> for DirectiveApplyError {
-    fn from(skip: DirectiveSkip) -> Self {
-        Self::Skip(skip)
+impl DirectiveApplyFailure {
+    const fn corridor(clamp: DensityCorridorClamp) -> Self {
+        Self {
+            skipped: DirectiveSkip::None,
+            corridor_clamp: Some(clamp),
+        }
     }
+}
+
+impl From<DirectiveSkip> for DirectiveApplyFailure {
+    fn from(skip: DirectiveSkip) -> Self {
+        Self {
+            skipped: skip,
+            corridor_clamp: None,
+        }
+    }
+}
+
+/// One central post-operation guard for every present and future family.
+/// Projection and corridor failure are evaluated independently so the trace
+/// can tell both truths when a candidate violates both contracts.
+fn candidate_failure(
+    seed: &CompiledSeed,
+    candidate: &EvolutionState,
+    inputs: &EvolutionInputs<'_>,
+    slots: u32,
+    corridor: DensityCorridor,
+) -> Option<DirectiveApplyFailure> {
+    let corridor_clamp = corridor.clamp_for(candidate.onsets.len());
+    let projection_failed = !state_intervals_disjoint(candidate, slots)
+        || !state_is_projectable(seed, candidate, inputs);
+    let skipped = if projection_failed {
+        DirectiveSkip::Projection
+    } else {
+        DirectiveSkip::None
+    };
+    (skipped != DirectiveSkip::None || corridor_clamp.is_some()).then_some(DirectiveApplyFailure {
+        skipped,
+        corridor_clamp,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1035,7 +1303,7 @@ fn apply_one_directive_operation(
     ordinal: u64,
     window: Option<SlotRange>,
     corridor: DensityCorridor,
-) -> Result<EvolutionState, DirectiveApplyError> {
+) -> Result<(EvolutionState, Option<DensityCorridorClamp>), DirectiveApplyFailure> {
     // Reserve a stable block for every application. Multi-draw families use
     // offsets inside the block, so application N's option draw can never
     // collide with application N+1's target draw.
@@ -1050,6 +1318,7 @@ fn apply_one_directive_operation(
         )
     });
     let mut candidate = state.clone();
+    let mut successful_clamp = None;
     match directive.family {
         DirectiveFamily::BarlowRemove => {
             if state.onsets.len() <= 1 {
@@ -1118,7 +1387,8 @@ fn apply_one_directive_operation(
                     seed.required_subdivision,
                     directive.options.rotate_direction,
                 )
-                .ok_or(DirectiveSkip::Exhausted)?;
+                .ok_or(DirectiveSkip::Exhausted)
+                .map_err(DirectiveApplyFailure::from)?;
             } else {
                 candidate.rotation_beats = match directive.options.rotate_direction {
                     // `state_to_compiled` adds this register to absolute
@@ -1136,7 +1406,7 @@ fn apply_one_directive_operation(
             let onset_slots = state_slots(state);
             let vectors = legal_syncopations(&onset_slots, template, beat_level, window);
             if vectors.is_empty() {
-                return Err(DirectiveSkip::Exhausted);
+                return Err(DirectiveSkip::Exhausted.into());
             }
             let vector = vectors[plan_draw(
                 inputs.seed_value,
@@ -1146,14 +1416,15 @@ fn apply_one_directive_operation(
                 vectors.len() as u64,
             ) as usize];
             let landing = syncopation_target(&onset_slots, template, vector, beat_level)
-                .ok_or(DirectiveSkip::Exhausted)?;
+                .ok_or(DirectiveSkip::Exhausted)
+                .map_err(DirectiveApplyFailure::from)?;
             move_onset(&mut candidate, vector.pulse, landing);
         }
         DirectiveFamily::Desyncopate => {
             let onset_slots = state_slots(state);
             let pulses = legal_desyncopations(&onset_slots, template, beat_level, window);
             if pulses.is_empty() {
-                return Err(DirectiveSkip::Exhausted);
+                return Err(DirectiveSkip::Exhausted.into());
             }
             let pulse = pulses[plan_draw(
                 inputs.seed_value,
@@ -1163,7 +1434,8 @@ fn apply_one_directive_operation(
                 pulses.len() as u64,
             ) as usize];
             let (source, _) = desyncopate_at(&onset_slots, template, pulse, beat_level)
-                .ok_or(DirectiveSkip::Exhausted)?;
+                .ok_or(DirectiveSkip::Exhausted)
+                .map_err(DirectiveApplyFailure::from)?;
             move_onset(&mut candidate, source, pulse);
         }
         DirectiveFamily::Fragment => {
@@ -1180,6 +1452,7 @@ fn apply_one_directive_operation(
                 draw_base,
             )];
             let mut ks = super::figures::k_candidates(interval.len);
+            let unconstrained_k_count = ks.len();
             let headroom = corridor.ceiling_count.saturating_sub(state.onsets.len());
             ks.retain(|&k| {
                 let added = if interval.onset_index.is_some() {
@@ -1190,10 +1463,16 @@ fn apply_one_directive_operation(
                 usize::try_from(added).unwrap_or(usize::MAX) <= headroom
             });
             if ks.is_empty() {
-                return Err(DirectiveApplyError::Corridor(DensityCorridorClamp {
+                return Err(DirectiveApplyFailure::corridor(DensityCorridorClamp {
                     limit: DensityCorridorLimit::Ceiling,
                     density_percent: corridor.ceiling_percent,
                 }));
+            }
+            if ks.len() < unconstrained_k_count {
+                successful_clamp = Some(DensityCorridorClamp {
+                    limit: DensityCorridorLimit::Ceiling,
+                    density_percent: corridor.ceiling_percent,
+                });
             }
             let complexity = directive.options.fill_complexity.unwrap_or_else(|| {
                 sampled_percent(
@@ -1231,14 +1510,21 @@ fn apply_one_directive_operation(
                 draw_cycle,
                 draw_base,
             )];
+            let unconstrained_count = run.count;
             let removable = state.onsets.len().saturating_sub(corridor.floor_count);
             if removable == 0 {
-                return Err(DirectiveApplyError::Corridor(DensityCorridorClamp {
+                return Err(DirectiveApplyFailure::corridor(DensityCorridorClamp {
                     limit: DensityCorridorLimit::Floor,
                     density_percent: corridor.floor_percent,
                 }));
             }
             run.count = run.count.min(removable.saturating_add(1));
+            if run.count < unconstrained_count {
+                successful_clamp = Some(DensityCorridorClamp {
+                    limit: DensityCorridorLimit::Floor,
+                    density_percent: corridor.floor_percent,
+                });
+            }
             candidate = super::figures::apply_consolidate(state, &run);
         }
         DirectiveFamily::Euclid => {
@@ -1250,7 +1536,7 @@ fn apply_one_directive_operation(
                 window,
             );
             if windows.is_empty() {
-                return Err(DirectiveSkip::Exhausted);
+                return Err(DirectiveSkip::Exhausted.into());
             }
             let reshape_window = windows[plan_pool_pick(
                 windows.len(),
@@ -1290,23 +1576,15 @@ fn apply_one_directive_operation(
                     .unwrap_or(inputs.euclid_rest_policy),
             };
             candidate = super::reshape::apply_reshape(state, &reshape_window, &options)
-                .ok_or(DirectiveSkip::Exhausted)?;
+                .ok_or(DirectiveSkip::Exhausted)
+                .map_err(DirectiveApplyFailure::from)?;
         }
         DirectiveFamily::Stochastic => return Err(DirectiveSkip::Exhausted.into()),
     }
-
-
-    if let Some(clamp) = corridor.clamp_for(candidate.onsets.len()) {
-        return Err(DirectiveApplyError::Corridor(clamp));
+    if let Some(failure) = candidate_failure(seed, &candidate, inputs, slots, corridor) {
+        return Err(failure);
     }
-
-    if !state_intervals_disjoint(&candidate, slots) {
-        return Err(DirectiveSkip::Projection.into());
-    }
-    if !state_is_projectable(seed, &candidate, inputs) {
-        return Err(DirectiveSkip::Projection.into());
-    }
-    Ok(candidate)
+    Ok((candidate, successful_clamp))
 }
 
 fn directive_family_for_op(op: Op) -> DirectiveFamily {
@@ -1334,19 +1612,32 @@ fn apply_stochastic_directive(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     window: Option<SlotRange>,
-) -> (EvolutionState, bool, Option<DirectiveSkip>) {
+    corridor: DensityCorridor,
+) -> (
+    EvolutionState,
+    bool,
+    Option<DirectiveApplyFailure>,
+    Option<DensityCorridorClamp>,
+) {
     let drift_leash = sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
     let budget = (drift_leash * seed_slots.len() as u32).div_ceil(100);
-    let current = normalize_to_leash(seed, state, seed_slots, ranks, inputs, budget);
+    let leashed = normalize_to_leash(seed, state, seed_slots, ranks, inputs, budget);
+    let current = normalize_to_density_corridor(seed, &leashed, ranks, inputs, corridor);
+    let normalized_clamp = normalization_clamp(&leashed, &current, corridor);
     if directive.intensity == 0
         || plan_draw(inputs.seed_value, directive.id, cycle, 0, 100)
             >= u64::from(directive.intensity)
     {
-        return (current, false, None);
+        return (current, false, None, normalized_clamp);
     }
     let total = inputs.op_weights.total();
     if total == 0 {
-        return (current, true, Some(DirectiveSkip::Exhausted));
+        return (
+            current,
+            true,
+            Some(DirectiveSkip::Exhausted.into()),
+            normalized_clamp,
+        );
     }
     let op = op_for_roll(
         &inputs.op_weights,
@@ -1364,16 +1655,22 @@ fn apply_stochastic_directive(
             };
     }
 
-    let candidate = match apply_one_directive_operation(
+    let (candidate, successful_clamp) = match apply_one_directive_operation(
         &selected, &current, seed, ranks, template, beat_level, inputs, cycle, cycle, 1, window,
+        corridor,
     ) {
-        Ok(candidate) => candidate,
-        Err(skip) => return (current, true, Some(skip)),
+        Ok(outcome) => outcome,
+        Err(error) => return (current, true, Some(error), normalized_clamp),
     };
     if op != Op::Rotate && symmetric_difference(&state_slots(&candidate), seed_slots) > budget {
-        return (current, true, Some(DirectiveSkip::Exhausted));
+        return (
+            current,
+            true,
+            Some(DirectiveSkip::Exhausted.into()),
+            successful_clamp.or(normalized_clamp),
+        );
     }
-    (candidate, true, None)
+    (candidate, true, None, successful_clamp.or(normalized_clamp))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1388,6 +1685,7 @@ fn apply_directive(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     accumulator: &mut RangeAccumulator,
+    corridor: DensityCorridor,
 ) -> (EvolutionState, DirectiveTraceEntry) {
     let mut trace = DirectiveTraceEntry {
         cycle,
@@ -1396,33 +1694,157 @@ fn apply_directive(
         requested: 0,
         applied: 0,
         skipped: DirectiveSkip::None,
+        corridor_clamp: None,
+        perceptual: None,
     };
     let window = match slot_range(directive.scope, seed.total_beats, seed.required_subdivision) {
         Ok(window) => window,
         Err(skip) => {
             trace.skipped = skip;
+            if let DirectiveMagnitude::Perceptual {
+                model_version,
+                target_milli,
+                tolerance_milli,
+                ..
+            } = directive.magnitude
+            {
+                trace.perceptual = Some(PerceptualPacingTrace {
+                    model_version,
+                    actual_milli: 0,
+                    target_milli,
+                    tolerance_milli,
+                    reached: target_milli <= tolerance_milli,
+                    // No prefix search ran because the authored scope does
+                    // not exist in this structure. Keep exhaustion reserved
+                    // for a search that actually consumed its legal frontier.
+                    exhausted: false,
+                });
+            }
             return (state.clone(), trace);
         }
     };
 
     if directive.family == DirectiveFamily::Stochastic {
-        let (next, attempted, skipped) = apply_stochastic_directive(
+        let (next, attempted, error, successful_clamp) = apply_stochastic_directive(
             directive, seed, state, seed_slots, ranks, template, beat_level, inputs, cycle, window,
+            corridor,
         );
         trace.requested = u32::from(attempted);
-        trace.applied = u32::from(attempted && skipped.is_none());
-        trace.skipped = skipped.unwrap_or(DirectiveSkip::None);
+        trace.applied = u32::from(attempted && error.is_none());
+        trace.corridor_clamp = successful_clamp;
+        if let Some(failure) = error {
+            trace.skipped = failure.skipped;
+            if failure.corridor_clamp.is_some() {
+                trace.corridor_clamp = failure.corridor_clamp;
+            }
+        }
         return (next, trace);
     }
 
-    let initial_candidates =
-        directive_candidate_count(directive, state, seed, ranks, template, beat_level, window);
+    let normalized = normalize_to_density_corridor(seed, state, ranks, inputs, corridor);
+    trace.corridor_clamp = normalization_clamp(state, &normalized, corridor);
+
+    let initial_candidates = directive_candidate_count(
+        directive,
+        &normalized,
+        seed,
+        ranks,
+        template,
+        beat_level,
+        window,
+    );
+    if let DirectiveMagnitude::Perceptual {
+        model_version,
+        target_milli,
+        tolerance_milli,
+        max_operations,
+    } = directive.magnitude
+    {
+        // The target replaces intensity in this opt-in mode. Candidate zero
+        // is the corridor-normalized hold; every later prefix is admitted
+        // only after the ordinary operator, corridor, and projection guards.
+        let context = PerceptualContext::new(
+            seed.total_beats,
+            seed.required_subdivision,
+            ranks.to_vec(),
+            template.to_vec(),
+        )
+        .expect("validated Barlow grid constructs a perceptual context");
+        let model = PerceptualModel::for_version(model_version);
+
+        let mut current = normalized.clone();
+        let initial_distance = perceptual_distance(state, &current, &context, &model);
+        let mut best_state = current.clone();
+        let mut best_actual = initial_distance.total_milli;
+        let mut best_error = best_actual.abs_diff(target_milli);
+        let mut best_applied = 0;
+        let mut current_clamp = trace.corridor_clamp;
+        let mut best_clamp = current_clamp;
+        let mut frontier_failure = None;
+
+        for offset in 0..u64::from(max_operations) {
+            if best_error == 0 {
+                break;
+            }
+            match apply_one_directive_operation(
+                directive, &current, seed, ranks, template, beat_level, inputs, cycle, cycle,
+                offset, window, corridor,
+            ) {
+                Ok((next, clamp)) => {
+                    trace.requested = trace.requested.saturating_add(1);
+                    current = next;
+                    if clamp.is_some() {
+                        current_clamp = clamp;
+                    }
+                    let actual = perceptual_distance(state, &current, &context, &model).total_milli;
+                    let error = actual.abs_diff(target_milli);
+                    // Strict comparison makes the deterministic tie-break the
+                    // smaller prefix (candidate zero included).
+                    if error < best_error {
+                        best_state = current.clone();
+                        best_actual = actual;
+                        best_error = error;
+                        best_applied = u32::try_from(offset.saturating_add(1)).unwrap_or(u32::MAX);
+                        best_clamp = current_clamp;
+                    }
+                }
+                Err(failure) => {
+                    frontier_failure = Some(failure);
+                    break;
+                }
+            }
+        }
+
+        trace.applied = best_applied;
+        trace.corridor_clamp = best_clamp;
+        let reached = best_error <= tolerance_milli;
+        if !reached {
+            trace.skipped = DirectiveSkip::Exhausted;
+            if let Some(failure) = frontier_failure {
+                if failure.skipped != DirectiveSkip::None {
+                    trace.skipped = failure.skipped;
+                }
+                if failure.corridor_clamp.is_some() {
+                    trace.corridor_clamp = failure.corridor_clamp;
+                }
+            }
+        }
+        trace.perceptual = Some(PerceptualPacingTrace {
+            model_version,
+            actual_milli: best_actual,
+            target_milli,
+            tolerance_milli,
+            reached,
+            exhausted: !reached,
+        });
+        return (best_state, trace);
+    }
     if initial_candidates == 0
         && directive.intensity > 0
         && (directive.is_pin() || directive.pacing == DirectivePacing::PerCycle)
     {
         trace.skipped = DirectiveSkip::Exhausted;
-        return (state.clone(), trace);
+        return (normalized, trace);
     }
     let (requested, first_ordinal, draw_cycle) = if directive.is_pin() {
         let requested = if directive.family == DirectiveFamily::Rotate {
@@ -1448,31 +1870,40 @@ fn apply_directive(
     };
     trace.requested = requested;
     if requested == 0 {
-        return (state.clone(), trace);
+        return (normalized, trace);
     }
     if initial_candidates == 0 && directive.intensity > 0 {
         trace.skipped = DirectiveSkip::Exhausted;
-        return (state.clone(), trace);
+        return (normalized, trace);
     }
 
-    let mut current = state.clone();
+    let mut current = normalized;
     for offset in 0..u64::from(requested) {
         let ordinal = first_ordinal.saturating_add(offset);
         match apply_one_directive_operation(
             directive, &current, seed, ranks, template, beat_level, inputs, cycle, draw_cycle,
-            ordinal, window,
+            ordinal, window, corridor,
         ) {
-            Ok(next) => {
+            Ok((next, clamp)) => {
                 current = next;
                 trace.applied += 1;
+                if clamp.is_some() {
+                    trace.corridor_clamp = clamp;
+                }
             }
-            Err(skip) => {
-                trace.skipped = skip;
+            Err(failure) => {
+                trace.skipped = failure.skipped;
+                if failure.corridor_clamp.is_some() {
+                    trace.corridor_clamp = failure.corridor_clamp;
+                }
                 break;
             }
         }
     }
-    if trace.applied < trace.requested && trace.skipped == DirectiveSkip::None {
+    if trace.applied < trace.requested
+        && trace.skipped == DirectiveSkip::None
+        && trace.corridor_clamp.is_none()
+    {
         trace.skipped = DirectiveSkip::Exhausted;
     }
     (current, trace)
@@ -1497,22 +1928,177 @@ fn move_onset(state: &mut EvolutionState, from: u32, to: u32) {
 /// Fold the policy from the seed through `inputs.cycle` and return the
 /// evolved, rotation-applied pattern ready for span projection. Cycle 0 is
 /// always the seed verbatim. `None` when the grid's prime factors exceed
-/// the published Barlow tables — the caller then plays the seed verbatim
-/// (documented fallback), keeping behavior deterministic rather than
-/// guessing ranks.
+/// the published Barlow tables and the corridor is off — the caller then
+/// plays the seed verbatim. An active corridor instead uses the explicitly
+/// non-metric positional fallback below so its density invariant remains
+/// true without inventing Barlow ranks.
 pub struct EvolvedSeedResolution {
     pub seed: CompiledSeed,
     pub trace: Vec<DirectiveTraceEntry>,
+    /// The final requested cycle's effective percent rail. This is captured
+    /// by the same ordered fold that enforced it, so preview cannot drift
+    /// from automation, scope, or directive precedence.
+    pub density_corridor: DensityCorridorRange,
+    /// Whole-cycle realized perceptual distance (requested cycle vs the
+    /// state carried out of the previous cycle), from the same fold. `None`
+    /// at cycle 0 and on grids without published Barlow tables.
+    pub cycle_distance: Option<PerceptualCycleDistance>,
+}
+
+/// Score the requested cycle against its predecessor with the immutable v1
+/// model. Verbatim repeats score an honest 0 — "this cycle sounds identical"
+/// is exactly what the calibration lane needs to say.
+fn whole_cycle_distance(
+    seed: &CompiledSeed,
+    previous: &EvolutionState,
+    current: &EvolutionState,
+    ranks: &[u32],
+    template: &[u32],
+) -> Option<PerceptualCycleDistance> {
+    let context = PerceptualContext::new(
+        seed.total_beats,
+        seed.required_subdivision,
+        ranks.to_vec(),
+        template.to_vec(),
+    )
+    .ok()?;
+    let model = PerceptualModel::for_version(PerceptualModelVersion::V1);
+    Some(PerceptualCycleDistance {
+        model_version: PerceptualModelVersion::V1,
+        distance_milli: perceptual_distance(previous, current, &context, &model).total_milli,
+    })
+}
+
+/// Corridor-only fallback for grids outside the published Barlow tables.
+/// Slot zero is strongest and later slots weaken monotonically; this is a
+/// stable normalization order, not a claim of metric indispensability. The
+/// legacy no-corridor path still returns `None` and plays the seed verbatim,
+/// preserving its historical compatibility contract.
+fn unsupported_grid_corridor_resolution(
+    seed: &CompiledSeed,
+    inputs: &EvolutionInputs<'_>,
+    requested_global_corridor: DensityCorridor,
+) -> EvolvedSeedResolution {
+    let slots = seed.total_beats * seed.required_subdivision;
+    let ranks = (0..slots).map(|slot| slots - slot - 1).collect::<Vec<_>>();
+    let mut state = seed_state(seed);
+    let mut requested_cycle_trace = Vec::new();
+    let mut requested_density_corridor = requested_global_corridor.percent_range();
+
+    for cycle in 1..=inputs.cycle {
+        let global_corridor = if cycle == inputs.cycle {
+            requested_global_corridor
+        } else {
+            sampled_density_corridor(inputs, cycle, slots)
+        };
+        let active = active_directives(inputs.plan, cycle);
+        let all_orphaned = !active.is_empty()
+            && active.iter().all(|directive| {
+                slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_err()
+            });
+
+        if active.is_empty() || all_orphaned {
+            let corridor = global_corridor;
+            if cycle == inputs.cycle {
+                requested_density_corridor = corridor.percent_range();
+            }
+            let normalized = normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+            let clamp = normalization_clamp(&state, &normalized, corridor);
+            state = normalized;
+            if cycle == inputs.cycle {
+                // Match the supported-grid trace order: authored orphan rows
+                // first, then the independent normalization sentinel.
+                requested_cycle_trace.extend(active.iter().filter_map(|directive| {
+                    slot_range(directive.scope, seed.total_beats, seed.required_subdivision)
+                        .err()
+                        .map(|skipped| DirectiveTraceEntry {
+                            cycle,
+                            directive_id: directive.id,
+                            family: directive.family,
+                            requested: 0,
+                            applied: 0,
+                            skipped,
+                            corridor_clamp: None,
+                            perceptual: None,
+                        })
+                }));
+                requested_cycle_trace.extend(clamp.map(|corridor_clamp| DirectiveTraceEntry {
+                    cycle,
+                    directive_id: LEGACY_EVOLUTION_TRACE_ID,
+                    family: DirectiveFamily::Stochastic,
+                    requested: 0,
+                    applied: 0,
+                    skipped: DirectiveSkip::None,
+                    corridor_clamp: Some(corridor_clamp),
+                    perceptual: None,
+                }));
+            }
+        } else {
+            for directive in active {
+                match slot_range(directive.scope, seed.total_beats, seed.required_subdivision) {
+                    Err(skipped) => {
+                        if cycle == inputs.cycle {
+                            requested_cycle_trace.push(DirectiveTraceEntry {
+                                cycle,
+                                directive_id: directive.id,
+                                family: directive.family,
+                                requested: 0,
+                                applied: 0,
+                                skipped,
+                                corridor_clamp: None,
+                                perceptual: None,
+                            });
+                        }
+                    }
+                    Ok(_) => {
+                        let corridor =
+                            directive_density_corridor(directive, global_corridor, slots);
+                        if cycle == inputs.cycle {
+                            requested_density_corridor = corridor.percent_range();
+                        }
+                        let normalized =
+                            normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+                        let clamp = normalization_clamp(&state, &normalized, corridor);
+                        state = normalized;
+                        if cycle == inputs.cycle {
+                            requested_cycle_trace.extend(clamp.map(|corridor_clamp| {
+                                DirectiveTraceEntry {
+                                    cycle,
+                                    directive_id: directive.id,
+                                    family: directive.family,
+                                    requested: 0,
+                                    applied: 0,
+                                    skipped: DirectiveSkip::None,
+                                    corridor_clamp: Some(corridor_clamp),
+                                    perceptual: None,
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    EvolvedSeedResolution {
+        seed: state_to_compiled(seed, &state),
+        trace: requested_cycle_trace,
+        density_corridor: requested_density_corridor,
+        cycle_distance: None,
+    }
 }
 
 pub fn evolved_seed_with_trace(
     seed: &CompiledSeed,
     inputs: &EvolutionInputs<'_>,
 ) -> Option<EvolvedSeedResolution> {
+    let slots = seed.total_beats * seed.required_subdivision;
     if inputs.cycle == 0 {
         return Some(EvolvedSeedResolution {
             seed: seed.clone(),
             trace: Vec::new(),
+            density_corridor: sampled_density_corridor(inputs, 0, slots).percent_range(),
+            cycle_distance: None,
         });
     }
     // Preserve the feature-off O(1) path only when no enabled automation
@@ -1524,13 +2110,45 @@ pub fn evolved_seed_with_trace(
         f64::from(inputs.evolution_rate),
     )
     .is_some();
-    if inputs.plan.is_empty() && inputs.evolution_rate == 0 && !evolution_is_automated {
+    let (requested_global_corridor, density_is_automated) =
+        sampled_density_corridor_with_presence(inputs, inputs.cycle, slots);
+    // An override activates the unsupported-grid corridor fallback only once
+    // an enabled row has entered the historical fold. Disabled and strictly
+    // future rows must preserve the legacy no-corridor `None` contract.
+    let plan_corridor_is_active = inputs.plan.iter().any(|directive| {
+        directive.enabled
+            && directive.from_cycle <= inputs.cycle
+            && (directive.options.density_floor.is_some()
+                || directive.options.density_ceiling.is_some())
+    });
+    let corridor_is_active = inputs.density_floor > 0
+        || inputs.density_ceiling < 100
+        || density_is_automated
+        || plan_corridor_is_active;
+    if inputs.plan.is_empty()
+        && inputs.evolution_rate == 0
+        && !evolution_is_automated
+        && !corridor_is_active
+    {
+        let verbatim_distance = stratification(seed.total_beats, seed.required_subdivision)
+            .and_then(|strata| {
+                let ranks = indispensability(&strata);
+                let template = metrical_levels(&strata);
+                let state = seed_state(seed);
+                whole_cycle_distance(seed, &state, &state, &ranks, &template)
+            });
         return Some(EvolvedSeedResolution {
             seed: seed.clone(),
             trace: Vec::new(),
+            density_corridor: requested_global_corridor.percent_range(),
+            cycle_distance: verbatim_distance,
         });
     }
-    let strata = stratification(seed.total_beats, seed.required_subdivision)?;
+    let Some(strata) = stratification(seed.total_beats, seed.required_subdivision) else {
+        return corridor_is_active.then(|| {
+            unsupported_grid_corridor_resolution(seed, inputs, requested_global_corridor)
+        });
+    };
     let ranks = indispensability(&strata);
     let template = metrical_levels(&strata);
     let beat_level = factor_descending(seed.total_beats).len() as u32;
@@ -1539,7 +2157,19 @@ pub fn evolved_seed_with_trace(
     let mut state = seed_state(seed);
     let mut accumulators = std::collections::BTreeMap::<u64, RangeAccumulator>::new();
     let mut requested_cycle_trace = Vec::new();
+    let mut requested_density_corridor = requested_global_corridor.percent_range();
+    // The state entering the requested cycle IS the previous cycle's final
+    // state; snapshot it for the whole-cycle calibration readout.
+    let mut previous_cycle_state = state.clone();
     for cycle in 1..=inputs.cycle {
+        if cycle == inputs.cycle {
+            previous_cycle_state = state.clone();
+        }
+        let corridor = if cycle == inputs.cycle {
+            requested_global_corridor
+        } else {
+            sampled_density_corridor(inputs, cycle, slots)
+        };
         let active = active_directives(inputs.plan, cycle);
         if active.is_empty() {
             let legacy_rate = sampled_percent(
@@ -1552,7 +2182,7 @@ pub fn evolved_seed_with_trace(
             // gap, literal repetition must therefore retain that pin instead
             // of letting leash normalization silently undo it.
             if inputs.plan.is_empty() || legacy_rate > 0 {
-                state = step(
+                let (next, legacy_trace) = step_with_corridor(
                     seed,
                     &state,
                     &seed_slots,
@@ -1561,7 +2191,29 @@ pub fn evolved_seed_with_trace(
                     beat_level,
                     inputs,
                     cycle,
+                    corridor,
                 );
+                state = next;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.extend(legacy_trace);
+                }
+            } else {
+                let normalized =
+                    normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+                let clamp = normalization_clamp(&state, &normalized, corridor);
+                state = normalized;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.extend(clamp.map(|corridor_clamp| DirectiveTraceEntry {
+                        cycle,
+                        directive_id: LEGACY_EVOLUTION_TRACE_ID,
+                        family: DirectiveFamily::Stochastic,
+                        requested: 0,
+                        applied: 0,
+                        skipped: DirectiveSkip::None,
+                        corridor_clamp: Some(corridor_clamp),
+                        perceptual: None,
+                    }));
+                }
             }
             continue;
         }
@@ -1573,7 +2225,31 @@ pub fn evolved_seed_with_trace(
         let all_orphaned = active.iter().all(|directive| {
             slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_err()
         });
+        let mut orphaned_normalization_trace = None;
+        if all_orphaned {
+            let normalized = normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+            orphaned_normalization_trace =
+                normalization_clamp(&state, &normalized, corridor).map(|corridor_clamp| {
+                    DirectiveTraceEntry {
+                        cycle,
+                        directive_id: LEGACY_EVOLUTION_TRACE_ID,
+                        family: DirectiveFamily::Stochastic,
+                        requested: 0,
+                        applied: 0,
+                        skipped: DirectiveSkip::None,
+                        corridor_clamp: Some(corridor_clamp),
+                        perceptual: None,
+                    }
+                });
+            state = normalized;
+        }
         for directive in active {
+            let directive_corridor = directive_density_corridor(directive, corridor, slots);
+            if cycle == inputs.cycle
+                && slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok()
+            {
+                requested_density_corridor = directive_corridor.percent_range();
+            }
             let accumulator = accumulators.entry(directive.id).or_default();
             let (next, trace) = apply_directive(
                 directive,
@@ -1586,6 +2262,7 @@ pub fn evolved_seed_with_trace(
                 inputs,
                 cycle,
                 accumulator,
+                directive_corridor,
             );
             state = next;
             if cycle == inputs.cycle {
@@ -1593,6 +2270,9 @@ pub fn evolved_seed_with_trace(
             }
         }
         if all_orphaned {
+            if cycle == inputs.cycle {
+                requested_cycle_trace.extend(orphaned_normalization_trace);
+            }
             let legacy_rate = sampled_percent(
                 inputs,
                 DUMKA_EVOLUTION_RATE_TARGET,
@@ -1600,7 +2280,7 @@ pub fn evolved_seed_with_trace(
                 cycle,
             );
             if legacy_rate > 0 {
-                state = step(
+                let (next, legacy_trace) = step_with_corridor(
                     seed,
                     &state,
                     &seed_slots,
@@ -1609,13 +2289,22 @@ pub fn evolved_seed_with_trace(
                     beat_level,
                     inputs,
                     cycle,
+                    corridor,
                 );
+                state = next;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.extend(legacy_trace);
+                }
             }
         }
     }
+    let cycle_distance =
+        whole_cycle_distance(seed, &previous_cycle_state, &state, &ranks, &template);
     Some(EvolvedSeedResolution {
         seed: state_to_compiled(seed, &state),
         trace: requested_cycle_trace,
+        density_corridor: requested_density_corridor,
+        cycle_distance,
     })
 }
 
@@ -1662,6 +2351,8 @@ mod tests {
             cycle,
             evolution_rate: rate,
             drift_leash: leash,
+            density_floor: 0,
+            density_ceiling: 100,
             barlow_temperature: 0,
             fill_complexity: 0,
             euclid_max_run: 1,
@@ -1688,6 +2379,8 @@ mod tests {
             cycle,
             evolution_rate: rate,
             drift_leash: leash,
+            density_floor: 0,
+            density_ceiling: 100,
             barlow_temperature: 0,
             fill_complexity: 0,
             euclid_max_run: 1,
@@ -1717,6 +2410,7 @@ mod tests {
             to_cycle,
             family,
             pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::OperationQuota,
             intensity,
             scope: None,
             options: super::super::plan::DirectiveOptions::default(),
@@ -1732,6 +2426,37 @@ mod tests {
             metrical_levels(&strata),
             factor_descending(beats).len() as u32,
         )
+    }
+
+    fn transition_distance(left: &CompiledSeed, right: &CompiledSeed) -> u32 {
+        assert_eq!(left.total_beats, right.total_beats);
+        assert_eq!(left.required_subdivision, right.required_subdivision);
+        let (ranks, levels, _) = fold_env(left.total_beats, left.required_subdivision);
+        let context =
+            PerceptualContext::new(left.total_beats, left.required_subdivision, ranks, levels)
+                .unwrap();
+        perceptual_distance(
+            &seed_state(left),
+            &seed_state(right),
+            &context,
+            &PerceptualModel::default(),
+        )
+        .total_milli
+    }
+
+    fn perceptually_paced(
+        mut row: EvolutionDirective,
+        target_milli: u32,
+        tolerance_milli: u32,
+        max_operations: u32,
+    ) -> EvolutionDirective {
+        row.magnitude = DirectiveMagnitude::Perceptual {
+            model_version: super::super::perceptual::PerceptualModelVersion::V1,
+            target_milli,
+            tolerance_milli,
+            max_operations,
+        };
+        row
     }
 
     fn event_picture(seed: &CompiledSeed) -> Vec<(i64, i64, &str)> {
@@ -1785,6 +2510,151 @@ mod tests {
     }
 
     #[test]
+    fn behavior_off_legacy_fold_keeps_trace_empty() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        for cycle in [0, 1, 12] {
+            let resolution =
+                evolved_seed_with_trace(&seed, &inputs(7, cycle, 100, 100, &s)).unwrap();
+            assert!(resolution.trace.is_empty(), "cycle {cycle}");
+        }
+    }
+
+    #[test]
+    fn legacy_corridor_normalization_uses_the_reserved_trace_sentinel() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut corridor_inputs = inputs(7, 1, 0, 100, &s);
+        corridor_inputs.density_ceiling = 50;
+        let resolution = evolved_seed_with_trace(&seed, &corridor_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 8);
+        assert_eq!(resolution.trace.len(), 1);
+        let trace = &resolution.trace[0];
+        assert_eq!(trace.directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!(trace.family, DirectiveFamily::Stochastic);
+        assert_eq!((trace.requested, trace.applied), (0, 0));
+        assert_eq!(trace.skipped, DirectiveSkip::None);
+        assert_eq!(
+            trace.corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_stochastic_operation_clamp_is_traced_truthfully() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut corridor_inputs = inputs(7, 1, 100, 100, &s);
+        corridor_inputs.density_floor = 100;
+        corridor_inputs.density_ceiling = 100;
+        corridor_inputs.op_weights = OpWeights {
+            barlow_remove: 1,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 0,
+            consolidate: 0,
+            euclid: 0,
+        };
+        let resolution = evolved_seed_with_trace(&seed, &corridor_inputs).unwrap();
+        assert_eq!(resolution.seed, seed);
+        assert_eq!(resolution.trace.len(), 1);
+        let trace = &resolution.trace[0];
+        assert_eq!(trace.directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!((trace.requested, trace.applied), (1, 0));
+        assert_eq!(trace.skipped, DirectiveSkip::None);
+        assert_eq!(
+            trace.corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Floor,
+                density_percent: 100,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(trace).unwrap(),
+            serde_json::json!({
+                "cycle": 1,
+                "directiveId": 0,
+                "family": "stochastic",
+                "requested": 1,
+                "applied": 0,
+                "skipped": "none",
+                "corridorClamp": {"limit": "floor", "densityPercent": 100}
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_fragment_reports_a_successful_reduced_figure_clamp() {
+        let seed = compiled("[x _ _ _ _ _ . .] [ka . ka .]");
+        let s = spans(2, 8);
+        let mut corridor_inputs = inputs(17, 1, 100, 100, &s);
+        corridor_inputs.cycle_beats = 2;
+        corridor_inputs.density_ceiling = 25;
+        corridor_inputs.fill_complexity = 100;
+        corridor_inputs.op_weights = OpWeights {
+            barlow_remove: 0,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 1,
+            consolidate: 0,
+            euclid: 0,
+        };
+        let resolution = evolved_seed_with_trace(&seed, &corridor_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 4);
+        assert_eq!(resolution.trace.len(), 1);
+        let trace = &resolution.trace[0];
+        assert_eq!(trace.directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!((trace.requested, trace.applied), (1, 1));
+        assert_eq!(trace.skipped, DirectiveSkip::None);
+        assert_eq!(
+            trace.corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 25,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_consolidate_reports_a_successful_truncated_merge_clamp() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut corridor_inputs = inputs(7, 1, 100, 100, &s);
+        corridor_inputs.density_floor = 75;
+        corridor_inputs.op_weights = OpWeights {
+            barlow_remove: 0,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 0,
+            consolidate: 1,
+            euclid: 0,
+        };
+        let resolution = evolved_seed_with_trace(&seed, &corridor_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 12);
+        assert_eq!(resolution.trace.len(), 1);
+        let trace = &resolution.trace[0];
+        assert_eq!(trace.directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!((trace.requested, trace.applied), (1, 1));
+        assert_eq!(trace.skipped, DirectiveSkip::None);
+        assert_eq!(
+            trace.corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Floor,
+                density_percent: 75,
+            })
+        );
+    }
+
+    #[test]
     fn the_fold_satisfies_the_prefix_property() {
         let seed = compiled(SEED_TEXT);
         let s = spans(4, 4);
@@ -1802,7 +2672,8 @@ mod tests {
                 beat_level,
                 &inputs(42, cycle, 60, 50, &s),
                 cycle,
-            );
+            )
+            .0;
             state = stepped;
             let direct = evolved_seed(&seed, &inputs(42, cycle, 60, 50, &s)).unwrap();
             assert_eq!(direct, state_to_compiled(&seed, &state), "cycle {cycle}");
@@ -2009,6 +2880,183 @@ mod tests {
     }
 
     #[test]
+    fn perceptual_pacing_finds_one_tiny_add_or_remove_in_the_full_fold() {
+        for (family, text) in [
+            (DirectiveFamily::BarlowRemove, "x x x x x x x x"),
+            (DirectiveFamily::BarlowAdd, "x . x . x . x ."),
+        ] {
+            let seed = compiled(text);
+            let s = spans(8, 1);
+
+            // Use the historical one-operation path as an independent oracle
+            // for this directive's identity-seeded first prefix.
+            let oracle_plan = vec![directive(71, 0, family, 1, 1, 1)];
+            let mut oracle_inputs = inputs(17, 1, 0, 0, &s);
+            oracle_inputs.plan = &oracle_plan;
+            oracle_inputs.cycle_beats = 8;
+            let oracle = evolved_seed_with_trace(&seed, &oracle_inputs).unwrap();
+            assert_eq!(oracle.trace[0].applied, 1);
+            let target = transition_distance(&seed, &oracle.seed);
+            assert!(target > 0, "{family:?} must be perceptually audible");
+
+            let mut row = directive(71, 0, family, 1, 1, 0);
+            row = perceptually_paced(row, target, 0, 16);
+            let plan = vec![row];
+            let mut plan_inputs = inputs(17, 1, 0, 0, &s);
+            plan_inputs.plan = &plan;
+            plan_inputs.cycle_beats = 8;
+            let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+            assert_eq!(resolution.seed, oracle.seed, "{family:?}");
+            let trace = &resolution.trace[0];
+            assert_eq!(trace.applied, 1, "{family:?}");
+            assert_eq!(trace.skipped, DirectiveSkip::None, "{family:?}");
+            assert_eq!(
+                trace.perceptual,
+                Some(PerceptualPacingTrace {
+                    model_version: super::super::perceptual::PerceptualModelVersion::V1,
+                    actual_milli: target,
+                    target_milli: target,
+                    tolerance_milli: 0,
+                    reached: true,
+                    exhausted: false,
+                }),
+                "{family:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn perceptual_rotate_holds_when_one_step_would_overshoot_the_target() {
+        let seed = compiled("x . . .");
+        let s = spans(4, 1);
+        let oracle_plan = vec![directive(72, 0, DirectiveFamily::Rotate, 1, 1, 25)];
+        let mut oracle_inputs = inputs(23, 1, 0, 0, &s);
+        oracle_inputs.plan = &oracle_plan;
+        let oracle = evolved_seed_with_trace(&seed, &oracle_inputs).unwrap();
+        let one_step = transition_distance(&seed, &oracle.seed);
+        assert!(one_step > 2);
+
+        let plan = vec![perceptually_paced(
+            directive(72, 0, DirectiveFamily::Rotate, 1, 1, 100),
+            1,
+            0,
+            1,
+        )];
+        let mut plan_inputs = inputs(23, 1, 0, 0, &s);
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed, seed, "candidate zero is a truthful hold");
+        let trace = &resolution.trace[0];
+        assert_eq!((trace.requested, trace.applied), (1, 0));
+        assert_eq!(trace.skipped, DirectiveSkip::Exhausted);
+        assert_eq!(
+            trace.perceptual,
+            Some(PerceptualPacingTrace {
+                model_version: super::super::perceptual::PerceptualModelVersion::V1,
+                actual_milli: 0,
+                target_milli: 1,
+                tolerance_milli: 0,
+                reached: false,
+                exhausted: true,
+            })
+        );
+    }
+
+    #[test]
+    fn perceptual_prefix_ties_choose_the_smaller_prefix_deterministically() {
+        let seed = compiled("x . . .");
+        let s = spans(4, 1);
+        let oracle_plan = vec![directive(73, 0, DirectiveFamily::Rotate, 1, 1, 25)];
+        let mut oracle_inputs = inputs(29, 1, 0, 0, &s);
+        oracle_inputs.plan = &oracle_plan;
+        let oracle = evolved_seed_with_trace(&seed, &oracle_inputs).unwrap();
+        let one_step = transition_distance(&seed, &oracle.seed);
+        assert_eq!(one_step % 2, 0, "fixture must create an exact integer tie");
+        let target = one_step / 2;
+
+        let plan = vec![perceptually_paced(
+            directive(73, 0, DirectiveFamily::Rotate, 1, 1, 0),
+            target,
+            0,
+            1,
+        )];
+        let resolve = || {
+            let mut plan_inputs = inputs(29, 1, 0, 0, &s);
+            plan_inputs.plan = &plan;
+            evolved_seed_with_trace(&seed, &plan_inputs).unwrap()
+        };
+        let first = resolve();
+        let replay = resolve();
+        assert_eq!(first.seed, seed);
+        assert_eq!(first.trace[0].applied, 0);
+        assert_eq!(first.seed, replay.seed);
+        assert_eq!(first.trace, replay.trace);
+    }
+
+    #[test]
+    fn perceptual_search_follows_repeatable_candidates_beyond_the_initial_count() {
+        let seed = compiled("[x _ _ _] [x . . .]");
+        let s = spans(2, 4);
+        let (ranks, template, beat_level) = fold_env(2, 4);
+        let mut row = directive(74, 0, DirectiveFamily::Fragment, 1, 1, 0);
+        row.scope = Some(super::super::plan::BeatRange {
+            start_beat: 0,
+            len_beats: 1,
+        });
+        let mut oracle_inputs = inputs(31, 1, 0, 0, &s);
+        oracle_inputs.cycle_beats = 2;
+        let corridor = DensityCorridor::new(0, 100, 8);
+        let mut oracle = seed_state(&seed);
+        let window = slot_range(row.scope, 2, 4).unwrap();
+        assert_eq!(
+            directive_candidate_count(&row, &oracle, &seed, &ranks, &template, beat_level, window,),
+            1,
+            "the fixture starts with one fragmentable sustain"
+        );
+        for ordinal in 0..3 {
+            oracle = apply_one_directive_operation(
+                &row,
+                &oracle,
+                &seed,
+                &ranks,
+                &template,
+                beat_level,
+                &oracle_inputs,
+                1,
+                1,
+                ordinal,
+                window,
+                corridor,
+            )
+            .expect("fragmentation creates another legal prefix")
+            .0;
+        }
+        let context = PerceptualContext::new(2, 4, ranks, template).unwrap();
+        let target = perceptual_distance(
+            &seed_state(&seed),
+            &oracle,
+            &context,
+            &PerceptualModel::v1(),
+        )
+        .total_milli;
+
+        let plan = vec![perceptually_paced(row, target, 0, 8)];
+        let mut plan_inputs = inputs(31, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 2;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(seed_state(&resolution.seed), oracle);
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (3, 3),
+            "the search must not be capped by the single initial interval"
+        );
+        assert!(resolution.trace[0]
+            .perceptual
+            .is_some_and(|trace| trace.reached));
+    }
+
+    #[test]
     fn gradual_ranges_sample_automation_at_the_operation_cycle() {
         let seed = compiled("x x x x x x x x");
         let s = spans(8, 1);
@@ -2151,7 +3199,78 @@ mod tests {
     }
 
     #[test]
-    fn directive_is_exempt_from_zero_leash_but_not_projection() {
+    fn fold_reports_the_last_scope_valid_directive_corridor_in_authored_order() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let mut override_row = directive(10, 0, DirectiveFamily::Fragment, 2, 2, 0);
+        override_row.options.density_floor = Some(20);
+        override_row.options.density_ceiling = Some(60);
+        let inheriting = directive(20, 1, DirectiveFamily::Rotate, 2, 2, 0);
+        let mut orphaned = directive(30, 2, DirectiveFamily::BarlowAdd, 2, 2, 0);
+        orphaned.scope = Some(super::super::plan::BeatRange {
+            start_beat: 4,
+            len_beats: 1,
+        });
+        orphaned.options.density_floor = Some(30);
+        orphaned.options.density_ceiling = Some(40);
+
+        let mut plan_inputs = inputs(7, 2, 0, 100, &s);
+        plan_inputs.density_floor = 10;
+        plan_inputs.density_ceiling = 90;
+        let override_then_orphan = vec![override_row.clone(), orphaned.clone()];
+        plan_inputs.plan = &override_then_orphan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 20,
+                ceiling: 60,
+            },
+            "an orphaned later row cannot replace the last applied rail"
+        );
+
+        let override_then_inherit_then_orphan = vec![override_row, inheriting, orphaned];
+        plan_inputs.plan = &override_then_inherit_then_orphan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 10,
+                ceiling: 90,
+            },
+            "a valid inheriting row restores the sampled global rail"
+        );
+    }
+
+    #[test]
+    fn cycle_zero_reports_its_crossed_automated_global_without_evolving() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let automated: &GeneratorAutomationSampler<'_> = &|target, cycle, _| {
+            assert_eq!(cycle, 0);
+            match target {
+                DUMKA_DENSITY_FLOOR_TARGET => Some(70.0),
+                DUMKA_DENSITY_CEILING_TARGET => Some(55.0),
+                _ => None,
+            }
+        };
+        let plan = vec![directive(10, 0, DirectiveFamily::Fragment, 0, 0, 100)];
+        let mut cycle_zero = inputs_with_automation(7, 0, 100, 100, &s, automated);
+        cycle_zero.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &cycle_zero).unwrap();
+        assert_eq!(resolution.seed, seed);
+        assert!(resolution.trace.is_empty());
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 55,
+                ceiling: 55,
+            }
+        );
+    }
+
+    #[test]
+    fn directive_is_exempt_from_zero_leash_and_cross_span_ties_now_project() {
         let seed = compiled(SEED_TEXT);
         let beat_spans = spans(4, 4);
         let plan = vec![directive(1, 0, DirectiveFamily::BarlowRemove, 1, 1, 15)];
@@ -2178,9 +3297,10 @@ mod tests {
         rotate_inputs.plan = &rotate_plan;
         let rotated = evolved_seed_with_trace(&crossing_seed, &rotate_inputs).unwrap();
         assert_eq!(rotated.trace[0].requested, 2);
-        assert_eq!(rotated.trace[0].applied, 1);
-        assert_eq!(rotated.trace[0].skipped, DirectiveSkip::Projection);
-        resolve_seed_cells(&rotated.seed, 4, &tile_spans).expect("projection remains supreme");
+        assert_eq!(rotated.trace[0].applied, 2);
+        assert_eq!(rotated.trace[0].skipped, DirectiveSkip::None);
+        resolve_seed_cells(&rotated.seed, 4, &tile_spans)
+            .expect("paired cross-span ties are projectable");
     }
 
     #[test]
@@ -2201,6 +3321,46 @@ mod tests {
         let resolved = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
         assert_eq!(resolved.seed, legacy);
         assert_eq!(resolved.trace[0].skipped, DirectiveSkip::OrphanedScope);
+    }
+
+    #[test]
+    fn orphaned_only_cycle_keeps_its_global_normalization_clamp_trace_at_rate_zero() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut orphan = directive(44, 0, DirectiveFamily::BarlowRemove, 1, 1, 100);
+        orphan.scope = Some(super::super::plan::BeatRange {
+            start_beat: 4,
+            len_beats: 1,
+        });
+        let plan = vec![orphan];
+        let mut plan_inputs = inputs(7, 1, 0, 100, &s);
+        plan_inputs.plan = &plan;
+        plan_inputs.density_ceiling = 50;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 8);
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 0,
+                ceiling: 50,
+            },
+            "all orphaned rows leave the requested cycle on its global rail"
+        );
+        assert_eq!(resolution.trace.len(), 2);
+        assert_eq!(resolution.trace[0].directive_id, 44);
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::OrphanedScope);
+        assert_eq!(resolution.trace[1].directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!(
+            (resolution.trace[1].requested, resolution.trace[1].applied),
+            (0, 0)
+        );
+        assert_eq!(
+            resolution.trace[1].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
     }
 
     #[test]
@@ -2321,7 +3481,303 @@ mod tests {
         assert_eq!(resolved.seed.events.len(), seed.events.len() - 1);
     }
 
+    #[test]
+    fn compounding_fragment_plateaus_at_the_ceiling_and_traces_the_clamp() {
+        let seed = compiled("[x _ _ _ _ _ . .] [ka . ka .]");
+        let s = spans(2, 8);
+        let mut fragment = directive(1, 0, DirectiveFamily::Fragment, 1, 12, 100);
+        fragment.options.fill_complexity = Some(100);
+        let plan = vec![fragment];
+        let mut previous = 0usize;
+        let mut plateaued = false;
+        for cycle in 1..=12 {
+            let mut plan_inputs = inputs(17, cycle, 0, 100, &s);
+            plan_inputs.cycle_beats = 2;
+            plan_inputs.plan = &plan;
+            plan_inputs.density_ceiling = 60;
+            let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+            let count = resolution.seed.events.len();
+            assert!(count <= 9, "60% of 16 slots floors to 9 at cycle {cycle}");
+            if count == previous {
+                plateaued = true;
+            }
+            previous = count;
+        }
+        assert!(plateaued, "compounding Fragment must visibly plateau");
+        let mut final_inputs = inputs(17, 12, 0, 100, &s);
+        final_inputs.cycle_beats = 2;
+        final_inputs.plan = &plan;
+        final_inputs.density_ceiling = 60;
+        let final_resolution = evolved_seed_with_trace(&seed, &final_inputs).unwrap();
+        assert_eq!(final_resolution.seed.events.len(), 9);
+        assert_eq!(
+            final_resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 60,
+            })
+        );
+    }
+
+    #[test]
+    fn moving_corridor_contracts_inherited_state_weakest_first_and_replays() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let moving: &GeneratorAutomationSampler<'_> = &|target, cycle, fallback| match target {
+            DUMKA_DENSITY_CEILING_TARGET => Some(if cycle < 3 { 100.0 } else { 50.0 }),
+            _ => Some(fallback),
+        };
+        let mut moving_inputs = inputs_with_automation(7, 3, 0, 100, &s, &moving);
+        moving_inputs.density_floor = 0;
+        moving_inputs.density_ceiling = 100;
+        let first = evolved_seed(&seed, &moving_inputs).unwrap();
+        let replay = evolved_seed(&seed, &moving_inputs).unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(first.events.len(), 8);
+
+        let ranks = indispensability(&stratification(4, 4).unwrap());
+        let retained = seed_state(&first)
+            .onsets
+            .iter()
+            .map(|onset| onset.slot)
+            .collect::<Vec<_>>();
+        let mut expected = (0..16u32).collect::<Vec<_>>();
+        expected.sort_by_key(|&slot| (ranks[slot as usize], slot));
+        let weakest = expected
+            .into_iter()
+            .take(8)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(retained.iter().all(|slot| !weakest.contains(slot)));
+    }
+
+    #[test]
+    fn corridor_automation_is_historical_and_crossing_lanes_give_ceiling_precedence() {
+        let seed = compiled("[x . . .] [x . . .] [x . . .] [x . . .]");
+        let s = spans(4, 4);
+        let sampled: &GeneratorAutomationSampler<'_> = &|target, cycle, fallback| match target {
+            DUMKA_DENSITY_FLOOR_TARGET => Some(if cycle == 1 { 50.0 } else { 90.0 }),
+            DUMKA_DENSITY_CEILING_TARGET => Some(if cycle == 1 { 100.0 } else { 40.0 }),
+            _ => Some(fallback),
+        };
+        let at_one = inputs_with_automation(7, 1, 0, 100, &s, &sampled);
+        let at_two = inputs_with_automation(7, 2, 0, 100, &s, &sampled);
+        let cycle_one = evolved_seed(&seed, &at_one).unwrap();
+        let cycle_two = evolved_seed(&seed, &at_two).unwrap();
+        assert_eq!(cycle_one.events.len(), 8, "cycle one sampled its own floor");
+        assert_eq!(
+            cycle_two.events.len(),
+            6,
+            "cycle two keeps cycle one's prefix then ceiling 40% wins the crossed lanes"
+        );
+    }
+
+    #[test]
+    fn floor_normalization_can_articulate_a_sustain_to_reach_the_invariant() {
+        let seed = compiled("[x _ _ .] . . .");
+        let s = spans(4, 4);
+        let mut normalized_inputs = inputs(7, 1, 0, 100, &s);
+        normalized_inputs.density_floor = 100;
+        normalized_inputs.density_ceiling = 100;
+        let normalized = evolved_seed(&seed, &normalized_inputs).unwrap();
+        assert_eq!(normalized.events.len(), 16);
+        assert!(normalized
+            .events
+            .iter()
+            .all(|event| event.dur == Rational::new(1, 4)));
+        resolve_seed_cells(&normalized, 4, &s).expect("articulated floor remains projectable");
+    }
+
+    #[test]
+    fn directive_corridor_overrides_globals_and_corridor_beats_plan_and_leash() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut remove = directive(1, 0, DirectiveFamily::BarlowRemove, 1, 1, 100);
+        remove.options.density_floor = Some(75);
+        remove.options.density_ceiling = Some(75);
+        let plan = vec![remove];
+        let mut plan_inputs = inputs(7, 1, 0, 0, &s);
+        plan_inputs.plan = &plan;
+        plan_inputs.density_floor = 0;
+        plan_inputs.density_ceiling = 100;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 12);
+        assert_eq!(resolution.trace[0].requested, 12);
+        assert_eq!(resolution.trace[0].applied, 0);
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Floor,
+                density_percent: 75,
+            })
+        );
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
+    }
+
+    #[test]
+    fn central_candidate_guard_reports_projection_and_corridor_together() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let guard_inputs = inputs(7, 1, 0, 100, &s);
+        let candidate = EvolutionState {
+            onsets: vec![
+                EvolvedOnset {
+                    slot: 0,
+                    dur: 2,
+                    class: "x".to_string(),
+                },
+                EvolvedOnset {
+                    slot: 1,
+                    dur: 1,
+                    class: "x".to_string(),
+                },
+                EvolvedOnset {
+                    slot: 4,
+                    dur: 1,
+                    class: "x".to_string(),
+                },
+                EvolvedOnset {
+                    slot: 8,
+                    dur: 1,
+                    class: "x".to_string(),
+                },
+                EvolvedOnset {
+                    slot: 12,
+                    dur: 1,
+                    class: "x".to_string(),
+                },
+            ],
+            rotation_beats: 0,
+        };
+        let failure = candidate_failure(
+            &seed,
+            &candidate,
+            &guard_inputs,
+            16,
+            DensityCorridor::new(0, 25, 16),
+        )
+        .expect("overlapping five-onset candidate violates both guards");
+        assert_eq!(failure.skipped, DirectiveSkip::Projection);
+        assert_eq!(
+            failure.corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 25,
+            })
+        );
+    }
+
+    #[test]
+    fn stochastic_normalization_clamp_does_not_hide_exhaustion() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let mut stochastic = directive(1, 0, DirectiveFamily::Stochastic, 1, 1, 100);
+        stochastic.options.density_floor = Some(50);
+        stochastic.options.density_ceiling = Some(50);
+        let plan = vec![stochastic];
+        let mut plan_inputs = inputs(7, 1, 0, 100, &s);
+        plan_inputs.plan = &plan;
+        plan_inputs.op_weights = OpWeights {
+            barlow_remove: 0,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 0,
+            consolidate: 0,
+            euclid: 0,
+        };
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 8);
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::Exhausted);
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn stochastic_operation_clamp_survives_a_later_leash_veto() {
+        let seed = compiled("[x _ _ _ _ _ . .] [ka . ka .]");
+        let s = spans(2, 8);
+        let mut stochastic = directive(1, 0, DirectiveFamily::Stochastic, 1, 1, 100);
+        stochastic.options.density_floor = Some(0);
+        stochastic.options.density_ceiling = Some(25);
+        let plan = vec![stochastic];
+        let mut plan_inputs = inputs(7, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 2;
+        plan_inputs.plan = &plan;
+        plan_inputs.op_weights = OpWeights {
+            barlow_remove: 0,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 1,
+            consolidate: 0,
+            euclid: 0,
+        };
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed, seed, "zero leash vetoes the fragment");
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::Exhausted);
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 25,
+            }),
+            "the earlier corridor reduction remains independently visible"
+        );
+    }
+
     proptest! {
+        #[test]
+        fn every_family_stays_inside_random_corridors_across_cycles(
+            floor in 0_u32..=100,
+            ceiling_hint in 0_u32..=100,
+            cycle in 1_u64..=12,
+            seed_value in any::<u64>(),
+        ) {
+            let ceiling = ceiling_hint.max(floor);
+            let seed = compiled(SEED_TEXT);
+            let s = spans(4, 4);
+            for (index, family) in PLAN_FAMILIES.into_iter().enumerate() {
+                let mut row = directive(index as u64 + 1, 0, family, 1, cycle, 100);
+                row.options.density_floor = Some(floor);
+                row.options.density_ceiling = Some(ceiling);
+                let plan = vec![row];
+                let mut plan_inputs = inputs(seed_value, cycle, 0, 100, &s);
+                plan_inputs.plan = &plan;
+                plan_inputs.op_weights = OpWeights {
+                    barlow_remove: 1,
+                    barlow_add: 1,
+                    rotate: 1,
+                    syncopate: 1,
+                    desyncopate: 1,
+                    fragment: 1,
+                    consolidate: 1,
+                    euclid: 1,
+                };
+                let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+                let count = resolution.seed.events.len();
+                let corridor = DensityCorridor::new(floor, ceiling, 16);
+                prop_assert!(
+                    count >= corridor.floor_count && count <= corridor.ceiling_count,
+                    "{family:?} emitted {count} outside {}..={}",
+                    corridor.floor_count,
+                    corridor.ceiling_count,
+                );
+                prop_assert_eq!(
+                    evolved_seed_with_trace(&seed, &plan_inputs).unwrap().seed,
+                    resolution.seed,
+                    "{:?} replay diverged",
+                    family,
+                );
+            }
+        }
+
         #[test]
         fn every_scoped_family_changes_only_scoped_onsets_and_stays_projectable_on_grouping_three(
             start_beat in 0_u32..4,
@@ -2529,7 +3985,8 @@ mod tests {
                             beat_level,
                             &inputs(9, c, 100, leash, &s),
                             c,
-                        );
+                        )
+                        .0;
                     }
                     state.onsets.iter().map(|o| o.slot).collect()
                 };
@@ -2564,7 +4021,8 @@ mod tests {
             beat_level,
             &inputs,
             1,
-        );
+        )
+        .0;
         assert_eq!(
             symmetric_difference(&state_slots(&cycle_one), &seed_slots),
             1,
@@ -2580,7 +4038,8 @@ mod tests {
             beat_level,
             &inputs,
             2,
-        );
+        )
+        .0;
         assert_eq!(
             symmetric_difference(&state_slots(&cycle_two), &seed_slots),
             0,
@@ -2619,7 +4078,8 @@ mod tests {
             beat_level,
             &inputs(7, 1, 100, 50, &s),
             1,
-        );
+        )
+        .0;
         let restored = next
             .onsets
             .iter()
@@ -2945,13 +4405,116 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_prime_grids_fall_back_to_the_seed() {
+    fn unsupported_prime_grids_without_a_corridor_fall_back_to_the_seed() {
         // Eleven beats: prime 11 exceeds the published Barlow tables.
         let seed = compiled(&"x ".repeat(11));
         let s = spans(11, 1);
         let mut inputs11 = inputs(7, 12, 100, 100, &s);
         inputs11.cycle_beats = 11;
         assert_eq!(evolved_seed(&seed, &inputs11), None);
+    }
+
+    #[test]
+    fn unsupported_prime_grid_enforces_an_active_global_corridor_deterministically() {
+        // The metric operator tables intentionally stop at prime 7, but a
+        // corridor is a fold invariant rather than an optional operator.
+        let seed = compiled(&"x ".repeat(11));
+        let s = spans(11, 1);
+        let mut inputs11 = inputs(7, 1, 0, 100, &s);
+        inputs11.cycle_beats = 11;
+        inputs11.density_ceiling = 50;
+
+        let resolution = evolved_seed_with_trace(&seed, &inputs11)
+            .expect("an active corridor supplies the positional fallback");
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 0,
+                ceiling: 50,
+            }
+        );
+        assert_eq!(
+            state_slots(&seed_state(&resolution.seed)),
+            vec![0, 1, 2, 3, 4],
+            "the stable positional rank keeps the first five of eleven slots"
+        );
+        assert_eq!(resolution.trace.len(), 1);
+        assert_eq!(resolution.trace[0].directive_id, LEGACY_EVOLUTION_TRACE_ID);
+        assert_eq!(resolution.trace[0].requested, 0);
+        assert_eq!(resolution.trace[0].applied, 0);
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
+        assert_eq!(
+            evolved_seed_with_trace(&seed, &inputs11).unwrap().seed,
+            resolution.seed,
+            "unsupported-grid fallback must replay byte-identically"
+        );
+    }
+
+    #[test]
+    fn unsupported_prime_grid_honors_an_active_directive_override() {
+        let seed = compiled(&"x ".repeat(11));
+        let s = spans(11, 1);
+        let mut row = directive(91, 0, DirectiveFamily::Rotate, 1, 1, 100);
+        row.options.density_floor = Some(36);
+        row.options.density_ceiling = Some(45);
+        let plan = vec![row];
+        let mut inputs11 = inputs(7, 1, 0, 100, &s);
+        inputs11.cycle_beats = 11;
+        inputs11.plan = &plan;
+
+        let resolution = evolved_seed_with_trace(&seed, &inputs11)
+            .expect("the directive corridor activates the positional fallback");
+        assert_eq!(resolution.seed.events.len(), 4);
+        assert_eq!(
+            resolution.density_corridor,
+            DensityCorridorRange {
+                floor: 36,
+                ceiling: 45,
+            }
+        );
+        assert_eq!(resolution.trace.len(), 1);
+        assert_eq!(resolution.trace[0].directive_id, 91);
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 45,
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_prime_grid_ignores_disabled_and_future_corridor_overrides() {
+        let seed = compiled(&"x ".repeat(11));
+        let s = spans(11, 1);
+        let mut disabled = directive(91, 0, DirectiveFamily::Rotate, 1, 1, 100);
+        disabled.enabled = false;
+        disabled.options.density_floor = Some(36);
+        disabled.options.density_ceiling = Some(45);
+        let mut future = directive(92, 1, DirectiveFamily::Rotate, 2, 2, 100);
+        future.options.density_floor = Some(36);
+        future.options.density_ceiling = Some(45);
+        let plan = vec![disabled, future];
+        let mut inputs11 = inputs(7, 1, 0, 100, &s);
+        inputs11.cycle_beats = 11;
+        inputs11.plan = &plan;
+
+        assert!(
+            evolved_seed_with_trace(&seed, &inputs11).is_none(),
+            "inactive overrides do not opt an unsupported grid into fallback"
+        );
+        inputs11.cycle = 0;
+        let cycle_zero = evolved_seed_with_trace(&seed, &inputs11)
+            .expect("cycle zero is always the exact authored seed");
+        assert_eq!(cycle_zero.seed, seed);
+        assert!(cycle_zero.trace.is_empty());
     }
 
     #[test]
@@ -2978,7 +4541,8 @@ mod tests {
                 beat_level,
                 &inputs(5, cycle, 100, 100, &s),
                 cycle,
-            );
+            )
+            .0;
             if next.onsets.len() < state.onsets.len() {
                 let removed_slot = state
                     .onsets

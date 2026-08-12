@@ -36,11 +36,16 @@ For platform work:
 - [DUMKA_DSL.md](DUMKA_DSL.md) — the seed notation: grammar, required
   structure, sustain rules, and determinism.
 - [DUMKA_EVOLUTION.md](DUMKA_EVOLUTION.md) — the evolution fold: Barlow
-  operators, the drift leash, trial projection, seed-mode semantics, and
+  operators, the density corridor, drift leash, trial projection, seed-mode semantics, and
   measured fold cost.
 - [DUMKA_EVOLVE_PLAN.md](DUMKA_EVOLVE_PLAN.md) — the implemented evolution
-  score: directive schema, per-cycle/linear/gentle operation pacing,
-  quota/scope semantics, trace, and editor contract.
+  score: directive schema, operation-quota and perceptual step sizes,
+  per-cycle/linear/gentle quota pacing, scope, trace, and editor contract.
+- [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md) — the exact
+  fixed-point `v1` dissimilarity model, legal-prefix planner, calibration
+  protocol, academic basis, limitations, and focused benchmarks.
+- [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md) — the M3.9
+  root-cause record and delivered tie-handshake/density-corridor contract.
 - [ADDING_A_GENERATOR.md](ADDING_A_GENERATOR.md) — how to add a generator without
   creating a second preview or transport path.
 - [SECTIONS_SUBDIVISIONS_LOGIC_SPEC.md](SECTIONS_SUBDIVISIONS_LOGIC_SPEC.md) —

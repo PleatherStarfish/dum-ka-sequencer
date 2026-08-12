@@ -1,13 +1,11 @@
 # Design note — M3.9 "Tied spans and the density corridor"
 
-Status: **architecture, not implemented.** The lasting fix for the two
-reported timeline defects: (1) tuplets that sustain across beat
-boundaries are rejected with structure warnings; (2) after some cycles of
-evolution the music becomes faster and more subdivided than intended.
-Both are root-caused below to seam-level policy choices — **not**
-transport defects — and both fixes live inside the generator seam and the
-evolution fold. Transport is explicitly not redesigned; §5 carries the
-evidence that it is the healthy organ.
+Status: **delivered in M3.9.** This is the root-cause and implementation record
+for two timeline defects: (1) tuplets that sustained across beat boundaries
+were rejected with structure warnings; (2) evolution could become faster and
+more subdivided than intended. Both were seam-level policy choices, not
+transport defects. The fixes now live inside the generator projector,
+validator, and evolution fold; transport production code was not redesigned.
 
 ## 1. Root causes, with the evidence chain
 
@@ -27,12 +25,12 @@ never raw cells. Velocity and pitch of a merged note come from its
 opening cell's leaf — a tie inherits its opener, which is already the
 sustain semantics.
 
-What actually forbids the spanning tuplet is two lines of policy:
+What forbade the spanning tuplet before M3.9 was two lines of policy:
 
-1. `resolve_seed_cells` (dumka tree.rs) **errors** ("a note sustains
+1. `resolve_seed_cells` (dumka tree.rs) **errored** ("a note sustains
    across the span boundary at beat N…") instead of emitting a tied cell
    pair.
-2. `validate_generated_spans` (generators/mod.rs) rejects
+2. `validate_generated_spans` (generators/mod.rs) rejected
    `tied_from_previous` on any span's first cell (`CrossSpanTie`) — the
    M1 conservative fence, adopted before the overlay's tie handling had
    generator traffic.
@@ -127,7 +125,8 @@ set is the onset density the piece keeps**, no matter which layer
      onset count stays inside the corridor. A Fragment that would exceed
      the ceiling fragments into fewer pieces or is skipped; an Add at
      the ceiling is skipped; Remove at the floor likewise. Clamps are
-     recorded in the trace (`CorridorClamped { limit }`) so the Evolve
+     recorded as additive `DensityCorridorClamp { limit, densityPercent }`
+     trace detail so the Evolve
      UI can show *why* a pin under-applied.
   2. **Normalization** (edge cases only): when the corridor itself
      moves (automation/plan) below the inherited state, a
@@ -141,8 +140,9 @@ set is the onset density the piece keeps**, no matter which layer
   intent); the leash keeps governing only the stochastic layer's
   identity drift. Three rails, three distinct jobs: corridor = how
   dense, leash = how far from the seed, projection = playable at all.
-- Surfacing: the corridor renders as a shaded band on the Evolve
-  editor's density sparkline and on the Density insight card; the
+- Surfacing: the fold returns its cycle-effective rail after automation and
+  ordered directive overrides. That corridor renders as a shaded band on the
+  Evolve editor's density sparkline and on the Density insight card; the
   sparkline crossing the band is impossible after cycle 1, and the trace
   ticks explain every clamp.
 
@@ -162,7 +162,7 @@ Both fixes convert implicit policy into explicit, tested contract:
 
 - Timing is exact and pinned: cell boundaries map through rational span
   geometry (`rhythm_cell_boundary_time`, incl. the native-matra path),
-  and nine golden ledgers pin the audible output; none of the reported
+  and 13 golden ledgers pin the audible output; none of the reported
   symptoms is a tick-level error.
 - Ties already play correctly through the overlay merge; the queue and
   everything after it (hocket, triggers, MIDI) operates on merged notes.
@@ -174,7 +174,7 @@ no mechanism gain. Rejected.
 
 ## 6. Test matrix
 
-- **Byte-compat pins first**: all nine goldens, every pinned trajectory,
+- **Byte-compat pins first**: all pre-M3.9 goldens, every pinned trajectory,
   and both DTO fixture directions unchanged with corridor off and
   non-crossing patterns (proves the relaxation is purely additive).
 - Tie handshake: proptest over random patterns × structures (per-beat
@@ -193,8 +193,10 @@ no mechanism gain. Rejected.
 - e2e: builder spanning tuplet plays *without* articulation (mock
   pattern allowlist + real lane); Evolve strip shows corridor band and
   clamp ticks (fixture-driven component test).
-- Bench: fold-to-10k with corridor on (expect noise; the clamp is O(1)
-  per application).
+- Bench: `generator/dumka-fold-corridor-cycle-10000` folds a legal
+  16-directive plan through a 25–60% corridor to cycle 10,000. The M-series
+  release run measured a 10.66 ms median over 10 iterations; the clamp remains
+  O(1) per application.
 
 ## 7. Delivery (7 commits, M2/M3 discipline)
 

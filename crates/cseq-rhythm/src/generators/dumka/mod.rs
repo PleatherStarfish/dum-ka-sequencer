@@ -22,6 +22,7 @@ pub mod euclid;
 pub mod evolve;
 pub mod figures;
 pub mod lattice;
+pub mod perceptual;
 pub mod plan;
 pub mod reshape;
 pub mod sioros;
@@ -35,10 +36,19 @@ use super::{
 use evolve::EvolutionInputs;
 use tree::CompiledSeed;
 
+pub use evolve::{evolution_state, EvolutionState, EvolvedOnset};
+
+pub use perceptual::{
+    perceptual_distance, PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance,
+    PerceptualDistance,
+    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualWeights,
+    PERCEPTUAL_DISTANCE_MAX_MILLI,
+};
 pub use plan::{
-    BeatRange, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily, DirectiveOptions,
-    DirectivePacing, DirectiveSkip, DirectiveTraceEntry, EvolutionDirective, RotateDirection,
-    MAX_EVOLUTION_DIRECTIVES,
+    BeatRange, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude,
+    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, EvolutionDirective,
+    PerceptualPacingTrace, RotateDirection, LEGACY_EVOLUTION_TRACE_ID, MAX_EVOLUTION_DIRECTIVES,
+    MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
 };
 
 /// Automation target sampled at each folded cycle's start by both callers.
@@ -229,7 +239,16 @@ impl DumkaGeneratorParams {
             });
         }
         plan::validate_plan(&self.plan)?;
-        self.compile().map(|_| ())
+        let seed = self.compile()?;
+        if barlow::stratification(seed.total_beats, seed.required_subdivision).is_none() {
+            if let Some(directive) = self.plan.iter().find(|directive| {
+                directive.enabled
+                    && matches!(directive.magnitude, DirectiveMagnitude::Perceptual { .. })
+            }) {
+                return Err(unsupported_perceptual_grid(directive.id));
+            }
+        }
+        Ok(())
     }
 
     fn op_weights(&self) -> evolve::OpWeights {
@@ -259,12 +278,20 @@ fn pattern_error(error: dsl::PatternError) -> GeneratorError {
     }
 }
 
+fn unsupported_perceptual_grid(directive_id: u64) -> GeneratorError {
+    GeneratorError::DumkaPlanInvalid {
+        message: format!(
+            "directive {directive_id} perceptual magnitude requires a Barlow-supported beat/subdivision grid"
+        ),
+    }
+}
+
 impl CycleGenerator for DumkaGeneratorParams {
     fn generate(
         &self,
         context: &GeneratorCycleContext<'_>,
     ) -> Result<Vec<GeneratedSpan>, GeneratorError> {
-        self.generate_with_trace(context).map(|(spans, _)| spans)
+        self.generate_with_trace(context).map(|(spans, _, _, _)| spans)
     }
 }
 
@@ -272,7 +299,19 @@ impl DumkaGeneratorParams {
     pub(crate) fn generate_with_trace(
         &self,
         context: &GeneratorCycleContext<'_>,
-    ) -> Result<(Vec<GeneratedSpan>, Vec<DirectiveTraceEntry>), GeneratorError> {
+    ) -> Result<
+        (
+            Vec<GeneratedSpan>,
+            Vec<DirectiveTraceEntry>,
+            super::DensityCorridorRange,
+            Option<super::PerceptualCycleDistance>,
+        ),
+        GeneratorError,
+    > {
+        // `validate_plan` rejects over-budget authored ranges up front. Keep
+        // this request-relative check at the expensive seam as defense in
+        // depth for any future internal caller that bypasses config validation.
+        plan::validate_perceptual_scoring_work_through(&self.plan, context.cycle)?;
         let seed = self.compile()?;
         let inputs = EvolutionInputs {
             seed_value: context.seed,
@@ -292,21 +331,50 @@ impl DumkaGeneratorParams {
             spans: context.spans,
             cycle_beats: context.cycle_beats,
         };
-        let (evolved, trace) = evolve::evolved_seed_with_trace(&seed, &inputs)
-            .map(|resolved| (resolved.seed, resolved.trace))
-            .unwrap_or((seed, Vec::new()));
+        if barlow::stratification(seed.total_beats, seed.required_subdivision).is_none() {
+            if let Some(directive) = self.plan.iter().find(|directive| {
+                directive.enabled
+                    && directive.from_cycle <= context.cycle
+                    && matches!(directive.magnitude, DirectiveMagnitude::Perceptual { .. })
+            }) {
+                return Err(unsupported_perceptual_grid(directive.id));
+            }
+        }
+        let resolved = evolve::evolved_seed_with_trace(&seed, &inputs);
+        let (evolved, trace, density_corridor, cycle_distance) = match resolved {
+            Some(resolved) => (
+                resolved.seed,
+                resolved.trace,
+                resolved.density_corridor,
+                resolved.cycle_distance,
+            ),
+            None => (
+                seed,
+                Vec::new(),
+                // `None` is reserved for unsupported Barlow grids with no
+                // active global, automated, or historical plan corridor.
+                super::DensityCorridorRange {
+                    floor: 0,
+                    ceiling: 100,
+                },
+                None,
+            ),
+        };
         let spans = tree::resolve_seed_cells(&evolved, context.cycle_beats, context.spans)
             .map_err(|error| GeneratorError::DumkaStructure {
                 message: error.to_string(),
             })?;
-        Ok((spans, trace))
+        Ok((spans, trace, density_corridor, cycle_distance))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generators::{resolve_generator_cycle, GeneratorConfig, GeneratorSpanInput};
+    use crate::generators::{
+        resolve_generator_cycle, resolve_generator_cycle_with_trace, GeneratorConfig,
+        GeneratorSpanInput,
+    };
 
     fn params(pattern: &str) -> DumkaGeneratorParams {
         DumkaGeneratorParams {
@@ -415,12 +483,10 @@ mod tests {
     }
 
     #[test]
-    fn sustains_across_per_beat_spans_are_rejected_not_truncated() {
-        let error = resolve("x _ x .", &per_beat_spans(4, 4), 0, 4, 7).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "dumka structure mismatch: a note sustains across the span boundary at beat 1; split the note or keep the hold inside one beat or Grouping tile"
-        );
+    fn sustains_across_per_beat_spans_emit_a_paired_tie() {
+        let resolved = resolve("x _ x .", &per_beat_spans(4, 4), 0, 4, 7).unwrap();
+        assert!(resolved[0].cells.last().unwrap().tied_to_next);
+        assert!(resolved[1].cells.first().unwrap().tied_from_previous);
     }
 
     #[test]
@@ -525,6 +591,54 @@ mod tests {
     }
 
     #[test]
+    fn rotated_tied_reshape_cannot_leave_a_dangling_cycle_edge_tie() {
+        // Minimized from the parallel transport invariant. Cycle one can
+        // create duration-covering Euclidean onsets; cycle two can then draw
+        // a global beat rotation. Rotating only the onset would move the
+        // final sustain past the absolute cycle fence, so that candidate must
+        // be rejected during evolution rather than reaching span validation.
+        let spans = per_beat_spans(4, 1);
+        let evolving = DumkaGeneratorParams {
+            pattern: "x . x .".to_string(),
+            evolution_rate: 69,
+            drift_leash: 51,
+            density_floor: 0,
+            density_ceiling: 50,
+            barlow_temperature: 0,
+            weight_barlow_remove: 37,
+            weight_barlow_add: 67,
+            weight_rotate: 24,
+            weight_syncopate: 71,
+            weight_desyncopate: 17,
+            weight_fragment: 84,
+            weight_consolidate: 23,
+            fill_complexity: 50,
+            weight_euclid: 90,
+            euclid_max_run: 2,
+            euclid_invert: 0,
+            euclid_rest_policy: reshape::EuclidRestPolicy::Tied,
+            plan: Vec::new(),
+            plan_length_cycles: 0,
+            seed_mode: GeneratorSeedMode::History {
+                seed: 9_792_447_587_191_451_430,
+                history: vec![9_603_363_527_571_367_637],
+                history_weight: 70,
+                new_seed_weight: 5,
+                max_history: 8,
+            },
+        };
+        let no_automation: &super::super::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        let resolved = resolve_generator_cycle(
+            &GeneratorConfig::Dumka(evolving),
+            &context(&spans, 2, 4, 9_603_363_527_571_367_637, no_automation),
+        )
+        .expect("cycle-edge sustain is rejected before span validation");
+
+        assert!(!resolved[0].cells[0].tied_from_previous);
+        assert!(!resolved[3].cells.last().unwrap().tied_to_next);
+    }
+
+    #[test]
     fn out_of_range_knobs_are_rejected_not_clamped() {
         let mut over = params(DEFAULT_DUMKA_PATTERN);
         over.evolution_rate = 101;
@@ -543,6 +657,169 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "dumka driftLeash must be 0-100, got 250"
+        );
+
+        let mut crossed = params(DEFAULT_DUMKA_PATTERN);
+        crossed.density_floor = 61;
+        crossed.density_ceiling = 60;
+        assert_eq!(
+            GeneratorConfig::Dumka(crossed)
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "dumka plan invalid: densityFloor must be at most densityCeiling, got 61 > 60"
+        );
+    }
+
+    #[test]
+    fn density_corridor_serde_defaults_are_behavior_off() {
+        let decoded: DumkaGeneratorParams = serde_json::from_value(serde_json::json!({
+            "pattern": DEFAULT_DUMKA_PATTERN
+        }))
+        .unwrap();
+        assert_eq!(decoded.density_floor, 0);
+        assert_eq!(decoded.density_ceiling, 100);
+        assert_eq!(
+            decoded,
+            DumkaGeneratorParams {
+                pattern: DEFAULT_DUMKA_PATTERN.to_string(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn perceptual_magnitude_fails_closed_on_an_unsupported_metric_grid() {
+        let spans = vec![GeneratorSpanInput {
+            span_id: 1,
+            span_len: 11,
+            label: None,
+            section_index: Some(1),
+            subdivision: Some(11),
+        }];
+        let context = GeneratorCycleContext {
+            track_id: None,
+            cycle: 1,
+            cycle_beats: 1,
+            spans: &spans,
+            seed: 7,
+            automation: &|_, _, _| None,
+        };
+        let mut config = params("[x . . . . . . . . . .]");
+        config.plan.push(EvolutionDirective {
+            id: 9,
+            order: 0,
+            enabled: true,
+            from_cycle: 1,
+            to_cycle: 1,
+            family: DirectiveFamily::BarlowAdd,
+            pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::Perceptual {
+                model_version: PerceptualModelVersion::V1,
+                target_milli: 5_000,
+                tolerance_milli: 500,
+                max_operations: 4,
+            },
+            intensity: 25,
+            scope: None,
+            options: DirectiveOptions::default(),
+        });
+        assert_eq!(
+            config.generate_with_trace(&context).unwrap_err(),
+            GeneratorError::DumkaPlanInvalid {
+                message: "directive 9 perceptual magnitude requires a Barlow-supported beat/subdivision grid".to_string(),
+            }
+        );
+
+        config.plan[0].from_cycle = 9;
+        config.plan[0].to_cycle = 9;
+        assert_eq!(
+            GeneratorConfig::Dumka(config.clone())
+                .validate()
+                .unwrap_err(),
+            GeneratorError::DumkaPlanInvalid {
+                message: "directive 9 perceptual magnitude requires a Barlow-supported beat/subdivision grid".to_string(),
+            },
+            "future model-incompatible rows must fail authoring validation before playback reaches them"
+        );
+
+        config.plan[0].enabled = false;
+        GeneratorConfig::Dumka(config.clone()).validate().unwrap();
+        assert!(config.generate_with_trace(&context).is_ok());
+    }
+
+    #[test]
+    fn preview_reports_the_cycle_effective_automated_and_directive_corridor() {
+        let spans = per_beat_spans(4, 4);
+        let automated: &super::super::GeneratorAutomationSampler<'_> = &|target, _, _| match target
+        {
+            DUMKA_DENSITY_FLOOR_TARGET => Some(70.0),
+            DUMKA_DENSITY_CEILING_TARGET => Some(55.0),
+            _ => None,
+        };
+        let mut config = params(DEFAULT_DUMKA_PATTERN);
+        let context = context(&spans, 2, 4, 7, automated);
+        let resolved =
+            resolve_generator_cycle_with_trace(&GeneratorConfig::Dumka(config.clone()), &context)
+                .unwrap();
+        assert_eq!(
+            resolved.density_corridor,
+            Some(super::super::DensityCorridorRange {
+                floor: 55,
+                ceiling: 55,
+            }),
+            "crossed automation gives the ceiling precedence"
+        );
+
+        config.plan = vec![EvolutionDirective {
+            id: 1,
+            order: 0,
+            enabled: true,
+            from_cycle: 2,
+            to_cycle: 2,
+            family: DirectiveFamily::Fragment,
+            pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::OperationQuota,
+            intensity: 25,
+            scope: None,
+            options: DirectiveOptions {
+                density_floor: Some(20),
+                density_ceiling: Some(60),
+                ..Default::default()
+            },
+        }];
+        assert_eq!(
+            resolve_generator_cycle_with_trace(&GeneratorConfig::Dumka(config.clone()), &context,)
+                .unwrap()
+                .density_corridor,
+            Some(super::super::DensityCorridorRange {
+                floor: 20,
+                ceiling: 60,
+            })
+        );
+
+        config.plan.push(EvolutionDirective {
+            id: 2,
+            order: 1,
+            enabled: true,
+            from_cycle: 2,
+            to_cycle: 2,
+            family: DirectiveFamily::Rotate,
+            pacing: DirectivePacing::PerCycle,
+            magnitude: DirectiveMagnitude::OperationQuota,
+            intensity: 25,
+            scope: None,
+            options: DirectiveOptions::default(),
+        });
+        assert_eq!(
+            resolve_generator_cycle_with_trace(&GeneratorConfig::Dumka(config), &context)
+                .unwrap()
+                .density_corridor,
+            Some(super::super::DensityCorridorRange {
+                floor: 55,
+                ceiling: 55,
+            }),
+            "a later inheriting directive restores the sampled global rail"
         );
     }
 
