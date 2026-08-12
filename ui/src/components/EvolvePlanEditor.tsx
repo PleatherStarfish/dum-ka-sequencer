@@ -11,8 +11,15 @@ import {
   type WheelEvent,
 } from "react";
 
-import type { GeneratorPreview } from "../bridge";
+import type {
+  EvolutionCurve, GeneratorPreview } from "../bridge";
 import {
+  MAX_CURVE_OPERATIONS,
+  upsertCurvePoint,
+  setCurveSettings,
+  removeCurvePoint,
+  curveTargetMilliAt,
+  DEFAULT_EVOLUTION_CURVE,
   DIRECTIVE_FAMILIES,
   DIRECTIVE_FAMILY_LABELS,
   DIRECTIVE_PACING_LABELS,
@@ -55,7 +62,7 @@ const VIEWPORT_OVERSCAN = 3;
 
 export interface EvolutionCachedPreview {
   cycle: number;
-  preview: Pick<GeneratorPreview, "spans" | "densityCorridor">;
+  preview: Pick<GeneratorPreview, "spans" | "densityCorridor" | "cycleDistance">;
 }
 
 export type EvolutionInheritedOptions = Partial<
@@ -89,6 +96,10 @@ export interface EvolvePlanEditorProps {
   onVisibleCycleRangeChange?: (fromCycle: number, toCycle: number) => void;
   densityFloor?: number;
   densityCeiling?: number;
+  /** Composition-level evolution curve; edited via the Curve card and by
+   * clicking in the step-size lane while the curve is enabled. */
+  curve?: EvolutionCurve;
+  onCurveChange?: (curve: EvolutionCurve) => void;
 }
 
 type DragMode = "move" | "resize-start" | "resize-end";
@@ -353,10 +364,22 @@ export function EvolvePlanEditor({
   onVisibleCycleRangeChange,
   densityFloor = 0,
   densityCeiling = 100,
+  curve = DEFAULT_EVOLUTION_CURVE,
+  onCurveChange,
 }: EvolvePlanEditorProps) {
   const [selectedId, setSelectedId] = useState<number | null>(initialSelectedId);
   const [usedOnly, setUsedOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [curveError, setCurveError] = useState<string | null>(null);
+  const applyCurve = (result: { ok: true; curve: EvolutionCurve } | { ok: false; message: string }) => {
+    if (!onCurveChange) return;
+    if (!result.ok) {
+      setCurveError(result.message);
+      return;
+    }
+    setCurveError(null);
+    onCurveChange(result.curve);
+  };
   const [comparison, setComparison] = useState<"before" | "after">("after");
   const [drag, setDrag] = useState<DragState | null>(null);
   const [cellWidth, setCellWidth] = useState(CELL_WIDTH);
@@ -430,6 +453,7 @@ export function EvolvePlanEditor({
           {
             ...previewMetrics(entry),
             corridor: entry.preview.densityCorridor ?? null,
+            distanceMilli: entry.preview.cycleDistance?.distanceMilli ?? null,
           },
         ])
       ),
@@ -448,6 +472,76 @@ export function EvolvePlanEditor({
     () => new Map(plan.map((directive) => [directive.id, directive])),
     [plan]
   );
+  // Perceptual step targets per cycle: the sum of every enabled perceptual
+  // row covering the cycle (cross-family rows may stack; their increments
+  // are sequential, so the whole-cycle intent is additive).
+  const perceptualTargetByCycle = useMemo(() => {
+    const map = new Map<number, { targetMilli: number; toleranceMilli: number; rows: number }>();
+    // Engine precedence mirrored: at cycles with any enabled directive the
+    // directives own the cycle (curve suppressed); elsewhere the curve's
+    // interpolated target is the band.
+    const directiveCoveredCycles = new Set<number>();
+    for (const row of plan) {
+      if (!row.enabled) continue;
+      for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
+        directiveCoveredCycles.add(cycle);
+      }
+    }
+    if (curve.enabled && curve.points.length > 0) {
+      const first = curve.points[0]!.cycle;
+      const last = curve.points[curve.points.length - 1]!.cycle;
+      for (let cycle = first; cycle <= last; cycle += 1) {
+        if (directiveCoveredCycles.has(cycle)) continue;
+        const target = curveTargetMilliAt(curve, cycle);
+        if (target > 0) {
+          map.set(cycle, {
+            targetMilli: target,
+            toleranceMilli: curve.toleranceMilli,
+            rows: 0,
+          });
+        }
+      }
+    }
+    for (const row of plan) {
+      if (!row.enabled || row.magnitude?.mode !== "perceptual") continue;
+      for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
+        const current = map.get(cycle) ?? {
+          targetMilli: 0,
+          toleranceMilli: 0,
+          rows: 0,
+        };
+        current.targetMilli += row.magnitude.targetMilli;
+        current.toleranceMilli += row.magnitude.toleranceMilli;
+        current.rows += 1;
+        map.set(cycle, current);
+      }
+    }
+    return map;
+  }, [curve, plan]);
+  const maxVisibleStepMilli = useMemo(() => {
+    let max = 1;
+    for (const [cycle, metrics] of previewByCycle) {
+      if (
+        cycle >= visibleRange.fromCycle &&
+        cycle <= visibleRange.toCycle &&
+        metrics.distanceMilli !== null
+      ) {
+        max = Math.max(max, metrics.distanceMilli);
+      }
+    }
+    for (const [cycle, target] of perceptualTargetByCycle) {
+      if (cycle >= visibleRange.fromCycle && cycle <= visibleRange.toCycle) {
+        max = Math.max(max, target.targetMilli + target.toleranceMilli);
+      }
+    }
+    return max;
+  }, [
+    perceptualTargetByCycle,
+    previewByCycle,
+    visibleRange.fromCycle,
+    visibleRange.toCycle,
+  ]);
+
   const maxVisibleOnsets = useMemo(
     () => {
       let max = 1;
@@ -1040,9 +1134,214 @@ export function EvolvePlanEditor({
               );
             })}
           </div>
+
+          <div className="evolve-plan-step-lane" aria-label="Step size lane">
+            <span className="evolve-plan-lane-name">Step size</span>
+            {cycles.map((cycle) => {
+              const metrics = previewByCycle.get(cycle);
+              const realized = metrics?.distanceMilli ?? null;
+              const target = perceptualTargetByCycle.get(cycle) ?? null;
+              const within =
+                realized !== null &&
+                target !== null &&
+                Math.abs(realized - target.targetMilli) <= target.toleranceMilli;
+              const stepLabel =
+                realized === null
+                  ? `Cycle ${cycle} step size not cached`
+                  : target === null
+                    ? `Cycle ${cycle} step size ${formatPerceptualScore(realized)}`
+                    : `Cycle ${cycle} step size ${formatPerceptualScore(realized)}, target ${formatPerceptualScore(target.targetMilli)} ±${formatPerceptualScore(target.toleranceMilli)}${within ? ", within tolerance" : ", outside tolerance"}`;
+              const scale = (value: number) =>
+                Math.round(Math.min(1, value / maxVisibleStepMilli) * 100);
+              return (
+                <span
+                  key={cycle}
+                  className={`evolve-plan-step-cell${
+                    target !== null
+                      ? within
+                        ? " is-within-target"
+                        : realized !== null
+                          ? " is-outside-target"
+                          : ""
+                      : ""
+                  }${curve.enabled && onCurveChange ? " is-curve-editable" : ""}`}
+                  role="group"
+                  aria-label={stepLabel}
+                  title={stepLabel}
+                  style={{ gridColumn: cycle + 2 }}
+                  onPointerDown={(event) => {
+                    if (
+                      event.button !== 0 ||
+                      disabled ||
+                      !onCurveChange ||
+                      !curve.enabled ||
+                      cycle < 1
+                    ) {
+                      return;
+                    }
+                    if (event.shiftKey) {
+                      if (curve.points.some((point) => point.cycle === cycle)) {
+                        applyCurve(removeCurvePoint(plan, curve, cycle));
+                      }
+                      return;
+                    }
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    const fraction =
+                      bounds.height <= 0
+                        ? 0
+                        : Math.min(
+                            1,
+                            Math.max(
+                              0,
+                              (bounds.bottom - event.clientY) / bounds.height
+                            )
+                          );
+                    // An empty lane has a degenerate y-scale (max 1 milli);
+                    // clicks then place points against a 10.0 default
+                    // ceiling so the first drawn arc is audible, not zero.
+                    const clickScaleMilli = Math.max(
+                      maxVisibleStepMilli,
+                      10_000
+                    );
+                    applyCurve(
+                      upsertCurvePoint(
+                        plan,
+                        curve,
+                        cycle,
+                        Math.round(fraction * clickScaleMilli)
+                      )
+                    );
+                  }}
+                >
+                  {target !== null ? (
+                    <i
+                      className="evolve-plan-step-band"
+                      aria-hidden="true"
+                      style={{
+                        bottom: `${scale(
+                          Math.max(0, target.targetMilli - target.toleranceMilli)
+                        )}%`,
+                        height: `${Math.max(
+                          2,
+                          scale(target.targetMilli + target.toleranceMilli) -
+                            scale(
+                              Math.max(
+                                0,
+                                target.targetMilli - target.toleranceMilli
+                              )
+                            )
+                        )}%`,
+                      }}
+                    />
+                  ) : null}
+                  {realized !== null ? (
+                    <i
+                      className="evolve-plan-step-bar"
+                      aria-hidden="true"
+                      style={{ height: `${Math.max(realized > 0 ? 2 : 1, scale(realized))}%` }}
+                    />
+                  ) : null}
+                </span>
+              );
+            })}
+          </div>
         </div>
 
         <aside className="evolve-plan-inspector" aria-label="Directive inspector">
+          <section className="evolve-plan-curve-card" aria-label="Evolution curve">
+            <div className="evolve-plan-curve-head">
+              <strong>Evolution curve</strong>
+              <label className="evolve-plan-curve-enable">
+                <input
+                  type="checkbox"
+                  aria-label="Curve enabled"
+                  checked={curve.enabled}
+                  disabled={disabled || !onCurveChange}
+                  onChange={(event) =>
+                    applyCurve(
+                      setCurveSettings(plan, curve, {
+                        enabled: event.currentTarget.checked,
+                      })
+                    )
+                  }
+                />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <p className="evolve-plan-curve-help">
+              One step-size target per cycle for the whole piece, interpolated
+              between points; the family weights choose what kind of change.
+              Directive cycles override it; outside its points the piece
+              repeats. Click the Step size lane to place points; shift-click
+              removes.
+            </p>
+            <div className="evolve-plan-curve-fields">
+              <label className="rb-tool-field">
+                <span>tolerance</span>
+                <NumericField
+                  aria-label="Curve tolerance"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={curve.toleranceMilli / 1000}
+                  disabled={disabled || !onCurveChange}
+                  onValueCommit={(value) =>
+                    applyCurve(
+                      setCurveSettings(plan, curve, {
+                        toleranceMilli: Math.round(value * 1000),
+                      })
+                    )
+                  }
+                />
+              </label>
+              <label className="rb-tool-field">
+                <span>max ops</span>
+                <NumericField
+                  aria-label="Curve max operations"
+                  min={1}
+                  max={MAX_CURVE_OPERATIONS}
+                  step={1}
+                  value={curve.maxOperations}
+                  disabled={disabled || !onCurveChange}
+                  onValueCommit={(value) =>
+                    applyCurve(
+                      setCurveSettings(plan, curve, { maxOperations: value })
+                    )
+                  }
+                />
+              </label>
+            </div>
+            {curve.points.length > 0 ? (
+              <ul className="evolve-plan-curve-points" aria-label="Curve points">
+                {curve.points.map((point) => (
+                  <li key={point.cycle}>
+                    <span>
+                      cycle {point.cycle} · {formatPerceptualScore(point.targetMilli)}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Remove curve point at cycle ${point.cycle}`}
+                      disabled={disabled || !onCurveChange}
+                      onClick={() =>
+                        applyCurve(removeCurvePoint(plan, curve, point.cycle))
+                      }
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="evolve-plan-curve-empty">
+                No points yet — enable the curve and click the Step size lane.
+              </p>
+            )}
+            {curveError ? (
+              <p className="evolve-plan-curve-error" role="alert">
+                {curveError}
+              </p>
+            ) : null}
+          </section>
           {selected ? (
             <>
               <div className="evolve-plan-inspector-head">

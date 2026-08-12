@@ -1,4 +1,6 @@
 import type {
+  CurvePoint,
+  EvolutionCurve,
   DirectiveBeatRange,
   DirectiveEuclidRestPolicy,
   DirectiveFamily,
@@ -40,6 +42,222 @@ export const MAX_PERCEPTUAL_DISTANCE_MILLI = 100_000;
 export const MAX_PERCEPTUAL_OPERATIONS = 256;
 /** Mirrors the engine's cumulative, lifetime prefix-scoring admission bound. */
 export const MAX_PERCEPTUAL_SCORING_WORK = 4_096;
+
+/** Mirrors plan.rs curve caps. */
+export const MAX_CURVE_POINTS = 64;
+export const MAX_CURVE_SPAN_CYCLES = 512;
+export const MAX_CURVE_OPERATIONS = 8;
+
+export const DEFAULT_EVOLUTION_CURVE: EvolutionCurve = {
+  enabled: false,
+  modelVersion: "v1",
+  toleranceMilli: 500,
+  maxOperations: 4,
+  points: [],
+};
+
+export function curveIsActive(curve: EvolutionCurve): boolean {
+  return curve.enabled && curve.points.some((point) => point.targetMilli > 0);
+}
+
+/** Exact mirror of EvolutionCurve::target_milli_at (integer lerp,
+ * round-half-away-from-zero, 0 outside the points' span). */
+export function curveTargetMilliAt(curve: EvolutionCurve, cycle: number): number {
+  if (!curve.enabled || curve.points.length === 0) return 0;
+  const first = curve.points[0]!;
+  const last = curve.points[curve.points.length - 1]!;
+  if (cycle < first.cycle || cycle > last.cycle) return 0;
+  let previous = first;
+  for (const point of curve.points) {
+    if (point.cycle === cycle) return point.targetMilli;
+    if (point.cycle > cycle) {
+      const span = point.cycle - previous.cycle;
+      const offset = cycle - previous.cycle;
+      const delta = point.targetMilli - previous.targetMilli;
+      const numerator = delta * offset;
+      const half = Math.trunc(span / 2);
+      const rounded =
+        numerator >= 0
+          ? Math.trunc((numerator + half) / span)
+          : Math.trunc((numerator - half) / span);
+      return Math.min(100_000, Math.max(0, previous.targetMilli + rounded));
+    }
+    previous = point;
+  }
+  return 0;
+}
+
+/** Mirrors EvolutionCurve::scoring_work_through(u64::MAX): every covered
+ * cycle with a nonzero target reserves maxOperations + 1 evaluations. */
+export function curveScoringWork(curve: EvolutionCurve): bigint {
+  if (!curveIsActive(curve)) return 0n;
+  const first = curve.points[0]!.cycle;
+  const last = curve.points[curve.points.length - 1]!.cycle;
+  let total = 0n;
+  for (let cycle = Math.max(1, first); cycle <= last; cycle += 1) {
+    if (curveTargetMilliAt(curve, cycle) > 0) {
+      total += BigInt(curve.maxOperations) + 1n;
+    }
+  }
+  return total;
+}
+
+export type CurveEditResult =
+  | { ok: true; curve: EvolutionCurve }
+  | { ok: false; message: string };
+
+/** Mirrors plan.rs validate_curve messages byte-for-byte. */
+export function validateEvolutionCurve(curve: EvolutionCurve): string | null {
+  if (curve.points.length > MAX_CURVE_POINTS) {
+    return `dumka plan invalid: curve supports at most ${MAX_CURVE_POINTS} points, got ${curve.points.length}`;
+  }
+  let previous: number | null = null;
+  for (const point of curve.points) {
+    if (point.cycle < 1) {
+      return "dumka plan invalid: curve point cycles must be ≥ 1";
+    }
+    if (previous !== null && point.cycle <= previous) {
+      return "dumka plan invalid: curve points must have strictly ascending cycles";
+    }
+    if (point.targetMilli > 100_000) {
+      return `dumka plan invalid: curve targetMilli must be 0-100000, got ${point.targetMilli}`;
+    }
+    previous = point.cycle;
+  }
+  if (curve.toleranceMilli > 100_000) {
+    return `dumka plan invalid: curve toleranceMilli must be 0-100000, got ${curve.toleranceMilli}`;
+  }
+  if (curve.maxOperations < 1 || curve.maxOperations > MAX_CURVE_OPERATIONS) {
+    return `dumka plan invalid: curve maxOperations must be 1-${MAX_CURVE_OPERATIONS}, got ${curve.maxOperations}`;
+  }
+  if (curve.points.length > 0) {
+    const span =
+      curve.points[curve.points.length - 1]!.cycle - curve.points[0]!.cycle;
+    if (span > MAX_CURVE_SPAN_CYCLES) {
+      return `dumka plan invalid: curve spans ${span} cycles between its first and last points, the maximum is ${MAX_CURVE_SPAN_CYCLES}`;
+    }
+  }
+  return null;
+}
+
+function finishCurve(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve
+): CurveEditResult {
+  const structural = validateEvolutionCurve(curve);
+  if (structural !== null) return { ok: false, message: structural };
+  const requested = perceptualScoringWork(plan) + curveScoringWork(curve);
+  if (requested > BigInt(MAX_PERCEPTUAL_SCORING_WORK)) {
+    return {
+      ok: false,
+      message: `dumka perceptual plan reserves ${requested.toString()} scoring operations, exceeding the limit of ${MAX_PERCEPTUAL_SCORING_WORK}`,
+    };
+  }
+  return { ok: true, curve };
+}
+
+/** Insert or replace the point at `cycle`, keeping points sorted. */
+export function upsertCurvePoint(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve,
+  cycle: number,
+  targetMilli: number
+): CurveEditResult {
+  const points: CurvePoint[] = curve.points.filter(
+    (point) => point.cycle !== cycle
+  );
+  points.push({
+    cycle: Math.max(1, Math.round(cycle)),
+    targetMilli: Math.min(100_000, Math.max(0, Math.round(targetMilli))),
+  });
+  points.sort((a, b) => a.cycle - b.cycle);
+  return finishCurve(plan, { ...curve, points });
+}
+
+export function removeCurvePoint(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve,
+  cycle: number
+): CurveEditResult {
+  const points = curve.points.filter((point) => point.cycle !== cycle);
+  return finishCurve(plan, { ...curve, points });
+}
+
+export function setCurveSettings(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve,
+  settings: Partial<
+    Pick<EvolutionCurve, "enabled" | "toleranceMilli" | "maxOperations">
+  >
+): CurveEditResult {
+  return finishCurve(plan, { ...curve, ...settings });
+}
+
+/** Tolerant patch-reader normalization: repairs what it can, drops what it
+ * must, and never invents values the engine would reject. */
+export function normalizeEvolutionCurve(value: unknown): {
+  curve: EvolutionCurve;
+  droppedPoints: number;
+} {
+  if (typeof value !== "object" || value === null) {
+    return { curve: { ...DEFAULT_EVOLUTION_CURVE, points: [] }, droppedPoints: 0 };
+  }
+  const source = value as Partial<EvolutionCurve> & { points?: unknown };
+  let dropped = 0;
+  const points: CurvePoint[] = [];
+  if (Array.isArray(source.points)) {
+    for (const raw of source.points) {
+      if (typeof raw !== "object" || raw === null) {
+        dropped += 1;
+        continue;
+      }
+      const candidate = raw as Partial<CurvePoint>;
+      const cycle = Number(candidate.cycle);
+      const target = Number(candidate.targetMilli);
+      if (
+        !Number.isInteger(cycle) ||
+        cycle < 1 ||
+        !Number.isInteger(target) ||
+        target < 0 ||
+        target > 100_000
+      ) {
+        dropped += 1;
+        continue;
+      }
+      if (points.some((point) => point.cycle === cycle)) {
+        dropped += 1;
+        continue;
+      }
+      points.push({ cycle, targetMilli: target });
+    }
+  }
+  points.sort((a, b) => a.cycle - b.cycle);
+  while (points.length > MAX_CURVE_POINTS) {
+    points.pop();
+    dropped += 1;
+  }
+  while (
+    points.length > 1 &&
+    points[points.length - 1]!.cycle - points[0]!.cycle > MAX_CURVE_SPAN_CYCLES
+  ) {
+    points.pop();
+    dropped += 1;
+  }
+  const toleranceRaw = Number(source.toleranceMilli);
+  const opsRaw = Number(source.maxOperations);
+  const curve: EvolutionCurve = {
+    enabled: source.enabled === true,
+    modelVersion: "v1",
+    toleranceMilli: Number.isInteger(toleranceRaw)
+      ? Math.min(100_000, Math.max(0, toleranceRaw))
+      : DEFAULT_EVOLUTION_CURVE.toleranceMilli,
+    maxOperations: Number.isInteger(opsRaw)
+      ? Math.min(MAX_CURVE_OPERATIONS, Math.max(1, opsRaw))
+      : DEFAULT_EVOLUTION_CURVE.maxOperations,
+    points,
+  };
+  return { curve, droppedPoints: dropped };
+}
 
 const U64_MAX = (1n << 64n) - 1n;
 

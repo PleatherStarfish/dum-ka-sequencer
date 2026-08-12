@@ -277,5 +277,9 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
   "densityCorridor": {
     "floor": 20,
     "ceiling": 60
+  },
+  "cycleDistance": {
+    "modelVersion": "v1",
+    "distanceMilli": 0
   }
 };

@@ -40,6 +40,201 @@ pub const MAX_PERCEPTUAL_SCORING_WORK: u64 = 4_096;
 /// actually changes or blocks that cycle; behavior-off traces stay empty.
 pub const LEGACY_EVOLUTION_TRACE_ID: u64 = 0;
 
+/// Trace identity for the composition-level evolution curve. Reserved at
+/// JavaScript's MAX_SAFE_INTEGER: authored directive ids are validated
+/// strictly below it, so the sentinel can never collide and still crosses
+/// the JSON boundary losslessly.
+pub const EVOLUTION_CURVE_TRACE_ID: u64 = 9_007_199_254_740_991;
+
+/// Breakpoint cap for the evolution curve; enough for a long-form arc
+/// while keeping validation and the editor canvas bounded.
+pub const MAX_CURVE_POINTS: usize = 64;
+
+/// Widest cycle span (last point − first point) the curve may cover. With
+/// the per-cycle search bounded by [`MAX_CURVE_OPERATIONS`], the whole
+/// curve stays inside the shared perceptual scoring budget.
+pub const MAX_CURVE_SPAN_CYCLES: u64 = 512;
+
+/// Per-cycle prefix-search cap for the curve, deliberately tighter than a
+/// directive's [`MAX_PERCEPTUAL_OPERATIONS`]: the curve runs on every
+/// covered cycle, so its per-cycle work is what playback latency feels.
+pub const MAX_CURVE_OPERATIONS: u32 = 8;
+
+/// One breakpoint of the composition-level evolution curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurvePoint {
+    pub cycle: u64,
+    pub target_milli: u32,
+}
+
+/// The composition-level evolution curve: a piecewise-linear perceptual
+/// step-size target over the cycle axis. When enabled it replaces the
+/// legacy stochastic layer on every cycle without an active directive —
+/// the curve says how much a cycle changes, the authored family weights
+/// say what kind of change is drawn, and directives remain the scalpel
+/// that overrides both at specific cycles. Outside the points' span the
+/// target is 0 (literal repetition).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvolutionCurve {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_curve_model_version")]
+    pub model_version: PerceptualModelVersion,
+    #[serde(default = "default_curve_tolerance")]
+    pub tolerance_milli: u32,
+    #[serde(default = "default_curve_operations")]
+    pub max_operations: u32,
+    #[serde(default)]
+    pub points: Vec<CurvePoint>,
+}
+
+const fn default_curve_model_version() -> PerceptualModelVersion {
+    PerceptualModelVersion::V1
+}
+
+const fn default_curve_tolerance() -> u32 {
+    500
+}
+
+const fn default_curve_operations() -> u32 {
+    4
+}
+
+impl Default for EvolutionCurve {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: default_curve_tolerance(),
+            max_operations: default_curve_operations(),
+            points: Vec::new(),
+        }
+    }
+}
+
+impl EvolutionCurve {
+    /// Whether the curve does any work at all.
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.points.iter().any(|point| point.target_milli > 0)
+    }
+
+    /// The interpolated target at `cycle`: 0 outside the points' span,
+    /// exact at breakpoints, integer round-half-away-from-zero linear
+    /// interpolation between neighbors. Pure integer arithmetic.
+    pub fn target_milli_at(&self, cycle: u64) -> u32 {
+        if !self.enabled || self.points.is_empty() {
+            return 0;
+        }
+        let first = self.points.first().expect("non-empty");
+        let last = self.points.last().expect("non-empty");
+        if cycle < first.cycle || cycle > last.cycle {
+            return 0;
+        }
+        let mut previous = first;
+        for point in &self.points {
+            if point.cycle == cycle {
+                return point.target_milli;
+            }
+            if point.cycle > cycle {
+                let span = i128::from(point.cycle) - i128::from(previous.cycle);
+                let offset = i128::from(cycle) - i128::from(previous.cycle);
+                let delta = i128::from(point.target_milli) - i128::from(previous.target_milli);
+                let numerator = delta * offset;
+                let half = span / 2;
+                let rounded = if numerator >= 0 {
+                    (numerator + half) / span
+                } else {
+                    (numerator - half) / span
+                };
+                let value = i128::from(previous.target_milli) + rounded;
+                return u32::try_from(value.clamp(0, i128::from(MAX_PERCEPTUAL_DISTANCE_MILLI)))
+                    .expect("clamped to u32 range");
+            }
+            previous = point;
+        }
+        0
+    }
+
+    /// Scoring evaluations the curve reserves through `through_cycle`:
+    /// every covered cycle with a nonzero target costs the hold evaluation
+    /// plus up to `max_operations` prefix evaluations. Authored data only.
+    pub(crate) fn scoring_work_through(&self, through_cycle: u64) -> u64 {
+        if !self.is_active() || through_cycle == 0 {
+            return 0;
+        }
+        let first = self.points.first().expect("active curve has points").cycle;
+        let last = self
+            .points
+            .last()
+            .expect("active curve has points")
+            .cycle
+            .min(through_cycle);
+        let mut total = 0u64;
+        let mut cycle = first.max(1);
+        while cycle <= last {
+            if self.target_milli_at(cycle) > 0 {
+                total = total.saturating_add(u64::from(self.max_operations).saturating_add(1));
+            }
+            cycle += 1;
+        }
+        total
+    }
+}
+
+/// Pinned like every other dumka authoring error.
+pub(crate) fn validate_curve(curve: &EvolutionCurve) -> Result<(), GeneratorError> {
+    let invalid = |message: String| GeneratorError::DumkaPlanInvalid { message };
+    if curve.points.len() > MAX_CURVE_POINTS {
+        return Err(invalid(format!(
+            "curve supports at most {MAX_CURVE_POINTS} points, got {}",
+            curve.points.len()
+        )));
+    }
+    let mut previous: Option<u64> = None;
+    for point in &curve.points {
+        if point.cycle == 0 {
+            return Err(invalid("curve point cycles must be ≥ 1".to_string()));
+        }
+        if let Some(previous) = previous {
+            if point.cycle <= previous {
+                return Err(invalid(
+                    "curve points must have strictly ascending cycles".to_string(),
+                ));
+            }
+        }
+        if point.target_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+            return Err(invalid(format!(
+                "curve targetMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {}",
+                point.target_milli
+            )));
+        }
+        previous = Some(point.cycle);
+    }
+    if curve.tolerance_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+        return Err(invalid(format!(
+            "curve toleranceMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {}",
+            curve.tolerance_milli
+        )));
+    }
+    if curve.max_operations == 0 || curve.max_operations > MAX_CURVE_OPERATIONS {
+        return Err(invalid(format!(
+            "curve maxOperations must be 1-{MAX_CURVE_OPERATIONS}, got {}",
+            curve.max_operations
+        )));
+    }
+    if let (Some(first), Some(last)) = (curve.points.first(), curve.points.last()) {
+        let span = last.cycle.saturating_sub(first.cycle);
+        if span > MAX_CURVE_SPAN_CYCLES {
+            return Err(invalid(format!(
+                "curve spans {span} cycles between its first and last points, the maximum is {MAX_CURVE_SPAN_CYCLES}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// One contiguous beat scope, measured in the unrotated metric frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -199,9 +394,11 @@ impl EvolutionDirective {
 /// their active cycles again on every resolution.
 pub(crate) fn validate_perceptual_scoring_work_through(
     plan: &[EvolutionDirective],
+    curve: &EvolutionCurve,
     through_cycle: u64,
 ) -> Result<(), GeneratorError> {
-    let requested = plan.iter().fold(0u64, |total, directive| {
+    let curve_work = curve.scoring_work_through(through_cycle);
+    let requested = plan.iter().fold(curve_work, |total, directive| {
         let DirectiveMagnitude::Perceptual { max_operations, .. } = directive.magnitude else {
             return total;
         };
@@ -431,7 +628,11 @@ pub(crate) fn active_directives(
     active
 }
 
-pub(crate) fn validate_plan(plan: &[EvolutionDirective]) -> Result<(), GeneratorError> {
+pub(crate) fn validate_plan(
+    plan: &[EvolutionDirective],
+    curve: &EvolutionCurve,
+) -> Result<(), GeneratorError> {
+    validate_curve(curve)?;
     if plan.len() > MAX_EVOLUTION_DIRECTIVES {
         return Err(GeneratorError::DumkaPlanInvalid {
             message: format!(
@@ -445,6 +646,14 @@ pub(crate) fn validate_plan(plan: &[EvolutionDirective]) -> Result<(), Generator
         if directive.id == 0 {
             return Err(GeneratorError::DumkaPlanInvalid {
                 message: "directive id must be at least 1".to_string(),
+            });
+        }
+        if directive.id >= EVOLUTION_CURVE_TRACE_ID {
+            return Err(GeneratorError::DumkaPlanInvalid {
+                message: format!(
+                    "directive id {} collides with the reserved curve sentinel {}",
+                    directive.id, EVOLUTION_CURVE_TRACE_ID
+                ),
             });
         }
         if !seen_ids.insert(directive.id) {
@@ -594,7 +803,7 @@ pub(crate) fn validate_plan(plan: &[EvolutionDirective]) -> Result<(), Generator
     // Validate the complete authored ranges up front. A request-cycle guard
     // remains at the generator seam as defense in depth, but any plan accepted
     // here is safe throughout normal transport progression.
-    validate_perceptual_scoring_work_through(plan, u64::MAX)?;
+    validate_perceptual_scoring_work_through(plan, curve, u64::MAX)?;
 
     for (index, left) in plan.iter().enumerate() {
         for right in &plan[index + 1..] {
@@ -674,7 +883,9 @@ mod tests {
         let mut row = directive(9, DirectiveFamily::Stochastic, 1, 4);
         row.pacing = DirectivePacing::Linear;
         assert_eq!(
-            validate_plan(&[row]).unwrap_err().to_string(),
+            validate_plan(&[row], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive 9 stochastic pacing must be perCycle"
         );
     }
@@ -711,7 +922,8 @@ mod tests {
             tolerance_milli: 500,
             max_operations: 16,
         };
-        validate_plan(&[row.clone()]).expect("a bounded per-cycle target is valid");
+        validate_plan(&[row.clone()], &EvolutionCurve::default())
+            .expect("a bounded per-cycle target is valid");
         assert_eq!(
             serde_json::to_value(&row).unwrap()["magnitude"],
             serde_json::json!({
@@ -746,13 +958,17 @@ mod tests {
 
         row.pacing = DirectivePacing::Linear;
         assert_eq!(
-            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            validate_plan(&[row.clone()], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive 9 perceptual magnitude pacing must be perCycle"
         );
         row.pacing = DirectivePacing::PerCycle;
         row.family = DirectiveFamily::Stochastic;
         assert_eq!(
-            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            validate_plan(&[row.clone()], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive 9 stochastic magnitude must be operationQuota"
         );
         row.family = DirectiveFamily::BarlowAdd;
@@ -763,7 +979,9 @@ mod tests {
             max_operations: 0,
         };
         assert_eq!(
-            validate_plan(&[row]).unwrap_err().to_string(),
+            validate_plan(&[row], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive 9 magnitude maxOperations must be 1-256, got 0"
         );
     }
@@ -777,10 +995,11 @@ mod tests {
             tolerance_milli: 500,
             max_operations: 16,
         };
-        validate_plan(&[row.clone()]).expect("240 default searches reserve 4,080 scores");
+        validate_plan(&[row.clone()], &EvolutionCurve::default())
+            .expect("240 default searches reserve 4,080 scores");
 
         row.to_cycle = 241;
-        let error = validate_plan(&[row]).unwrap_err();
+        let error = validate_plan(&[row], &EvolutionCurve::default()).unwrap_err();
         assert_eq!(
             error,
             GeneratorError::DumkaPerceptualWorkLimit {
@@ -800,11 +1019,11 @@ mod tests {
             tolerance_milli: 500,
             max_operations: 1,
         };
-        validate_plan(&[minimal.clone()])
+        validate_plan(&[minimal.clone()], &EvolutionCurve::default())
             .expect("one candidate plus P0 reserves two scores per active cycle");
         minimal.to_cycle = 2_049;
         assert_eq!(
-            validate_plan(&[minimal]).unwrap_err(),
+            validate_plan(&[minimal], &EvolutionCurve::default()).unwrap_err(),
             GeneratorError::DumkaPerceptualWorkLimit {
                 requested: 4_098,
                 limit: MAX_PERCEPTUAL_SCORING_WORK,
@@ -825,12 +1044,12 @@ mod tests {
         };
         let left = perceptual(directive(1, DirectiveFamily::BarlowAdd, 1, 120), 16);
         let right = perceptual(directive(2, DirectiveFamily::Fragment, 1, 120), 16);
-        validate_plan(&[left.clone(), right.clone()])
+        validate_plan(&[left.clone(), right.clone()], &EvolutionCurve::default())
             .expect("different families aggregate below the shared work boundary");
 
         let extra = perceptual(directive(3, DirectiveFamily::Rotate, 9, 9), 16);
         assert_eq!(
-            validate_plan(&[left, right, extra]).unwrap_err(),
+            validate_plan(&[left, right, extra], &EvolutionCurve::default()).unwrap_err(),
             GeneratorError::DumkaPerceptualWorkLimit {
                 requested: MAX_PERCEPTUAL_SCORING_WORK + 1,
                 limit: MAX_PERCEPTUAL_SCORING_WORK,
@@ -842,14 +1061,15 @@ mod tests {
             MAX_PERCEPTUAL_OPERATIONS,
         );
         disabled.enabled = false;
-        validate_plan(&[disabled]).expect("disabled rows reserve no scoring work");
+        validate_plan(&[disabled], &EvolutionCurve::default())
+            .expect("disabled rows reserve no scoring work");
 
         let huge = perceptual(
             directive(5, DirectiveFamily::Consolidate, 1, u64::MAX),
             MAX_PERCEPTUAL_OPERATIONS,
         );
         assert_eq!(
-            validate_plan(&[huge]).unwrap_err(),
+            validate_plan(&[huge], &EvolutionCurve::default()).unwrap_err(),
             GeneratorError::DumkaPerceptualWorkLimit {
                 requested: u64::MAX,
                 limit: MAX_PERCEPTUAL_SCORING_WORK,
@@ -867,10 +1087,13 @@ mod tests {
             tolerance_milli: 500,
             max_operations: 16,
         };
-        validate_perceptual_scoring_work_through(&[row.clone()], 0).unwrap();
-        validate_perceptual_scoring_work_through(&[row.clone()], 240).unwrap();
+        validate_perceptual_scoring_work_through(&[row.clone()], &EvolutionCurve::default(), 0)
+            .unwrap();
+        validate_perceptual_scoring_work_through(&[row.clone()], &EvolutionCurve::default(), 240)
+            .unwrap();
         assert_eq!(
-            validate_perceptual_scoring_work_through(&[row], 241).unwrap_err(),
+            validate_perceptual_scoring_work_through(&[row], &EvolutionCurve::default(), 241)
+                .unwrap_err(),
             GeneratorError::DumkaPerceptualWorkLimit {
                 requested: 4_097,
                 limit: MAX_PERCEPTUAL_SCORING_WORK,
@@ -883,25 +1106,28 @@ mod tests {
         let mut row = directive(9, DirectiveFamily::Fragment, 1, 4);
         row.options.density_floor = Some(25);
         assert_eq!(
-            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            validate_plan(&[row.clone()], &EvolutionCurve::default()).unwrap_err().to_string(),
             "dumka plan invalid: directive 9 densityFloor and densityCeiling must both be set or both be omitted"
         );
 
         row.options.density_ceiling = Some(20);
         assert_eq!(
-            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            validate_plan(&[row.clone()], &EvolutionCurve::default()).unwrap_err().to_string(),
             "dumka plan invalid: directive 9 densityFloor must be at most densityCeiling, got 25 > 20"
         );
 
         row.options.density_floor = Some(0);
         row.options.density_ceiling = Some(101);
         assert_eq!(
-            validate_plan(&[row.clone()]).unwrap_err().to_string(),
+            validate_plan(&[row.clone()], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive 9 densityCeiling must be 0-100, got 101"
         );
 
         row.options.density_ceiling = Some(60);
-        validate_plan(&[row]).expect("a paired ordered corridor is valid");
+        validate_plan(&[row], &EvolutionCurve::default())
+            .expect("a paired ordered corridor is valid");
     }
 
     #[test]
@@ -991,7 +1217,7 @@ mod tests {
         let left = directive(7, DirectiveFamily::BarlowRemove, 5, 9);
         let mut right = directive(9, DirectiveFamily::BarlowRemove, 8, 12);
         right.enabled = false;
-        let error = validate_plan(&[left, right]).unwrap_err();
+        let error = validate_plan(&[left, right], &EvolutionCurve::default()).unwrap_err();
         assert_eq!(
             error.to_string(),
             "dumka plan overlap: barlowRemove directives 7 and 9 share cycle 8"
@@ -1003,14 +1229,18 @@ mod tests {
         let mut zero = directive(1, DirectiveFamily::BarlowAdd, 1, 1);
         zero.id = 0;
         assert_eq!(
-            validate_plan(&[zero]).unwrap_err().to_string(),
+            validate_plan(&[zero], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: directive id must be at least 1"
         );
 
         let add = directive(7, DirectiveFamily::BarlowAdd, 1, 1);
         let remove = directive(7, DirectiveFamily::BarlowRemove, 2, 2);
         assert_eq!(
-            validate_plan(&[add, remove]).unwrap_err().to_string(),
+            validate_plan(&[add, remove], &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: duplicate directive id 7"
         );
     }
@@ -1027,14 +1257,17 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        validate_plan(&valid_at_cap).expect("256 non-overlapping rows are legal");
+        validate_plan(&valid_at_cap, &EvolutionCurve::default())
+            .expect("256 non-overlapping rows are legal");
 
         let mut too_many = valid_at_cap;
         let mut invalid_row = directive(0, DirectiveFamily::BarlowAdd, 0, 0);
         invalid_row.intensity = 101;
         too_many.push(invalid_row);
         assert_eq!(
-            validate_plan(&too_many).unwrap_err().to_string(),
+            validate_plan(&too_many, &EvolutionCurve::default())
+                .unwrap_err()
+                .to_string(),
             "dumka plan invalid: plan supports at most 256 directives, got 257"
         );
     }
@@ -1046,7 +1279,7 @@ mod tests {
         let mut fragment = directive(1, DirectiveFamily::Fragment, 3, 3);
         fragment.order = 2;
         let plan = vec![remove, fragment];
-        validate_plan(&plan).unwrap();
+        validate_plan(&plan, &EvolutionCurve::default()).unwrap();
         let active = active_directives(&plan, 3);
         assert_eq!(active.iter().map(|d| d.id).collect::<Vec<_>>(), vec![1, 2]);
     }
@@ -1112,5 +1345,153 @@ mod tests {
             }
             prop_assert_eq!(applied, numerator / 100);
         }
+    }
+
+    #[test]
+    fn curve_interpolation_is_integer_exact() {
+        let curve = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 4,
+            points: vec![
+                CurvePoint {
+                    cycle: 10,
+                    target_milli: 1000,
+                },
+                CurvePoint {
+                    cycle: 20,
+                    target_milli: 4000,
+                },
+                CurvePoint {
+                    cycle: 30,
+                    target_milli: 0,
+                },
+            ],
+        };
+        assert_eq!(curve.target_milli_at(9), 0, "before the span");
+        assert_eq!(curve.target_milli_at(10), 1000, "first breakpoint exact");
+        assert_eq!(curve.target_milli_at(15), 2500, "midpoint of the ramp");
+        assert_eq!(curve.target_milli_at(11), 1300);
+        assert_eq!(curve.target_milli_at(20), 4000);
+        assert_eq!(curve.target_milli_at(25), 2000, "descending half");
+        assert_eq!(curve.target_milli_at(30), 0);
+        assert_eq!(curve.target_milli_at(31), 0, "after the span");
+        // Round-half-away-from-zero: 1000 + (3000 × 1)/10 rounds at .5.
+        let half = EvolutionCurve {
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 0,
+                },
+                CurvePoint {
+                    cycle: 3,
+                    target_milli: 3,
+                },
+            ],
+            ..curve.clone()
+        };
+        assert_eq!(half.target_milli_at(2), 2, "1.5 rounds away from zero");
+        let disabled = EvolutionCurve {
+            enabled: false,
+            ..curve
+        };
+        assert_eq!(disabled.target_milli_at(15), 0);
+    }
+
+    #[test]
+    fn curve_validation_messages_are_pinned() {
+        let base = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 4,
+            points: vec![CurvePoint {
+                cycle: 1,
+                target_milli: 1000,
+            }],
+        };
+        let err = |curve: &EvolutionCurve| validate_curve(curve).unwrap_err().to_string();
+        assert!(validate_curve(&base).is_ok());
+        // An enabled empty curve is inert (is_active is false), so it is
+        // deliberately legal: the natural authoring flow is enable, then
+        // draw the first point.
+        assert!(validate_curve(&EvolutionCurve {
+            points: vec![],
+            ..base.clone()
+        })
+        .is_ok());
+        assert_eq!(
+            err(&EvolutionCurve {
+                max_operations: 9,
+                ..base.clone()
+            }),
+            "dumka plan invalid: curve maxOperations must be 1-8, got 9"
+        );
+        assert_eq!(
+            err(&EvolutionCurve {
+                points: vec![
+                    CurvePoint { cycle: 1, target_milli: 1 },
+                    CurvePoint { cycle: 600, target_milli: 1 },
+                ],
+                ..base.clone()
+            }),
+            "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 512"
+        );
+        assert_eq!(
+            err(&EvolutionCurve {
+                points: vec![
+                    CurvePoint {
+                        cycle: 4,
+                        target_milli: 1
+                    },
+                    CurvePoint {
+                        cycle: 4,
+                        target_milli: 2
+                    },
+                ],
+                ..base.clone()
+            }),
+            "dumka plan invalid: curve points must have strictly ascending cycles"
+        );
+    }
+
+    #[test]
+    fn curve_work_shares_the_perceptual_budget() {
+        // 512 nonzero cycles × (8 + 1) = 4,608 > 4,096: rejected up front.
+        let hot = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 8,
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 1000,
+                },
+                CurvePoint {
+                    cycle: 512,
+                    target_milli: 1000,
+                },
+            ],
+        };
+        let error = validate_plan(&[], &hot).unwrap_err().to_string();
+        assert!(
+            error.contains("4608") && error.contains("4096"),
+            "budget error names both numbers: {error}"
+        );
+        // Dialing the per-cycle search down fits the same span in budget.
+        let cool = EvolutionCurve {
+            max_operations: 4,
+            ..hot
+        };
+        assert!(validate_plan(&[], &cool).is_ok());
+        // Reserved sentinel id is rejected for authored rows.
+        let mut row = directive(1, DirectiveFamily::BarlowRemove, 1, 1);
+        row.id = EVOLUTION_CURVE_TRACE_ID;
+        let sentinel = validate_plan(&[row], &EvolutionCurve::default())
+            .unwrap_err()
+            .to_string();
+        assert!(sentinel.contains("reserved curve sentinel"), "{sentinel}");
     }
 }

@@ -271,6 +271,13 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
           },
         ],
         planLengthCycles: 20,
+        evolutionCurve: {
+          enabled: false,
+          modelVersion: "v1",
+          toleranceMilli: 500,
+          maxOperations: 4,
+          points: [],
+        },
         seedMode: { type: "locked", seed: 20260611 },
       },
       cycle: 0,

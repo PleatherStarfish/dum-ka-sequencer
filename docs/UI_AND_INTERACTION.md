@@ -215,6 +215,18 @@ random-access visual window at cycle 10,000. Directives beyond that window stay
 authored and continue to run during playback; the editor reports their count
 instead of attempting an unbounded canvas allocation.
 
+The **Curve card** at the top of the Evolve inspector authors the
+composition-level evolution curve: an enabled toggle, tolerance and
+max-operations fields, and the breakpoint list. With the curve enabled,
+clicking the Step size lane places a breakpoint at that cycle (height =
+target), shift-click removes one, and removing the last point disables
+the curve. Below the composition strip, the **Step size lane** plots each cached
+cycle's whole-cycle realized perceptual distance (`cycleDistance` on the
+preview DTO) as a bar, overlays every enabled perceptual directive's
+target ± tolerance as a band (stacked rows sum), and colors the bar green
+inside the band, red outside; cycles without a cached preview say "not
+cached". This is the calibration feedback loop: author a target, read
+what the cycle actually realized.
 The composition strip uses a bounded, authoring-only cache populated through
 the same structure-preview and `generator_preview` commands as the timeline.
 It follows the visible canvas, works while the Generator playback toggle is

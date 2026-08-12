@@ -1,6 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 
-import type { DirectiveTraceEntry, EvolutionDirective } from "../bridge";
+import type {
+  EvolutionCurve, DirectiveTraceEntry, EvolutionDirective } from "../bridge";
 import {
   EvolvePlanEditor,
   type EvolutionCachedPreview,
@@ -27,6 +28,8 @@ export interface EvolvePlanPanelProps {
   onVisibleCycleRangeChange?: (fromCycle: number, toCycle: number) => void;
   densityFloor?: number;
   densityCeiling?: number;
+  curve?: EvolutionCurve;
+  onCurveChange?: (curve: EvolutionCurve) => void;
 }
 
 const DIALOG_FOCUSABLE =
@@ -52,6 +55,8 @@ export function EvolvePlanPanel({
   onVisibleCycleRangeChange,
   densityFloor = 0,
   densityCeiling = 100,
+  curve,
+  onCurveChange,
 }: EvolvePlanPanelProps) {
   const disabled = playbackStructureLocked || generatorKind !== "dumka";
   const dialogRef = useRef<HTMLDetailsElement | null>(null);
@@ -137,6 +142,8 @@ export function EvolvePlanPanel({
           </p>
         ) : null}
         <EvolvePlanEditor
+          curve={curve}
+          onCurveChange={onCurveChange}
           plan={plan}
           planLengthCycles={planLengthCycles}
           totalBeats={cycleBeats}

@@ -1,3 +1,4 @@
+import { DEFAULT_EVOLUTION_CURVE } from "./dumkaEvolvePlan";
 import {
   useCallback,
   useEffect,
@@ -60,6 +61,7 @@ import {
   type GeneratorConfig,
   type GeneratorPreview,
   type GeneratorPreviewRequest,
+  type EvolutionCurve,
   type EvolutionDirective,
   type TrackPlaybackRequest,
   type SubdivisionSwitchPreview,
@@ -923,6 +925,9 @@ export default function App() {
     () => ({ ...DEFAULT_DUMKA_OP_WEIGHTS })
   );
   const [dumkaPlan, setDumkaPlan] = useState<EvolutionDirective[]>([]);
+  const [dumkaEvolutionCurve, setDumkaEvolutionCurve] = useState<EvolutionCurve>(
+    () => ({ ...DEFAULT_EVOLUTION_CURVE, points: [] })
+  );
   const [dumkaPlanLengthCycles, setDumkaPlanLengthCycles] = useState(0);
   const [generatorDensityPercent, setGeneratorDensityPercent] = useState(100);
   const [generatorSeedMode, setGeneratorSeedMode] =
@@ -1116,6 +1121,7 @@ export default function App() {
           euclidInvert: dumkaEuclidInvert,
           euclidRestPolicy: dumkaEuclidRestPolicy,
           plan: dumkaPlan,
+          evolutionCurve: dumkaEvolutionCurve,
           // This is editor canvas state, not an engine input. Runtime requests
           // use a canonical value so resizing the score view cannot wake
           // preview or playback effects.
@@ -1139,6 +1145,7 @@ export default function App() {
     dumkaEvolutionRate,
     dumkaOpWeights,
     dumkaPlan,
+    dumkaEvolutionCurve,
     dumkaPattern,
     generatorDensityPercent,
     generatorKind,
@@ -4354,6 +4361,12 @@ export default function App() {
         options: { ...directive.options },
       })));
       setDumkaPlanLengthCycles(patch.generator.planLengthCycles);
+      setDumkaEvolutionCurve({
+        ...patch.generator.evolutionCurve,
+        points: patch.generator.evolutionCurve.points.map((point) => ({
+          ...point,
+        })),
+      });
     }
     setGeneratorSeedMode(patch.generator.seedMode.type);
     setGeneratorSeed(patch.generator.seedMode.seed);
@@ -8797,6 +8810,8 @@ export default function App() {
           }}
           onOpenChange={(open) => setMainEditorOpen(open ? "evolve" : null)}
           onPlanChange={setDumkaPlan}
+          curve={dumkaEvolutionCurve}
+          onCurveChange={setDumkaEvolutionCurve}
           onPlanLengthCyclesChange={(cycles) =>
             setDumkaPlanLengthCycles(clamp(Math.round(cycles), 0, 0xffff_ffff))
           }

@@ -3371,6 +3371,14 @@ const EVOLUTION_DIRECTIVE_KEYS: &[&str] = &[
     "options",
 ];
 const EVOLUTION_SCOPE_KEYS: &[&str] = &["startBeat", "lenBeats"];
+const EVOLUTION_CURVE_KEYS: &[&str] = &[
+    "enabled",
+    "modelVersion",
+    "toleranceMilli",
+    "maxOperations",
+    "points",
+];
+const EVOLUTION_CURVE_POINT_KEYS: &[&str] = &["cycle", "targetMilli"];
 const EVOLUTION_MAGNITUDE_KEYS: &[&str] = &[
     "mode",
     "modelVersion",
@@ -3477,6 +3485,34 @@ fn validate_v1_evolution_plan_shape(
                 &format!("{directive_path}.options"),
                 "options",
             )?;
+        }
+    }
+
+    if let Some(curve) = generator
+        .get("evolutionCurve")
+        .and_then(serde_json::Value::as_object)
+    {
+        let curve_path = format!("{path}.evolutionCurve");
+        validate_evolution_object_keys(curve, EVOLUTION_CURVE_KEYS, &curve_path, "curve")?;
+        if let Some(points) = curve.get("points").and_then(serde_json::Value::as_array) {
+            if points.len() > cseq_rhythm::MAX_CURVE_POINTS {
+                return Err(format!(
+                    "dumka evolution curve in v1 document supports at most {} points, got {}: {curve_path}.points",
+                    cseq_rhythm::MAX_CURVE_POINTS,
+                    points.len()
+                ));
+            }
+            for (index, point) in points.iter().enumerate() {
+                let Some(point) = point.as_object() else {
+                    continue;
+                };
+                validate_evolution_object_keys(
+                    point,
+                    EVOLUTION_CURVE_POINT_KEYS,
+                    &format!("{curve_path}.points[{index}]"),
+                    "curve point",
+                )?;
+            }
         }
     }
     Ok(())

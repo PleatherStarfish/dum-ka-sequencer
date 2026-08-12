@@ -10,6 +10,7 @@ import {
   formatDumkaParseError,
   type DumkaCompiled,
 } from "../../../src/dumkaPattern";
+import { stratification } from "../../../src/dumkaMetrics";
 import { transportSnapshotFixture } from "../../../src/__fixtures__/dto/transportSnapshot.fixture";
 
 /**
@@ -53,14 +54,24 @@ const DUMKA_MOCK_PATTERNS: string[] = [
 
 type DumkaMockEntry =
   | { error: string }
-  | { compiled: DumkaCompiled };
+  | { compiled: DumkaCompiled; gridSupported: boolean };
 
 function buildDumkaMockTable(): Record<string, DumkaMockEntry> {
   const table: Record<string, DumkaMockEntry> = {};
   for (const pattern of DUMKA_MOCK_PATTERNS) {
     const result = compileDumkaPattern(pattern);
     table[pattern] = result.ok
-      ? { compiled: result.compiled }
+      ? {
+          compiled: result.compiled,
+          // Precomputed at build time: the injected page script cannot
+          // reach module imports, and the cycleDistance contract needs the
+          // engine's published-Barlow-tables check.
+          gridSupported:
+            stratification(
+              result.compiled.totalBeats,
+              result.compiled.requiredSubdivision
+            ) !== null,
+        }
       : { error: formatDumkaParseError(result.issue) };
   }
   return table;
@@ -1381,6 +1392,22 @@ export async function installMockTauri(
               directive !== null &&
               (directive as Record<string, unknown>).enabled === true
           );
+        // The composition curve replaces the stochastic layer; any active
+        // curve makes cycles ≥ 1 evolving work the mock must refuse.
+        const curveRaw = generator.evolutionCurve as
+          | { enabled?: unknown; points?: unknown }
+          | undefined;
+        const hasActiveCurve =
+          typeof curveRaw === "object" &&
+          curveRaw !== null &&
+          curveRaw.enabled === true &&
+          Array.isArray(curveRaw.points) &&
+          curveRaw.points.some(
+            (point) =>
+              typeof point === "object" &&
+              point !== null &&
+              Number((point as Record<string, unknown>).targetMilli) > 0
+          );
         if (
           cycle > 0 &&
           (evolutionRate > 0 ||
@@ -1388,7 +1415,8 @@ export async function installMockTauri(
             densityFloor > 0 ||
             densityCeiling < 100 ||
             densityIsAutomated ||
-            hasEnabledPlan)
+            hasEnabledPlan ||
+            hasActiveCurve)
         ) {
           throw new Error(
             `mock dumka preview cannot resolve evolving cycle ${cycle}; use the real-backend lane`
@@ -1483,6 +1511,14 @@ export async function installMockTauri(
           outSpans.push({ spanId: span.spanId, spanLen: span.spanLen, cells });
           spanStart = spanEnd;
         }
+        // Whole-cycle calibration readout, mirrored bit-exactly: the mock
+        // only ever resolves verbatim repeats here, so cycle ≥ 1 scores an
+        // honest 0 when the grid has published Barlow tables; cycle 0 and
+        // >7-prime grids have no readout, matching the engine contract.
+        const cycleDistance =
+          cycle >= 1 && entry.gridSupported
+            ? { modelVersion: "v1" as const, distanceMilli: 0 }
+            : null;
         return {
           seed: seedDto,
           spans: stampSpanVelocities(request, outSpans),
@@ -1491,6 +1527,7 @@ export async function installMockTauri(
             floor: densityFloor,
             ceiling: densityCeiling,
           },
+          cycleDistance,
         };
       }
       if (generator.kind !== "example") {

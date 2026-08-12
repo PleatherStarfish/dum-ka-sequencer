@@ -40,15 +40,16 @@ pub use evolve::{evolution_state, EvolutionState, EvolvedOnset};
 
 pub use perceptual::{
     perceptual_distance, PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance,
-    PerceptualDistance,
-    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualWeights,
-    PERCEPTUAL_DISTANCE_MAX_MILLI,
+    PerceptualDistance, PerceptualError, PerceptualModel, PerceptualModelVersion,
+    PerceptualWeights, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use plan::{
-    BeatRange, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude,
-    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, EvolutionDirective,
-    PerceptualPacingTrace, RotateDirection, LEGACY_EVOLUTION_TRACE_ID, MAX_EVOLUTION_DIRECTIVES,
-    MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
+    BeatRange, CurvePoint, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily,
+    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
+    EvolutionCurve, EvolutionDirective, PerceptualPacingTrace, RotateDirection,
+    EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS,
+    MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI,
+    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
 };
 
 /// Automation target sampled at each folded cycle's start by both callers.
@@ -139,6 +140,10 @@ pub struct DumkaGeneratorParams {
     /// byte-for-byte.
     #[serde(default)]
     pub plan: Vec<EvolutionDirective>,
+    /// Composition-level perceptual step curve; replaces the legacy
+    /// stochastic layer on directive-free cycles when enabled.
+    #[serde(default)]
+    pub evolution_curve: plan::EvolutionCurve,
     /// UI canvas extent only. The engine deliberately never reads it.
     #[serde(default)]
     pub plan_length_cycles: u32,
@@ -197,6 +202,7 @@ impl Default for DumkaGeneratorParams {
             euclid_rest_policy: reshape::EuclidRestPolicy::default(),
             plan: Vec::new(),
             plan_length_cycles: 0,
+            evolution_curve: plan::EvolutionCurve::default(),
             seed_mode: GeneratorSeedMode::default(),
         }
     }
@@ -238,7 +244,7 @@ impl DumkaGeneratorParams {
                 value: self.euclid_max_run,
             });
         }
-        plan::validate_plan(&self.plan)?;
+        plan::validate_plan(&self.plan, &self.evolution_curve)?;
         let seed = self.compile()?;
         if barlow::stratification(seed.total_beats, seed.required_subdivision).is_none() {
             if let Some(directive) = self.plan.iter().find(|directive| {
@@ -291,11 +297,13 @@ impl CycleGenerator for DumkaGeneratorParams {
         &self,
         context: &GeneratorCycleContext<'_>,
     ) -> Result<Vec<GeneratedSpan>, GeneratorError> {
-        self.generate_with_trace(context).map(|(spans, _, _, _)| spans)
+        self.generate_with_trace(context)
+            .map(|(spans, _, _, _)| spans)
     }
 }
 
 impl DumkaGeneratorParams {
+    #[allow(clippy::type_complexity)] // one seam-internal tuple; callers destructure immediately
     pub(crate) fn generate_with_trace(
         &self,
         context: &GeneratorCycleContext<'_>,
@@ -311,7 +319,11 @@ impl DumkaGeneratorParams {
         // `validate_plan` rejects over-budget authored ranges up front. Keep
         // this request-relative check at the expensive seam as defense in
         // depth for any future internal caller that bypasses config validation.
-        plan::validate_perceptual_scoring_work_through(&self.plan, context.cycle)?;
+        plan::validate_perceptual_scoring_work_through(
+            &self.plan,
+            &self.evolution_curve,
+            context.cycle,
+        )?;
         let seed = self.compile()?;
         let inputs = EvolutionInputs {
             seed_value: context.seed,
@@ -326,6 +338,7 @@ impl DumkaGeneratorParams {
             euclid_invert: self.euclid_invert,
             euclid_rest_policy: self.euclid_rest_policy,
             plan: &self.plan,
+            curve: &self.evolution_curve,
             op_weights: self.op_weights(),
             automation: context.automation,
             spans: context.spans,
@@ -338,6 +351,18 @@ impl DumkaGeneratorParams {
                     && matches!(directive.magnitude, DirectiveMagnitude::Perceptual { .. })
             }) {
                 return Err(unsupported_perceptual_grid(directive.id));
+            }
+            if self.evolution_curve.is_active()
+                && self
+                    .evolution_curve
+                    .points
+                    .first()
+                    .is_some_and(|first| first.cycle <= context.cycle)
+            {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: "curve targets require a Barlow-supported beat/subdivision grid"
+                        .to_string(),
+                });
             }
         }
         let resolved = evolve::evolved_seed_with_trace(&seed, &inputs);
@@ -619,6 +644,7 @@ mod tests {
             euclid_rest_policy: reshape::EuclidRestPolicy::Tied,
             plan: Vec::new(),
             plan_length_cycles: 0,
+            evolution_curve: plan::EvolutionCurve::default(),
             seed_mode: GeneratorSeedMode::History {
                 seed: 9_792_447_587_191_451_430,
                 history: vec![9_603_363_527_571_367_637],

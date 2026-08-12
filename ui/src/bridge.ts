@@ -1548,6 +1548,21 @@ export interface EvolutionDirective {
   options: DirectiveOptions;
 }
 
+export interface CurvePoint {
+  cycle: number;
+  targetMilli: number;
+}
+
+/** Composition-level perceptual step curve: replaces the legacy stochastic
+ * layer on directive-free cycles when enabled; 0 outside its points' span. */
+export interface EvolutionCurve {
+  enabled: boolean;
+  modelVersion: "v1";
+  toleranceMilli: number;
+  maxOperations: number;
+  points: CurvePoint[];
+}
+
 export interface DumkaGeneratorParams {
   /** Dum-Ka seed-notation text, sent and persisted verbatim. */
   pattern: string;
@@ -1586,6 +1601,8 @@ export interface DumkaGeneratorParams {
   /** Editor canvas extent only. The engine does not use this value. */
   planLengthCycles: number;
   seedMode: GeneratorSeedMode;
+  /** Composition-level evolution curve (see EvolutionCurve). */
+  evolutionCurve: EvolutionCurve;
 }
 
 export type GeneratorConfig =
@@ -1634,6 +1651,16 @@ export interface GeneratorPreview {
   /** Backend-owned cycle-effective density rail after automation and active
    * directive overrides. Absent for other generators and legacy responses. */
   densityCorridor?: DensityCorridorRange | null;
+  /** Whole-cycle realized perceptual distance: this cycle's final state vs
+   * the previous cycle's, from the same fold — the calibration readout the
+   * Evolve editor plots. Absent for other generators, disabled resolution,
+   * cycle 0, and grids without published Barlow tables. */
+  cycleDistance?: PerceptualCycleDistance | null;
+}
+
+export interface PerceptualCycleDistance {
+  modelVersion: "v1";
+  distanceMilli: number;
 }
 
 export interface DensityCorridorRange {
@@ -2399,6 +2426,7 @@ export async function generatorPreview(
     spans: preview.spans,
     trace: preview.trace ?? [],
     densityCorridor: preview.densityCorridor ?? null,
+    cycleDistance: preview.cycleDistance ?? null,
   };
 }
 

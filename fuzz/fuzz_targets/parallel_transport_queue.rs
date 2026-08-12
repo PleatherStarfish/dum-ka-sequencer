@@ -333,6 +333,7 @@ fn track_rhythm(u: &mut Unstructured<'_>) -> RhythmPlaybackConfig {
             },
             plan,
             plan_length_cycles: 0,
+            evolution_curve: cseq_rhythm::EvolutionCurve::default(),
             seed_mode,
         })
     };

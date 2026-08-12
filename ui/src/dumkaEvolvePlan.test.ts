@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  validateEvolutionCurve,
+  upsertCurvePoint,
+  setCurveSettings,
+  removeCurvePoint,
+  normalizeEvolutionCurve,
+  curveTargetMilliAt,
+  curveScoringWork,
+  DEFAULT_EVOLUTION_CURVE,
   DEFAULT_DIRECTIVE_OPTIONS,
   DEFAULT_DIRECTIVE_PACING,
   DEFAULT_PERCEPTUAL_MAGNITUDE,
@@ -399,5 +407,106 @@ describe("dumka evolution plan model", () => {
       message:
         "dumka plan invalid: plan supports at most 256 directives, got 257",
     });
+  });
+});
+
+describe("evolution curve model", () => {
+  const curve = (points: Array<[number, number]>, overrides = {}) => ({
+    ...DEFAULT_EVOLUTION_CURVE,
+    enabled: true,
+    points: points.map(([cycle, targetMilli]) => ({ cycle, targetMilli })),
+    ...overrides,
+  });
+
+  it("interpolates exactly like the engine (pinned vectors)", () => {
+    const ramp = curve([
+      [10, 1000],
+      [20, 4000],
+      [30, 0],
+    ]);
+    expect(curveTargetMilliAt(ramp, 9)).toBe(0);
+    expect(curveTargetMilliAt(ramp, 10)).toBe(1000);
+    expect(curveTargetMilliAt(ramp, 11)).toBe(1300);
+    expect(curveTargetMilliAt(ramp, 15)).toBe(2500);
+    expect(curveTargetMilliAt(ramp, 20)).toBe(4000);
+    expect(curveTargetMilliAt(ramp, 25)).toBe(2000);
+    expect(curveTargetMilliAt(ramp, 31)).toBe(0);
+    // Round-half-away-from-zero, matching plan.rs.
+    expect(curveTargetMilliAt(curve([[1, 0], [3, 3]]), 2)).toBe(2);
+    expect(
+      curveTargetMilliAt({ ...ramp, enabled: false }, 15)
+    ).toBe(0);
+  });
+
+  it("shares the perceptual scoring budget with the plan", () => {
+    const hot = curve([[1, 1000], [512, 1000]], { maxOperations: 8 });
+    expect(curveScoringWork(hot)).toBe(4608n);
+    const rejected = setCurveSettings([], hot, { maxOperations: 8 });
+    expect(rejected).toEqual({
+      ok: false,
+      message:
+        "dumka perceptual plan reserves 4608 scoring operations, exceeding the limit of 4096",
+    });
+    const fits = setCurveSettings([], hot, { maxOperations: 4 });
+    expect(fits.ok).toBe(true);
+  });
+
+  it("validates with the engine's pinned messages", () => {
+    // Enabled-but-empty is legal: the curve is inert until a point lands.
+    expect(validateEvolutionCurve(curve([], {}))).toBeNull();
+    expect(
+      validateEvolutionCurve(curve([[4, 1], [4, 2]]))
+    ).toBe("dumka plan invalid: curve points must have strictly ascending cycles");
+    expect(
+      validateEvolutionCurve(curve([[1, 1]], { maxOperations: 9 }))
+    ).toBe("dumka plan invalid: curve maxOperations must be 1-8, got 9");
+    expect(
+      validateEvolutionCurve(curve([[1, 1], [600, 1]]))
+    ).toBe(
+      "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 512"
+    );
+  });
+
+  it("upserts sorted points and removes them", () => {
+    const base = curve([[5, 2000]]);
+    const added = upsertCurvePoint([], base, 2, 1000);
+    expect(added.ok && added.curve.points).toEqual([
+      { cycle: 2, targetMilli: 1000 },
+      { cycle: 5, targetMilli: 2000 },
+    ]);
+    const replaced = upsertCurvePoint([], base, 5, 900);
+    expect(replaced.ok && replaced.curve.points).toEqual([
+      { cycle: 5, targetMilli: 900 },
+    ]);
+    const removed = removeCurvePoint([], base, 5);
+    if (!removed.ok) throw new Error(removed.message);
+    expect(removed.curve.points).toEqual([]);
+    // Enabled-but-empty survives the last removal; the curve is inert.
+    expect(removed.curve.enabled).toBe(true);
+  });
+
+  it("normalizes persisted curves fail-closed", () => {
+    const { curve: repaired, droppedPoints } = normalizeEvolutionCurve({
+      enabled: true,
+      modelVersion: "v9",
+      toleranceMilli: 999_999,
+      maxOperations: 99,
+      points: [
+        { cycle: 3, targetMilli: 4000 },
+        { cycle: 3, targetMilli: 5000 },
+        { cycle: 0, targetMilli: 1 },
+        { cycle: 2.5, targetMilli: 1 },
+        { cycle: 9, targetMilli: 200_000 },
+        "junk",
+      ],
+    });
+    expect(repaired.points).toEqual([{ cycle: 3, targetMilli: 4000 }]);
+    expect(droppedPoints).toBe(5);
+    expect(repaired.modelVersion).toBe("v1");
+    expect(repaired.toleranceMilli).toBe(100_000);
+    expect(repaired.maxOperations).toBe(8);
+    expect(repaired.enabled).toBe(true);
+    const emptied = normalizeEvolutionCurve({ enabled: true, points: [] });
+    expect(emptied.curve.enabled).toBe(true);
   });
 });

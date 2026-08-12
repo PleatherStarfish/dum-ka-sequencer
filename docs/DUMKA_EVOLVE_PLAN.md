@@ -24,6 +24,29 @@ fold—not interpolation, audio crossfade, or a second renderer. The exact model
 and calibration status are in
 [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
 
+## The evolution curve (M3.85)
+
+The composition-level answer to "dial in a single evolution rate as a
+curve": `evolutionCurve { enabled, modelVersion, toleranceMilli,
+maxOperations ≤ 8, points ≤ 64 }` on the generator config. Points are
+`(cycle, targetMilli)` breakpoints, integer-interpolated
+(round-half-away-from-zero) between neighbors; the target is 0 outside
+the points' span, and 0 means literal repetition. When enabled the curve
+**replaces the legacy stochastic layer** on every directive-free cycle:
+each such cycle runs the same perceptual prefix search as a directive,
+except every prefix step first draws its operator family from the
+authored family weights (salt `0xD0A1_5EED_0011_0011`, per-ordinal,
+identity-seeded) — the curve says how much, the weights say what kind,
+directives override both at their cycles. Curve work shares the one
+4,096-evaluation scoring budget with perceptual directives (only
+nonzero-target cycles cost anything; validation rejects over-budget
+authoring with the same pinned message). The trace attributes curve
+cycles to the reserved sentinel id `9_007_199_254_740_991` (JS
+MAX_SAFE_INTEGER; authored ids validate strictly below it), and the Step
+size lane renders the curve's target ± tolerance band wherever no
+directive owns the cycle — click the lane to place a point, shift-click
+to remove, with the Curve card carrying the precise fields.
+
 ## 1. Problem statement (verbatim from use)
 
 The stochastic model (per-cycle Bernoulli fire at `evolutionRate`, then a

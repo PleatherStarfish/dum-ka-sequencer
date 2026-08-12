@@ -14,14 +14,15 @@ use thiserror::Error;
 use crate::{mix_seed, ResolvedRhythmCell, ResolvedRhythmSpan, SplitMix64};
 
 pub use dumka::{
-    evolution_state, perceptual_distance, BeatRange, DirectiveFamily, DirectiveMagnitude,
-    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams,
-    EvolutionDirective, EvolutionState, EvolvedOnset, PerceptualBreakdown, PerceptualContext,
-    PerceptualCycleDistance, PerceptualDistance, PerceptualError, PerceptualModel,
-    PerceptualModelVersion,
-    PerceptualPacingTrace, PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN,
-    LEGACY_EVOLUTION_TRACE_ID, MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI,
-    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
+    evolution_state, perceptual_distance, BeatRange, CurvePoint, DirectiveFamily,
+    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
+    DumkaGeneratorParams, EvolutionCurve, EvolutionDirective, EvolutionState, EvolvedOnset,
+    PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance, PerceptualDistance,
+    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualPacingTrace,
+    PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN, EVOLUTION_CURVE_TRACE_ID,
+    LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES,
+    MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
+    MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use example::ExampleGeneratorParams;
 

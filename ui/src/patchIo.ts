@@ -3,6 +3,7 @@
 
 import { normalizeDumkaPattern } from "./dumkaPattern";
 import {
+  normalizeEvolutionCurve,
   MAX_EVOLUTION_DIRECTIVES,
   MAX_PERCEPTUAL_DISTANCE_MILLI,
   MAX_PERCEPTUAL_OPERATIONS,
@@ -38,6 +39,7 @@ import type {
   AutomationSegmentCurve,
   AutomationSegmentCurveKind,
   AutomationSet,
+  EvolutionCurve,
   ChannelAccentRoutingMode,
   ChannelHocketOrnamentMode,
   ChannelHocketRatchetMode,
@@ -1202,6 +1204,7 @@ export type PatchGeneratorConfig =
       euclidRestPolicy: "silent" | "tied";
       plan: PatchEvolutionDirective[];
       planLengthCycles: number;
+      evolutionCurve: EvolutionCurve;
       seedMode: PatchGeneratorSeedMode;
     };
 
@@ -1888,6 +1891,7 @@ export function normalizePatchGeneratorConfig(
   const candidate = isRecord(value) ? value : {};
   if (candidate.kind === "dumka") {
     const normalizedPlan = normalizePatchEvolutionPlan(candidate.plan).plan;
+    const normalizedCurve = normalizeEvolutionCurve(candidate.evolutionCurve);
     return {
       kind: "dumka",
       pattern: normalizeDumkaPattern(candidate.pattern),
@@ -1951,6 +1955,7 @@ export function normalizePatchGeneratorConfig(
       euclidInvert: clamp(Math.round(numberValue(candidate.euclidInvert, 0)), 0, 100),
       euclidRestPolicy: candidate.euclidRestPolicy === "silent" ? "silent" : "tied",
       plan: normalizedPlan,
+      evolutionCurve: normalizedCurve.curve,
       planLengthCycles: clamp(
         Math.round(numberValue(candidate.planLengthCycles, 0)),
         0,

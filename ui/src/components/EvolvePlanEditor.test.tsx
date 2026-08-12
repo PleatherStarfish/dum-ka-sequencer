@@ -248,6 +248,170 @@ describe("EvolvePlanEditor", () => {
     ]);
   });
 
+  it("authors the evolution curve from the card and the step-size lane", () => {
+    const onCurveChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        curve={{
+          enabled: true,
+          modelVersion: "v1",
+          toleranceMilli: 500,
+          maxOperations: 4,
+          points: [
+            { cycle: 2, targetMilli: 2000 },
+            { cycle: 10, targetMilli: 6000 },
+          ],
+        }}
+        onCurveChange={onCurveChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+
+    // The card lists points and the lane bands cover the interpolated span.
+    expect(screen.getByLabelText("Curve points").textContent).toContain(
+      "cycle 2 · 2.0"
+    );
+    expect(
+      screen.getByRole("group", {
+        name: "Cycle 6 step size not cached",
+      })
+    ).toBeTruthy();
+
+    // Removing a point through the card.
+    fireEvent.click(
+      screen.getByLabelText("Remove curve point at cycle 10")
+    );
+    expect(onCurveChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        points: [{ cycle: 2, targetMilli: 2000 }],
+      })
+    );
+
+    // A primary-button lane click upserts a point at that cycle; other
+    // buttons must not author (the audit's pointer-guard lesson).
+    const cell = screen.getByRole("group", {
+      name: /Cycle 6 step size/,
+    });
+    fireEvent.pointerDown(cell, { button: 2, clientY: 0 });
+    fireEvent.pointerDown(cell, { button: 0, clientY: 0 });
+    const upserted = onCurveChange.mock.calls.at(-1)?.[0] as {
+      points: Array<{ cycle: number }>;
+    };
+    expect(upserted.points.some((point) => point.cycle === 6)).toBe(true);
+    // Exactly two authored changes: the removal and the single left click.
+    expect(onCurveChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("plots the step-size lane with target bands and tolerance verdicts", () => {
+    const preview = (distanceMilli: number) => ({
+      densityCorridor: null,
+      cycleDistance: { modelVersion: "v1" as const, distanceMilli },
+      spans: [
+        {
+          spanId: 1,
+          spanLen: 4,
+          cells: [
+            {
+              index: 0,
+              start: 0,
+              len: 4,
+              rest: false,
+              tiedFromPrevious: false,
+              tiedToNext: false,
+            },
+          ],
+        },
+      ],
+    });
+    render(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            family: "barlowRemove",
+            fromCycle: 13,
+            toCycle: 13,
+            magnitude: {
+              mode: "perceptual",
+              modelVersion: "v1",
+              targetMilli: 5000,
+              toleranceMilli: 1500,
+              maxOperations: 16,
+            },
+          }),
+        ]}
+        planLengthCycles={16}
+        totalBeats={4}
+        cachedPreviews={[
+          { cycle: 12, preview: preview(0) },
+          { cycle: 13, preview: preview(6200) },
+          { cycle: 14, preview: preview(9000) },
+        ]}
+        onPlanChange={vi.fn()}
+      />
+    );
+
+    // Realized inside target ± tolerance reads as within.
+    const within = screen.getByRole("group", {
+      name: "Cycle 13 step size 6.2, target 5.0 ±1.5, within tolerance",
+    });
+    expect(within.classList.contains("is-within-target")).toBe(true);
+    // No perceptual row at cycle 14: a plain realized readout, no verdict.
+    const plain = screen.getByRole("group", {
+      name: "Cycle 14 step size 9.0",
+    });
+    expect(plain.classList.contains("is-within-target")).toBe(false);
+    expect(plain.classList.contains("is-outside-target")).toBe(false);
+    // The verbatim cycle before the pin reads an honest zero.
+    expect(
+      screen.getByRole("group", { name: "Cycle 12 step size 0.0" })
+    ).toBeTruthy();
+    // Cycles without a cached preview say so.
+    expect(
+      screen.getByRole("group", { name: "Cycle 3 step size not cached" })
+    ).toBeTruthy();
+  });
+
+  it("marks a realized step outside its target band", () => {
+    render(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            family: "barlowRemove",
+            fromCycle: 7,
+            toCycle: 7,
+            magnitude: {
+              mode: "perceptual",
+              modelVersion: "v1",
+              targetMilli: 5000,
+              toleranceMilli: 500,
+              maxOperations: 16,
+            },
+          }),
+        ]}
+        planLengthCycles={8}
+        totalBeats={4}
+        cachedPreviews={[
+          {
+            cycle: 7,
+            preview: {
+              densityCorridor: null,
+              cycleDistance: { modelVersion: "v1" as const, distanceMilli: 800 },
+              spans: [],
+            },
+          },
+        ]}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const outside = screen.getByRole("group", {
+      name: "Cycle 7 step size 0.8, target 5.0 ±0.5, outside tolerance",
+    });
+    expect(outside.classList.contains("is-outside-target")).toBe(true);
+  });
+
   it("toggles before and after audition around the selected directive", () => {
     const onPreviewCycleChange = vi.fn();
     const onAuditionCycle = vi.fn();

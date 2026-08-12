@@ -13,19 +13,20 @@ use thiserror::Error;
 pub mod generators;
 pub use generators::dumka::reshape::EuclidRestPolicy;
 pub use generators::{
-    PerceptualCycleDistance,
     evolution_state, perceptual_distance, resolve_generator_cycle,
     resolve_generator_cycle_with_trace, resolve_generator_seed, resolve_generator_seed_at_cycle,
-    BeatRange, CycleGenerator, DensityCorridorRange, DirectiveFamily, DirectiveMagnitude,
-    DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams,
-    EvolutionDirective, EvolutionState, EvolvedOnset, ExampleGeneratorParams, GeneratedCell,
-    GeneratedSpan, GeneratorConfig, GeneratorCycleContext, GeneratorCycleResolution,
-    GeneratorError, GeneratorSeedMode, GeneratorSeedResolution, GeneratorSeedSource,
-    GeneratorSpanInput, PerceptualBreakdown, PerceptualContext, PerceptualDistance,
-    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualPacingTrace,
-    PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN, LEGACY_EVOLUTION_TRACE_ID,
-    MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
-    MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
+    BeatRange, CurvePoint, CycleGenerator, DensityCorridorRange, DirectiveFamily,
+    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
+    DumkaGeneratorParams, EvolutionCurve, EvolutionDirective, EvolutionState, EvolvedOnset,
+    ExampleGeneratorParams, GeneratedCell, GeneratedSpan, GeneratorConfig, GeneratorCycleContext,
+    GeneratorCycleResolution, GeneratorError, GeneratorSeedMode, GeneratorSeedResolution,
+    GeneratorSeedSource, GeneratorSpanInput, PerceptualBreakdown, PerceptualContext,
+    PerceptualCycleDistance, PerceptualDistance, PerceptualError, PerceptualModel,
+    PerceptualModelVersion, PerceptualPacingTrace, PerceptualWeights, RotateDirection,
+    DEFAULT_DUMKA_PATTERN, EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID,
+    MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES,
+    MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
+    PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 
 const fn one_u32() -> u32 {

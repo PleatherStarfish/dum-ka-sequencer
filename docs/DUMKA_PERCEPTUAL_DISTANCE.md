@@ -52,6 +52,22 @@ w_i = 1 + 3 * normalized_rank_i
 
 The `+1` keeps the weakest slot audible to metrical edit cost.
 
+## The whole-cycle readout
+
+The per-directive trace reports each row's incremental distance, which is
+deliberately **not** the whole-cycle answer when several rows stack. For
+calibration the resolver also scores the requested cycle's final state
+against the state the fold carried out of the previous cycle and returns
+it as `cycleDistance { modelVersion, distanceMilli }` on the preview DTO
+(absent at cycle 0, for non-Dum-Ka generators, for disabled resolution,
+and on grids without published Barlow tables; a verbatim repeat scores an
+honest 0). The Evolve editor's **Step size lane** plots this value per
+cycle, overlays every enabled perceptual row's target ± tolerance as a
+band (stacked rows sum), and colors the realized bar by verdict. The
+readout is preview/authoring observability only — playback consumes the
+same resolved spans and never reads it. A cross-fold test pins the
+captured value against an independent two-fold comparison.
+
 ## Model `v1`: seven components
 
 Let `A` and `A'` be attack bitsets, `O` and `O'` occupancy bitsets, and `|A|`

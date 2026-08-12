@@ -113,6 +113,18 @@ with corridor > plan > leash precedence and additive clamp trace. Transport
 production code remained untouched; the evidence and implementation contract live in
 [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md).
 
+## M3.95 — Depth: subdivision palettes, geometric placement, transport morphing (architecture ready)
+
+Evolution escapes the seed's frozen lattice: an authored prime palette
+refines the fold's working grid (projection already accepts multiples —
+zero transport surgery), a complexity corridor rails how much new-level
+material may exist, a fixed-point geometric placement field gives
+Add/Remove a void-seeking order blendable against Barlow (the
+syncopation-aware chooser), and an exact integer transport morph
+directive delivers directed gradual movement toward a target pattern.
+Phase 0 is clearing the outstanding M3.75–M3.9 audit findings. Full
+implementing-agent specification: [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
+
 ## M4 — Bass payload (the one platform extension)
 
 Optional per-cell `accent_class`/`pitch_degree` honored through

@@ -161,6 +161,13 @@
         }
       }
     ],
+    "evolutionCurve": {
+      "enabled": false,
+      "modelVersion": "v1",
+      "toleranceMilli": 500,
+      "maxOperations": 4,
+      "points": []
+    },
     "planLengthCycles": 20,
     "seedMode": {
       "type": "locked",
@@ -498,6 +505,13 @@
               }
             }
           ],
+          "evolutionCurve": {
+            "enabled": false,
+            "modelVersion": "v1",
+            "toleranceMilli": 500,
+            "maxOperations": 4,
+            "points": []
+          },
           "planLengthCycles": 20,
           "seedMode": {
             "type": "locked",

@@ -231,6 +231,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     },
                     plan,
                     plan_length_cycles: 0,
+                    evolution_curve: rhythm::EvolutionCurve::default(),
                     seed_mode,
                 }
             },

@@ -189,6 +189,15 @@ evolution fold.
 | `generator.dumka.plan[*].options.densityFloor/Ceiling` | Directive corridor override | paired percentages `0..100`, floor ≤ ceiling, or both absent | `DirectiveOptions.densityFloor` / `densityCeiling` | Strict/tolerant persistence fences, deterministic normalization, clamp trace | Structural/discrete; inherits global rails when absent |
 | `generator.dumka.planLengthCycles` | Evolve view extent | integer `0..u32::MAX` (`0` = automatic UI extent) | `PatchGeneratorConfig.planLengthCycles` | Persistence and editor canvas only; engine ignores it | UI-only structural |
 
+### Evolution curve (Evolve editor)
+
+| Inventory id | User surface | Kind/range | Patch/model source | Coverage | Automation |
+| --- | --- | --- | --- | --- | --- |
+| `generator.dumka.evolutionCurve.enabled` | Curve enabled | boolean | `PatchGeneratorConfig.evolutionCurve.enabled` | Persistence, preview, playback (replaces stochastic layer) | Structural |
+| `generator.dumka.evolutionCurve.toleranceMilli` | Curve tolerance | milli `0..100000` (shown /1000) | `evolutionCurve.toleranceMilli` | Persistence, trace verdicts | Structural |
+| `generator.dumka.evolutionCurve.maxOperations` | Curve max operations | integer `1..8` | `evolutionCurve.maxOperations` | Persistence, budget validation | Structural |
+| `generator.dumka.evolutionCurve.points[*]` | Curve breakpoints | `(cycle ≥ 1, targetMilli 0..100000)`, ≤64 points, span ≤512 | `evolutionCurve.points` | Persistence, step-size lane bands, fold targets | Structural |
+
 ## Accent Settings
 
 Accent ranges are sampled during beat realization. The min/max fields are

@@ -43,8 +43,9 @@ use super::perceptual::{
 use super::plan::{
     active_directives, pin_quota, rotate_pin_quota, slot_range, DensityCorridorClamp,
     DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectivePacing, DirectiveSkip,
-    DirectiveTraceEntry, EvolutionDirective, PerceptualPacingTrace, RangeAccumulator,
-    RotateDirection, SlotRange, LEGACY_EVOLUTION_TRACE_ID,
+    DirectiveTraceEntry, EvolutionCurve, EvolutionDirective, PerceptualPacingTrace,
+    RangeAccumulator, RotateDirection, SlotRange, EVOLUTION_CURVE_TRACE_ID,
+    LEGACY_EVOLUTION_TRACE_ID,
 };
 use super::sioros::{
     desyncopate_at, legal_desyncopations, legal_syncopations, metrical_levels, syncopation_target,
@@ -67,6 +68,9 @@ const SALT_DESYNC_PICK: u64 = 0xD0A1_5EED_0006_0006;
 /// the SALT_POOL temperature pool exactly like Add/Remove candidate lists;
 /// only the k draw needs its own stream (two draws in one fired cycle).
 const SALT_FIG_K: u64 = 0xD0A1_5EED_0007_0007;
+/// The evolution curve's family draw per search ordinal; every other draw
+/// inside a curve step runs in the reserved sentinel id's plan stream.
+const SALT_CURVE: u64 = 0xD0A1_5EED_0011_0011;
 /// Euclid reshape's rotation draw (0..window len).
 const SALT_EUCLID_ROT: u64 = 0xD0A1_5EED_0008_0008;
 /// Euclid reshape's inversion chance (0..100 against euclidInvert).
@@ -160,6 +164,7 @@ pub struct EvolutionInputs<'a> {
     pub euclid_rest_policy: super::reshape::EuclidRestPolicy,
     /// Authored directive plan. Empty means the exact legacy fold.
     pub plan: &'a [EvolutionDirective],
+    pub curve: &'a EvolutionCurve,
     /// Authored only (no automation lane yet, documented).
     pub op_weights: OpWeights,
     pub automation: &'a GeneratorAutomationSampler<'a>,
@@ -1674,6 +1679,157 @@ fn apply_stochastic_directive(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One curve cycle: candidate zero is the corridor-normalized hold; each
+/// later prefix draws a family from the authored weights (identity-seeded,
+/// per-ordinal) and applies one operation through the same guards as a
+/// directive. Nearest realized whole-cycle distance to the interpolated
+/// target wins; smaller prefixes win ties. Leash-exempt like every
+/// authored intent; corridor and projection stay supreme.
+#[allow(clippy::too_many_arguments)] // fold environment; same precedent as step
+fn apply_evolution_curve(
+    target_milli: u32,
+    state: &EvolutionState,
+    seed: &CompiledSeed,
+    ranks: &[u32],
+    template: &[u32],
+    beat_level: u32,
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    corridor: DensityCorridor,
+) -> (EvolutionState, DirectiveTraceEntry) {
+    let curve = inputs.curve;
+    let mut trace = DirectiveTraceEntry {
+        cycle,
+        directive_id: EVOLUTION_CURVE_TRACE_ID,
+        family: DirectiveFamily::Stochastic,
+        requested: 0,
+        applied: 0,
+        skipped: DirectiveSkip::None,
+        corridor_clamp: None,
+        perceptual: None,
+    };
+    let normalized = normalize_to_density_corridor(seed, state, ranks, inputs, corridor);
+    trace.corridor_clamp = normalization_clamp(state, &normalized, corridor);
+
+    let weights = &inputs.op_weights;
+    let families = [
+        (DirectiveFamily::BarlowRemove, weights.barlow_remove),
+        (DirectiveFamily::BarlowAdd, weights.barlow_add),
+        (DirectiveFamily::Rotate, weights.rotate),
+        (DirectiveFamily::Syncopate, weights.syncopate),
+        (DirectiveFamily::Desyncopate, weights.desyncopate),
+        (DirectiveFamily::Fragment, weights.fragment),
+        (DirectiveFamily::Consolidate, weights.consolidate),
+        (DirectiveFamily::Euclid, weights.euclid),
+    ];
+    let total: u64 = families.iter().map(|(_, weight)| u64::from(*weight)).sum();
+
+    let context = PerceptualContext::new(
+        seed.total_beats,
+        seed.required_subdivision,
+        ranks.to_vec(),
+        template.to_vec(),
+    )
+    .expect("validated Barlow grid constructs a perceptual context");
+    let model = PerceptualModel::for_version(curve.model_version);
+
+    let mut current = normalized.clone();
+    let initial = perceptual_distance(state, &current, &context, &model).total_milli;
+    let mut best_state = current.clone();
+    let mut best_actual = initial;
+    let mut best_error = initial.abs_diff(target_milli);
+    let mut best_applied = 0;
+    let mut current_clamp = trace.corridor_clamp;
+    let mut best_clamp = current_clamp;
+    let mut frontier_failure = None;
+
+    if total > 0 {
+        for offset in 0..u64::from(curve.max_operations) {
+            if best_error == 0 {
+                break;
+            }
+            let mut roll = draw(
+                inputs.seed_value,
+                cycle,
+                SALT_CURVE ^ mix_seed(EVOLUTION_CURVE_TRACE_ID, offset),
+                total,
+            );
+            let mut drawn = DirectiveFamily::BarlowRemove;
+            for (family, weight) in families {
+                let band = u64::from(weight);
+                if roll < band {
+                    drawn = family;
+                    break;
+                }
+                roll -= band;
+            }
+            let synthetic = EvolutionDirective {
+                id: EVOLUTION_CURVE_TRACE_ID,
+                order: 0,
+                enabled: true,
+                from_cycle: cycle,
+                to_cycle: cycle,
+                family: drawn,
+                pacing: DirectivePacing::PerCycle,
+                magnitude: DirectiveMagnitude::OperationQuota,
+                intensity: 0,
+                scope: None,
+                options: super::plan::DirectiveOptions::default(),
+            };
+            match apply_one_directive_operation(
+                &synthetic, &current, seed, ranks, template, beat_level, inputs, cycle, cycle,
+                offset, None, corridor,
+            ) {
+                Ok((next, clamp)) => {
+                    trace.requested = trace.requested.saturating_add(1);
+                    current = next;
+                    if clamp.is_some() {
+                        current_clamp = clamp;
+                    }
+                    let actual = perceptual_distance(state, &current, &context, &model).total_milli;
+                    let error = actual.abs_diff(target_milli);
+                    if error < best_error {
+                        best_state = current.clone();
+                        best_actual = actual;
+                        best_error = error;
+                        best_applied = u32::try_from(offset.saturating_add(1)).unwrap_or(u32::MAX);
+                        best_clamp = current_clamp;
+                    }
+                }
+                Err(failure) => {
+                    frontier_failure = Some(failure);
+                    break;
+                }
+            }
+        }
+    }
+
+    trace.applied = best_applied;
+    trace.corridor_clamp = best_clamp;
+    let reached = best_error <= curve.tolerance_milli;
+    if !reached {
+        trace.skipped = DirectiveSkip::Exhausted;
+        if let Some(failure) = frontier_failure {
+            if failure.skipped != DirectiveSkip::None {
+                trace.skipped = failure.skipped;
+            }
+            if failure.corridor_clamp.is_some() {
+                trace.corridor_clamp = failure.corridor_clamp;
+            }
+        }
+    }
+    trace.perceptual = Some(PerceptualPacingTrace {
+        model_version: curve.model_version,
+        actual_milli: best_actual,
+        target_milli,
+        tolerance_milli: curve.tolerance_milli,
+        reached,
+        exhausted: !reached,
+    });
+    (best_state, trace)
+}
+
+#[allow(clippy::too_many_arguments)] // fold environment; same precedent as step
 fn apply_directive(
     directive: &EvolutionDirective,
     state: &EvolutionState,
@@ -2129,6 +2285,7 @@ pub fn evolved_seed_with_trace(
         && inputs.evolution_rate == 0
         && !evolution_is_automated
         && !corridor_is_active
+        && !inputs.curve.is_active()
     {
         let verbatim_distance = stratification(seed.total_beats, seed.required_subdivision)
             .and_then(|strata| {
@@ -2181,7 +2338,42 @@ pub fn evolved_seed_with_trace(
             // A planned pin is outside the leash. At an authored 0% legacy
             // gap, literal repetition must therefore retain that pin instead
             // of letting leash normalization silently undo it.
-            if inputs.plan.is_empty() || legacy_rate > 0 {
+            if inputs.curve.enabled {
+                // The curve owns every directive-free cycle when enabled:
+                // the legacy stochastic layer never fires, and a zero
+                // target is deterministic repetition (corridor still
+                // normalizes, like any other hold).
+                let target = inputs.curve.target_milli_at(cycle);
+                if target > 0 {
+                    let (next, curve_trace) = apply_evolution_curve(
+                        target, &state, seed, &ranks, &template, beat_level, inputs, cycle,
+                        corridor,
+                    );
+                    state = next;
+                    if cycle == inputs.cycle {
+                        requested_cycle_trace.push(curve_trace);
+                    }
+                } else {
+                    let normalized =
+                        normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+                    let clamp = normalization_clamp(&state, &normalized, corridor);
+                    state = normalized;
+                    if cycle == inputs.cycle {
+                        requested_cycle_trace.extend(clamp.map(|corridor_clamp| {
+                            DirectiveTraceEntry {
+                                cycle,
+                                directive_id: LEGACY_EVOLUTION_TRACE_ID,
+                                family: DirectiveFamily::Stochastic,
+                                requested: 0,
+                                applied: 0,
+                                skipped: DirectiveSkip::None,
+                                corridor_clamp: Some(corridor_clamp),
+                                perceptual: None,
+                            }
+                        }));
+                    }
+                }
+            } else if inputs.plan.is_empty() || legacy_rate > 0 {
                 let (next, legacy_trace) = step_with_corridor(
                     seed,
                     &state,
@@ -2273,27 +2465,41 @@ pub fn evolved_seed_with_trace(
             if cycle == inputs.cycle {
                 requested_cycle_trace.extend(orphaned_normalization_trace);
             }
-            let legacy_rate = sampled_percent(
-                inputs,
-                DUMKA_EVOLUTION_RATE_TARGET,
-                inputs.evolution_rate,
-                cycle,
-            );
-            if legacy_rate > 0 {
-                let (next, legacy_trace) = step_with_corridor(
-                    seed,
-                    &state,
-                    &seed_slots,
-                    &ranks,
-                    &template,
-                    beat_level,
+            if inputs.curve.enabled {
+                let target = inputs.curve.target_milli_at(cycle);
+                if target > 0 {
+                    let (next, curve_trace) = apply_evolution_curve(
+                        target, &state, seed, &ranks, &template, beat_level, inputs, cycle,
+                        corridor,
+                    );
+                    state = next;
+                    if cycle == inputs.cycle {
+                        requested_cycle_trace.push(curve_trace);
+                    }
+                }
+            } else {
+                let legacy_rate = sampled_percent(
                     inputs,
+                    DUMKA_EVOLUTION_RATE_TARGET,
+                    inputs.evolution_rate,
                     cycle,
-                    corridor,
                 );
-                state = next;
-                if cycle == inputs.cycle {
-                    requested_cycle_trace.extend(legacy_trace);
+                if legacy_rate > 0 {
+                    let (next, legacy_trace) = step_with_corridor(
+                        seed,
+                        &state,
+                        &seed_slots,
+                        &ranks,
+                        &template,
+                        beat_level,
+                        inputs,
+                        cycle,
+                        corridor,
+                    );
+                    state = next;
+                    if cycle == inputs.cycle {
+                        requested_cycle_trace.extend(legacy_trace);
+                    }
                 }
             }
         }
@@ -2314,6 +2520,14 @@ pub fn evolved_seed(seed: &CompiledSeed, inputs: &EvolutionInputs<'_>) -> Option
 
 #[cfg(test)]
 mod tests {
+    static CURVE_OFF: EvolutionCurve = EvolutionCurve {
+        enabled: false,
+        model_version: super::super::perceptual::PerceptualModelVersion::V1,
+        tolerance_milli: 500,
+        max_operations: 4,
+        points: Vec::new(),
+    };
+
     use super::*;
     use crate::generators::dumka::dsl::parse;
     use crate::generators::dumka::tree::{compile, resolve_seed_cells};
@@ -2359,6 +2573,7 @@ mod tests {
             euclid_invert: 0,
             euclid_rest_policy: super::super::reshape::EuclidRestPolicy::Tied,
             plan: &[],
+            curve: &CURVE_OFF,
             op_weights: OpWeights::default(),
             automation: &no_automation,
             spans,
@@ -2387,6 +2602,7 @@ mod tests {
             euclid_invert: 0,
             euclid_rest_policy: super::super::reshape::EuclidRestPolicy::Tied,
             plan: &[],
+            curve: &CURVE_OFF,
             op_weights: OpWeights::default(),
             automation,
             spans,
@@ -4308,6 +4524,183 @@ mod tests {
         inputs.euclid_rest_policy = super::super::reshape::EuclidRestPolicy::Silent;
         let evolved = evolved_seed(&seed, &inputs).unwrap();
         assert_eq!(evolved, seed, "leash 0 must veto every inverted reshape");
+    }
+
+    fn curve(points: &[(u64, u32)], tolerance: u32, ops: u32) -> EvolutionCurve {
+        EvolutionCurve {
+            enabled: true,
+            model_version: super::super::perceptual::PerceptualModelVersion::V1,
+            tolerance_milli: tolerance,
+            max_operations: ops,
+            points: points
+                .iter()
+                .map(|&(cycle, target_milli)| super::super::plan::CurvePoint {
+                    cycle,
+                    target_milli,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_curve_owns_gap_cycles_and_suppresses_the_stochastic_layer() {
+        // With the curve enabled, the legacy rate must be irrelevant on
+        // directive-free cycles: rate 0 and rate 100 fold identically.
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let ramp = curve(&[(1, 1000), (12, 6000)], 500, 4);
+        let resolve = |rate: u32, cycle: u64| {
+            let mut inputs = inputs(21, cycle, rate, 100, &s);
+            inputs.curve = &ramp;
+            evolved_seed_with_trace(&seed, &inputs).expect("supported grid resolves")
+        };
+        for cycle in [1u64, 5, 9, 12] {
+            assert_eq!(
+                resolve(0, cycle).seed,
+                resolve(100, cycle).seed,
+                "cycle {cycle}: the stochastic layer fired under the curve"
+            );
+        }
+        // Replay is byte-identical, and the trace attributes the curve.
+        assert_eq!(resolve(0, 7).seed, resolve(0, 7).seed);
+        let trace = resolve(0, 7).trace;
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].directive_id, EVOLUTION_CURVE_TRACE_ID);
+        let detail = trace[0].perceptual.expect("curve trace carries detail");
+        assert_eq!(detail.target_milli, ramp.target_milli_at(7));
+        // The realized distance is the whole-cycle readout by construction.
+        assert_eq!(
+            resolve(0, 7).cycle_distance.map(|d| d.distance_milli),
+            Some(detail.actual_milli)
+        );
+    }
+
+    #[test]
+    fn outside_the_curve_span_the_state_repeats_verbatim() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let short = curve(&[(1, 4000), (6, 4000)], 500, 4);
+        let resolve = |cycle: u64| {
+            let mut inputs = inputs(33, cycle, 0, 100, &s);
+            inputs.curve = &short;
+            evolved_seed_with_trace(&seed, &inputs).expect("resolves")
+        };
+        let at_end = resolve(6);
+        let beyond = resolve(9);
+        assert_eq!(at_end.seed, beyond.seed, "post-curve cycles must hold");
+        assert_eq!(beyond.cycle_distance.map(|d| d.distance_milli), Some(0));
+        assert!(beyond.trace.is_empty(), "no curve entry outside the span");
+    }
+
+    #[test]
+    fn zero_weights_leave_the_curve_exhausted_and_the_state_held() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let ramp = curve(&[(1, 4000), (8, 4000)], 500, 4);
+        let mut inputs = inputs(5, 3, 0, 100, &s);
+        inputs.curve = &ramp;
+        inputs.op_weights = OpWeights {
+            barlow_remove: 0,
+            barlow_add: 0,
+            rotate: 0,
+            syncopate: 0,
+            desyncopate: 0,
+            fragment: 0,
+            consolidate: 0,
+            euclid: 0,
+        };
+        let resolved = evolved_seed_with_trace(&seed, &inputs).expect("resolves");
+        assert_eq!(resolved.seed, seed, "no families to draw: hold verbatim");
+        assert_eq!(resolved.trace.len(), 1);
+        assert_eq!(resolved.trace[0].skipped, DirectiveSkip::Exhausted);
+        assert_eq!(resolved.trace[0].applied, 0);
+    }
+
+    #[test]
+    fn directive_cycles_defer_the_curve() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let ramp = curve(&[(1, 3000), (12, 3000)], 500, 4);
+        let plan = vec![directive(1, 0, DirectiveFamily::BarlowRemove, 5, 5, 40)];
+        let mut inputs5 = inputs(9, 5, 0, 100, &s);
+        inputs5.plan = &plan;
+        inputs5.curve = &ramp;
+        let at_5 = evolved_seed_with_trace(&seed, &inputs5).expect("resolves");
+        assert_eq!(at_5.trace.len(), 1, "only the directive traces at cycle 5");
+        assert_eq!(at_5.trace[0].directive_id, 1);
+    }
+
+    #[test]
+    fn whole_cycle_distance_matches_an_independent_two_fold_comparison() {
+        // The calibration example: a BarlowRemove pin at cycle 13. The
+        // readout must equal the v1 distance between the states two
+        // separate folds reach at cycles 12 and 13 — proving the previous-
+        // state capture inside the single fold is exact.
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let plan = vec![directive(1, 0, DirectiveFamily::BarlowRemove, 13, 13, 40)];
+        let resolve = |cycle: u64| {
+            let mut inputs = inputs(9, cycle, 0, 100, &s);
+            inputs.plan = &plan;
+            evolved_seed_with_trace(&seed, &inputs).expect("supported grid resolves")
+        };
+        let at_12 = resolve(12);
+        let at_13 = resolve(13);
+        let strata =
+            stratification(seed.total_beats, seed.required_subdivision).expect("supported");
+        let context = PerceptualContext::new(
+            seed.total_beats,
+            seed.required_subdivision,
+            indispensability(&strata),
+            metrical_levels(&strata),
+        )
+        .expect("context builds");
+        let model = PerceptualModel::for_version(PerceptualModelVersion::V1);
+        let direct = perceptual_distance(
+            &evolution_state(&at_12.seed),
+            &evolution_state(&at_13.seed),
+            &context,
+            &model,
+        )
+        .total_milli;
+        assert!(direct > 0, "a 40% removal pin must be audible");
+        assert_eq!(
+            at_13.cycle_distance,
+            Some(super::super::perceptual::PerceptualCycleDistance {
+                model_version: PerceptualModelVersion::V1,
+                distance_milli: direct,
+            })
+        );
+        // The cycle after the pin repeats verbatim: honest zero.
+        let at_14 = resolve(14);
+        assert_eq!(
+            at_14.cycle_distance.map(|d| d.distance_milli),
+            Some(0),
+            "a gap cycle after the pin sounds identical to cycle 13"
+        );
+    }
+
+    #[test]
+    fn whole_cycle_distance_edges_are_none_or_zero_by_contract() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        // Cycle 0 is the seed by definition: no predecessor, no readout.
+        let inputs0 = inputs(9, 0, 0, 100, &s);
+        assert_eq!(
+            evolved_seed_with_trace(&seed, &inputs0)
+                .expect("cycle 0 resolves")
+                .cycle_distance,
+            None
+        );
+        // Feature-off verbatim repeat at cycle 5: identical cycles score 0.
+        let inputs5 = inputs(9, 5, 0, 100, &s);
+        assert_eq!(
+            evolved_seed_with_trace(&seed, &inputs5)
+                .expect("verbatim resolves")
+                .cycle_distance
+                .map(|d| d.distance_milli),
+            Some(0)
+        );
     }
 
     #[test]
