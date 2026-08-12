@@ -13,6 +13,7 @@ use thiserror::Error;
 pub mod generators;
 pub use generators::dumka::reshape::EuclidRestPolicy;
 pub use generators::{
+    PerceptualCycleDistance,
     evolution_state, perceptual_distance, resolve_generator_cycle,
     resolve_generator_cycle_with_trace, resolve_generator_seed, resolve_generator_seed_at_cycle,
     BeatRange, CycleGenerator, DensityCorridorRange, DirectiveFamily, DirectiveMagnitude,

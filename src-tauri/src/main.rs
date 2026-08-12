@@ -4305,6 +4305,7 @@ mod tests {
             spans: vec![],
             trace: vec![],
             density_corridor: None,
+            cycle_distance: None,
         };
         let generator_wire =
             serde_json::to_value(generator).expect("generator preview must serialize");
