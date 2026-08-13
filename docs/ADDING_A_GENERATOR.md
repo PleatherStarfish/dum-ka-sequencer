@@ -53,6 +53,13 @@ The sampler takes `(target, cycle, authored_default)` and returns `Some(value)`
 when an enabled source exists or `None` when the authored value should be used.
 The explicit cycle matters for cumulative generators that replay historical
 steps while resolving a later cycle.
+Generator-specific preview diagnostics may be additive fields on the generic
+resolution, but they do not authorize another resolver. Dum-Ka's working
+Subdivision, density/complexity corridors, state complexity, insight-only
+depth diversity, and directive trace are produced beside the same spans that
+transport consumes; playback does not reinterpret those readouts. A new
+diagnostic must remain observational—in particular, do not let a UI metric
+become an undocumented candidate rail.
 `track_id` is `None` on the single-track backend. Ordinary parallel tracks,
 triggered tracks, and Track Flow sources receive their bare authored track id.
 Track Flow's composite `track-flow-<box>:<source>` identity belongs only to

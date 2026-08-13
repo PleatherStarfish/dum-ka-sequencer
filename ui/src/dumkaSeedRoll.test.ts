@@ -54,6 +54,7 @@ describe("dumkaSeedRoll", () => {
     expect(analysis.ok && analysis.required).toEqual({
       cycleBeats: 4,
       subdivision: 8,
+      workingSubdivision: 8,
     });
   });
 

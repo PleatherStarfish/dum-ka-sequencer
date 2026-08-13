@@ -21,6 +21,9 @@ import {
   DUMKA_DRIFT_LEASH_AUTOMATION_TARGET,
   DUMKA_DENSITY_CEILING_AUTOMATION_TARGET,
   DUMKA_DENSITY_FLOOR_AUTOMATION_TARGET,
+  DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
+  DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET,
+  DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET,
   DUMKA_BARLOW_TEMPERATURE_AUTOMATION_TARGET,
   DUMKA_FILL_COMPLEXITY_AUTOMATION_TARGET,
   DUMKA_EVOLUTION_RATE_AUTOMATION_TARGET,
@@ -153,6 +156,64 @@ describe("buildAutomationTargetDefs (characterization)", () => {
         fallback: 0,
         unit: "%",
         sampleRate: "cycleStart",
+      },
+    ]);
+  });
+
+  it("exposes the depth corridor and placement field at cycle start", () => {
+    expect(
+      defs
+        .filter((definition) =>
+          [
+            DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
+            DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET,
+            DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET,
+          ].includes(definition.target)
+        )
+        .map((definition) => ({
+          target: definition.target,
+          label: definition.label,
+          valueKind: definition.valueKind,
+          min: definition.min,
+          max: definition.max,
+          step: definition.step,
+          unit: definition.unit,
+          sampleRate: definition.sampleRate,
+          fallback: definition.fallback,
+        }))
+    ).toEqual([
+      {
+        target: DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
+        label: "Complexity ceiling",
+        valueKind: "integer",
+        min: 0,
+        max: 100_000,
+        step: 1,
+        unit: "milli",
+        sampleRate: "cycleStart",
+        fallback: 60_000,
+      },
+      {
+        target: DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET,
+        label: "Complexity floor",
+        valueKind: "integer",
+        min: 0,
+        max: 100_000,
+        step: 1,
+        unit: "milli",
+        sampleRate: "cycleStart",
+        fallback: 12_000,
+      },
+      {
+        target: DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET,
+        label: "Placement bias",
+        valueKind: "float",
+        min: 0,
+        max: 100,
+        step: 1,
+        unit: "%",
+        sampleRate: "cycleStart",
+        fallback: 35,
       },
     ]);
   });

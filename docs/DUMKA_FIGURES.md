@@ -32,13 +32,14 @@ so `SALT_FIG_PICK`/`SALT_CONS_PICK` never materialized.
 | "Tuplet of a certain complexity" on a fixed grid | Bjorklund/Toussaint Euclidean rhythms; Demaine et al., maximal evenness (already used by `E(k,n)` sugar and the builder's E-fill) | `k` onsets across an `n`-slot interval: when `k ∣ n` the split is a true equal tuplet; otherwise `E(k,n)` is the **maximally even on-grid approximation** — documented, never silently quantized |
 | Syncopating the new figure | Sioros 2015 dissertation ch. 4 (already implemented in `sioros.rs`); its compound transforms are ordered vector arrays | New onsets land on the metrical template and are immediately reachable by the existing Syncopate/Desyncopate operators — composition for free; a fused "fragment-then-anticipate" compound is future work, cited, not needed for v1 |
 
-The platform invariant stays supreme: generators cannot emit finer than the
-authored grid. A *true* quintuplet inside a single un-subdivided beat needs
-the tracked platform extension (integer upsample factor `k` on generated
-spans — ROADMAP M6+). Until then, "tuplet complexity" means `E(k,n)` over
-the interval's existing slots, which is exact when `k` divides `n` and
-maximally even otherwise. The plan deliberately ships the on-grid subset
-first and names the extension as the unlock for the rest.
+The platform invariant stays supreme: generators cannot emit off the resolved
+working grid. M3.95's authored subdivision palette now refines the seed onto
+that grid before evolution, so Fragment can create true binary, ternary,
+quintuplet, or septuplet positions when the selected palette makes them exact
+and the resulting Subdivision stays at most 64. Without a palette, the legacy
+seed grid is unchanged. `E(k,n)` remains exact when `k` divides `n` and the
+maximally even on-grid figure otherwise; continuous/off-lattice timing remains
+outside the platform contract. See [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
 
 ## The operator pair
 

@@ -18,6 +18,19 @@ rotation, bounded by an authored density corridor, a drift leash, and
 structural playability guards (see
 [docs/DUMKA_EVOLUTION.md](docs/DUMKA_EVOLUTION.md)).
 
+Depth controls let that evolution escape the seed's original grid without
+leaving exact musical time. Choose up to two prime subdivision levels
+(2/3/5/7); Dum-Ka folds on the resulting working Subdivision, while a mean
+attack-depth corridor controls how much refined material is admissible.
+Placement bias blends metrical Barlow order with a deterministic geometric
+gap-seeking field, and a directive-only Morph family moves toward another
+exact Dum-Ka pattern through the same gradual/perceptual planner. State
+complexity and depth diversity are separate readouts: complexity is the
+enforced mean-depth rail, while diversity is insight-only normalized entropy
+over the attack denominator classes. See
+[docs/DUMKA_TREE_DEPTH.md](docs/DUMKA_TREE_DEPTH.md) for the fixed-point math,
+ordering rules, and limitations.
+
 The **Evolve** editor turns that fold into an authored score. Put a pin on one
 cycle or stretch a family across a range, choose an operation quota or a
 versioned perceptual target for each active cycle, and optionally confine it to
@@ -129,7 +142,11 @@ timeline's generator lane is the resolved output used for playback;
 its cells shade by the accent velocity the notes inherit (hover a cell for the
 exact value). In Dum-Ka's Density panel, set the minimum and maximum onset
 density the evolving piece may use. The 0–100% default preserves earlier
-trajectories exactly.
+trajectories exactly. In **Depth**, enable palette levels before applying
+structure, then use the complexity corridor for mean depth and Placement bias
+for metric-versus-geometric placement. The diversity number is diagnostic; it
+does not constrain evolution. Add a Morph row in **Evolve** when the passage
+should travel toward a specific target pattern.
 
 To route another instrument, choose it in Audio & MIDI Setup or connect the
 `Dum-Ka MIDI` virtual source in a DAW or MIDI monitor. **MIDI Panic** (`⌘.`)

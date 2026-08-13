@@ -4,9 +4,12 @@ import {
   DEFAULT_DUMKA_PATTERN,
   compileDumkaPattern,
   deriveDumkaBeatSlotCounts,
+  analyzeDumkaPattern,
+  dumkaStructureMatches,
   dumkaEuclid,
   formatDumkaParseError,
   normalizeDumkaPattern,
+  normalizeDumkaSubdivisionPalette,
   resolveDumkaCells,
 } from "./dumkaPattern";
 
@@ -47,6 +50,49 @@ function issue(text: string) {
 }
 
 describe("dumkaPattern mirror", () => {
+  it("normalizes palette levels and exposes the refined working structure", () => {
+    expect(normalizeDumkaSubdivisionPalette([7, 2, 2, 11, 3])).toEqual([
+      2,
+      3,
+    ]);
+    expect(analyzeDumkaPattern("x x x x", [2, 3])).toEqual({
+      ok: true,
+      required: {
+        cycleBeats: 4,
+        subdivision: 1,
+        workingSubdivision: 6,
+      },
+    });
+    expect(deriveDumkaBeatSlotCounts("x x x x", [3])).toMatchObject({
+      required: { subdivision: 1, workingSubdivision: 3 },
+    });
+  });
+
+  it("matches authored structure against the working rather than seed grid", () => {
+    const authored = {
+      cycleBeats: 4,
+      initialWeights: [{ subdivision: 2, weight: 1 }],
+      initialJathiWeights: [],
+      boundaryCount: 0,
+      hasCustomSubdivision: false,
+    };
+    expect(
+      dumkaStructureMatches(
+        { cycleBeats: 4, subdivision: 1, workingSubdivision: 6 },
+        authored
+      )
+    ).toBe(false);
+    expect(
+      dumkaStructureMatches(
+        { cycleBeats: 4, subdivision: 1, workingSubdivision: 6 },
+        {
+          ...authored,
+          initialWeights: [{ subdivision: 12, weight: 1 }],
+        }
+      )
+    ).toBe(true);
+  });
+
   it("matches the Rust-generated parser/compiler contract corpus", () => {
     for (const entry of parserContractCases) {
       expect(compileDumkaPattern(entry.pattern), entry.pattern).toEqual(entry.outcome);
@@ -141,7 +187,7 @@ describe("dumkaPattern mirror", () => {
     expect(heterogeneous).toEqual({
       ok: true,
       slotsPerBeat: [5, 4, 1, 1],
-      required: { cycleBeats: 4, subdivision: 20 },
+      required: { cycleBeats: 4, subdivision: 20, workingSubdivision: 20 },
     });
 
     // Top-level weight scales the proportional subtree before it is divided
@@ -150,7 +196,7 @@ describe("dumkaPattern mirror", () => {
     expect(deriveDumkaBeatSlotCounts("[x x x x]@2 [x x x]@2")).toEqual({
       ok: true,
       slotsPerBeat: [2, 2, 3, 3],
-      required: { cycleBeats: 4, subdivision: 6 },
+      required: { cycleBeats: 4, subdivision: 6, workingSubdivision: 6 },
     });
 
     // Nested proportional denominators multiply exactly: the first half is a
@@ -158,7 +204,7 @@ describe("dumkaPattern mirror", () => {
     expect(deriveDumkaBeatSlotCounts("[[x .] [x x x]]")).toEqual({
       ok: true,
       slotsPerBeat: [12],
-      required: { cycleBeats: 1, subdivision: 12 },
+      required: { cycleBeats: 1, subdivision: 12, workingSubdivision: 12 },
     });
   });
 
@@ -168,24 +214,24 @@ describe("dumkaPattern mirror", () => {
     expect(deriveDumkaBeatSlotCounts("[. . . .]")).toEqual({
       ok: true,
       slotsPerBeat: [4],
-      required: { cycleBeats: 1, subdivision: 4 },
+      required: { cycleBeats: 1, subdivision: 4, workingSubdivision: 4 },
     });
     // Holds do not start elements. A fully held beat therefore collapses to
     // the one-slot grid, while a later rest exposes the original fifths.
     expect(deriveDumkaBeatSlotCounts("[x _ _ _ _]")).toEqual({
       ok: true,
       slotsPerBeat: [1],
-      required: { cycleBeats: 1, subdivision: 1 },
+      required: { cycleBeats: 1, subdivision: 1, workingSubdivision: 1 },
     });
     expect(deriveDumkaBeatSlotCounts("[x _ . . .]")).toEqual({
       ok: true,
       slotsPerBeat: [5],
-      required: { cycleBeats: 1, subdivision: 5 },
+      required: { cycleBeats: 1, subdivision: 5, workingSubdivision: 5 },
     });
     expect(deriveDumkaBeatSlotCounts("x _")).toEqual({
       ok: true,
       slotsPerBeat: [1, 1],
-      required: { cycleBeats: 2, subdivision: 1 },
+      required: { cycleBeats: 2, subdivision: 1, workingSubdivision: 1 },
     });
   });
 

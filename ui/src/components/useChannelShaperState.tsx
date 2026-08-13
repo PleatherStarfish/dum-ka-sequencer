@@ -79,6 +79,9 @@ export interface UseChannelShaperStateParams {
   dumkaDriftLeash: number;
   dumkaDensityFloor: number;
   dumkaDensityCeiling: number;
+  dumkaComplexityFloor: number;
+  dumkaComplexityCeiling: number;
+  dumkaPlacementBias: number;
   historySeedsInput: string;
   historyWeight: number;
   initialJathiWeights: JathiWeight[];
@@ -123,6 +126,9 @@ export function useChannelShaperState({
   dumkaDriftLeash,
   dumkaDensityFloor,
   dumkaDensityCeiling,
+  dumkaComplexityFloor,
+  dumkaComplexityCeiling,
+  dumkaPlacementBias,
   historySeedsInput,
   historyWeight,
   blendCycles,
@@ -225,6 +231,9 @@ export function useChannelShaperState({
         dumkaDriftLeash,
         dumkaDensityFloor,
         dumkaDensityCeiling,
+        dumkaComplexityFloor,
+        dumkaComplexityCeiling,
+        dumkaPlacementBias,
         midiOutputChannel,
         scorePitch: pitch,
         scoreVelocity: velocity,
@@ -258,6 +267,9 @@ export function useChannelShaperState({
       dumkaDriftLeash,
       dumkaDensityFloor,
       dumkaDensityCeiling,
+      dumkaComplexityFloor,
+      dumkaComplexityCeiling,
+      dumkaPlacementBias,
       channelAccentRules,
       channelPositionRules,
       channelHocketChannels,

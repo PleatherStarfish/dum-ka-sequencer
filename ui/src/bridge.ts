@@ -1488,6 +1488,7 @@ export type DirectiveFamily =
   | "fragment"
   | "consolidate"
   | "euclid"
+  | "morph"
   | "stochastic";
 
 export type DirectiveRotateDirection = "earlier" | "later";
@@ -1524,6 +1525,15 @@ export interface DirectiveOptions {
   /** Paired per-directive density corridor override. Both are null or set. */
   densityFloor: number | null;
   densityCeiling: number | null;
+  /** Paired per-directive attack-depth corridor override, in milli-units. */
+  complexityFloor: number | null;
+  complexityCeiling: number | null;
+  /** Global geometric placement bias override, from metric (0) to void (100). */
+  placementBias: number | null;
+  /** Optional refined-lattice level filter for this directive. */
+  subdivisionLevel: number | null;
+  /** Required target notation for Morph; null for every other family. */
+  morphTarget: string | null;
   euclidMaxRun: number | null;
   euclidInvert: number | null;
   euclidRestPolicy: DirectiveEuclidRestPolicy | null;
@@ -1574,6 +1584,14 @@ export interface DumkaGeneratorParams {
   densityFloor: number;
   /** Maximum onset density as a percent of structural grid slots. */
   densityCeiling: number;
+  /** Prime refinement levels the evolution fold may explore. */
+  subdivisionPalette: number[];
+  /** Attack-depth floor in fixed-point milli-units. */
+  complexityFloor: number;
+  /** Attack-depth ceiling in fixed-point milli-units. */
+  complexityCeiling: number;
+  /** Blend from Barlow metric rank (0) to geometric void seeking (100). */
+  placementBias: number;
   /** Barlow candidate-pool temperature: 0 strict rank order, 100 uniform. */
   barlowTemperature: number;
   /** Per-family operator weights; defaults 3/3/2/0/0 keep the historical
@@ -1651,6 +1669,16 @@ export interface GeneratorPreview {
   /** Backend-owned cycle-effective density rail after automation and active
    * directive overrides. Absent for other generators and legacy responses. */
   densityCorridor?: DensityCorridorRange | null;
+  /** Fold lattice after applying the authored subdivision palette. */
+  workingSubdivision?: number | null;
+  /** Backend-owned attack-depth rail after automation and directive overrides. */
+  complexityCorridor?: ComplexityCorridorRange | null;
+  /** Realized Barlow-indigestibility attack depth for this cycle. */
+  stateComplexityMilli?: number | null;
+  /** Insight-only normalized entropy of the realized attack denominators.
+   * This describes how broadly the current working grid is being used; it is
+   * deliberately not a corridor or an evolution control. */
+  stateDepthDiversityMilli?: number | null;
   /** Whole-cycle realized perceptual distance: this cycle's final state vs
    * the previous cycle's, from the same fold — the calibration readout the
    * Evolve editor plots. Absent for other generators, disabled resolution,
@@ -1668,6 +1696,11 @@ export interface DensityCorridorRange {
   ceiling: number;
 }
 
+export interface ComplexityCorridorRange {
+  floor: number;
+  ceiling: number;
+}
+
 export type DirectiveSkip =
   | "none"
   | "orphanedScope"
@@ -1681,6 +1714,11 @@ export interface DensityCorridorClamp {
   densityPercent: number;
 }
 
+export interface ComplexityCorridorClamp {
+  limit: DensityCorridorLimit;
+  complexityMilli: number;
+}
+
 export interface DirectiveTraceEntry {
   cycle: number;
   directiveId: number;
@@ -1690,6 +1728,8 @@ export interface DirectiveTraceEntry {
   skipped: DirectiveSkip;
   /** Independent of skip: a corridor may clamp work before projection does. */
   corridorClamp?: DensityCorridorClamp | null;
+  /** Independent attack-depth rail clamp; may coexist with density/projection. */
+  complexityCorridorClamp?: ComplexityCorridorClamp | null;
   /** Backend-measured incremental change made by this directive on this cycle,
    * present for perceptual mode. This is not the final whole-cycle distance
    * when multiple rows are active. */
@@ -2426,6 +2466,10 @@ export async function generatorPreview(
     spans: preview.spans,
     trace: preview.trace ?? [],
     densityCorridor: preview.densityCorridor ?? null,
+    workingSubdivision: preview.workingSubdivision ?? null,
+    complexityCorridor: preview.complexityCorridor ?? null,
+    stateComplexityMilli: preview.stateComplexityMilli ?? null,
+    stateDepthDiversityMilli: preview.stateDepthDiversityMilli ?? null,
     cycleDistance: preview.cycleDistance ?? null,
   };
 }

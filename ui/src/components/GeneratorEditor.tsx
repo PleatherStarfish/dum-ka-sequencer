@@ -1,12 +1,23 @@
 import { useMemo, useState } from "react";
 import type { EvolutionDirective, GeneratorConfig } from "../bridge";
-import { GENERATOR_DENSITY_AUTOMATION_TARGET } from "../automationTargets";
+import {
+  DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
+  DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET,
+  DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET,
+  GENERATOR_DENSITY_AUTOMATION_TARGET,
+} from "../automationTargets";
 import {
   analyzeDumkaPattern,
+  compileDumkaPattern,
   deriveDumkaBeatSlotCounts,
+  DUMKA_MAX_SUBDIVISION,
+  DUMKA_SUBDIVISION_LEVELS,
+  normalizeDumkaSubdivisionPalette,
+  workingDumkaSubdivision,
   type DumkaOpWeights,
   type DumkaRequiredStructure,
 } from "../dumkaPattern";
+import { geometricPlacementProfile } from "../dumkaMetrics";
 import { EvolutionPanels } from "./EvolutionPanels";
 import { useEditorDraftLifecycle } from "../editorDraftFlush";
 import { NumericField } from "../NumericField";
@@ -49,6 +60,12 @@ export interface GeneratorEditorProps {
   dumkaDriftLeash: number;
   dumkaDensityFloor: number;
   dumkaDensityCeiling: number;
+  dumkaSubdivisionPalette?: readonly number[];
+  dumkaComplexityFloor?: number;
+  dumkaComplexityCeiling?: number;
+  dumkaPlacementBias?: number;
+  /** Insight-only denominator diversity from the currently displayed preview. */
+  dumkaStateDepthDiversityMilli?: number | null;
   /** Rust-side preview error for the committed pattern, when any. */
   dumkaPreviewError: string | null;
   dumkaRequired: DumkaRequiredStructure | null;
@@ -75,6 +92,10 @@ export interface GeneratorEditorProps {
   setDumkaDriftLeash: React.Dispatch<React.SetStateAction<number>>;
   setDumkaDensityFloor: React.Dispatch<React.SetStateAction<number>>;
   setDumkaDensityCeiling: React.Dispatch<React.SetStateAction<number>>;
+  setDumkaSubdivisionPalette?: React.Dispatch<React.SetStateAction<number[]>>;
+  setDumkaComplexityFloor?: React.Dispatch<React.SetStateAction<number>>;
+  setDumkaComplexityCeiling?: React.Dispatch<React.SetStateAction<number>>;
+  setDumkaPlacementBias?: React.Dispatch<React.SetStateAction<number>>;
   dumkaBarlowTemperature: number;
   setDumkaBarlowTemperature: React.Dispatch<React.SetStateAction<number>>;
   dumkaFillComplexity: number;
@@ -158,6 +179,11 @@ export function GeneratorEditor({
   dumkaDriftLeash,
   dumkaDensityFloor,
   dumkaDensityCeiling,
+  dumkaSubdivisionPalette = [],
+  dumkaComplexityFloor = 0,
+  dumkaComplexityCeiling = 100_000,
+  dumkaPlacementBias = 0,
+  dumkaStateDepthDiversityMilli = null,
   dumkaPreviewError,
   dumkaRequired,
   dumkaStructureReady,
@@ -178,6 +204,10 @@ export function GeneratorEditor({
   setDumkaDriftLeash,
   setDumkaDensityFloor,
   setDumkaDensityCeiling,
+  setDumkaSubdivisionPalette,
+  setDumkaComplexityFloor,
+  setDumkaComplexityCeiling,
+  setDumkaPlacementBias,
   dumkaBarlowTemperature,
   setDumkaBarlowTemperature,
   dumkaFillComplexity,
@@ -204,6 +234,33 @@ export function GeneratorEditor({
   const dumkaRollSlotsPerBeat = dumkaBeatSlotAnalysis.ok
     ? dumkaBeatSlotAnalysis.slotsPerBeat
     : null;
+  const normalizedPalette = useMemo(
+    () => normalizeDumkaSubdivisionPalette(dumkaSubdivisionPalette),
+    [dumkaSubdivisionPalette]
+  );
+  const dumkaWorkingSubdivision = dumkaRequired
+    ? workingDumkaSubdivision(
+        dumkaRequired.subdivision,
+        normalizedPalette
+      )
+    : null;
+  const geometricProfile = useMemo(() => {
+    if (dumkaWorkingSubdivision === null) return [];
+    const compiled = compileDumkaPattern(dumkaPattern);
+    return compiled.ok
+      ? geometricPlacementProfile(
+          compiled.compiled,
+          dumkaWorkingSubdivision
+        )
+      : [];
+  }, [dumkaPattern, dumkaWorkingSubdivision]);
+  const paletteFactor = normalizedPalette.reduce(
+    (product, level) => product * level,
+    1
+  );
+  const paletteOverCap =
+    dumkaWorkingSubdivision !== null &&
+    dumkaWorkingSubdivision > DUMKA_MAX_SUBDIVISION;
   // A compatible-but-larger authored Subdivision (e.g. 35 over a pattern
   // needing 5) plays correctly but scales every generator cell's matra
   // count and densifies the timeline; surface the factor and offer the
@@ -212,14 +269,15 @@ export function GeneratorEditor({
     dumkaStructureReady &&
     dumkaRequired !== null &&
     dumkaAuthoredSubdivision !== null &&
-    dumkaAuthoredSubdivision !== dumkaRequired.subdivision &&
-    dumkaAuthoredSubdivision % dumkaRequired.subdivision === 0
-      ? dumkaAuthoredSubdivision / dumkaRequired.subdivision
+    dumkaWorkingSubdivision !== null &&
+    dumkaAuthoredSubdivision !== dumkaWorkingSubdivision &&
+    dumkaAuthoredSubdivision % dumkaWorkingSubdivision === 0
+      ? dumkaAuthoredSubdivision / dumkaWorkingSubdivision
       : null;
   const subtitle =
     kind === "dumka"
       ? dumkaRequired
-        ? `Dum-Ka · ${dumkaRequired.cycleBeats} beats · ${dumkaRequired.subdivision}/beat`
+        ? `Dum-Ka · ${dumkaRequired.cycleBeats} beats · ${dumkaWorkingSubdivision ?? dumkaRequired.subdivision}/beat working grid`
         : "Dum-Ka · pattern error"
       : `Example · ${Math.round(densityPercent)}% density`;
   const planWindow = dumkaPlan.length
@@ -341,9 +399,13 @@ export function GeneratorEditor({
                 <div className="dumka-structure-row">
                   <span aria-label="Required structure">
                     {dumkaRequired
-                      ? `needs ${dumkaRequired.cycleBeats} beats · Subdivision ${dumkaRequired.subdivision}${
+                      ? `needs ${dumkaRequired.cycleBeats} beats · Subdivision ${dumkaRequired.subdivision} · working ${dumkaWorkingSubdivision}${
+                          paletteFactor > 1
+                            ? ` (palette ×${paletteFactor})`
+                            : ""
+                        }${
                           dumkaOversizedMultiple !== null
-                            ? ` · authored ${dumkaAuthoredSubdivision} = ${dumkaOversizedMultiple} × ${dumkaRequired.subdivision} (compatible; cells show ${dumkaOversizedMultiple}× matra counts)`
+                            ? ` · authored ${dumkaAuthoredSubdivision} = ${dumkaOversizedMultiple} × ${dumkaWorkingSubdivision} (compatible; cells show ${dumkaOversizedMultiple}× matra counts)`
                             : ""
                         }`
                       : "fix the pattern to compute its structure"}
@@ -353,16 +415,72 @@ export function GeneratorEditor({
                     disabled={
                       playbackStructureLocked ||
                       dumkaRequired === null ||
+                      paletteOverCap ||
                       (dumkaStructureReady && dumkaOversizedMultiple === null)
                     }
                     onClick={onApplyDumkaStructure}
                   >
                     {dumkaStructureReady
                       ? dumkaOversizedMultiple !== null
-                        ? `Simplify to ${dumkaRequired?.subdivision}`
+                        ? `Simplify to ${dumkaWorkingSubdivision}`
                         : "Structure ready"
                       : "Apply structure"}
                   </button>
+                </div>
+                <div
+                  className="dumka-depth-palette"
+                  role="group"
+                  aria-label="Subdivision palette"
+                >
+                  <span>
+                    <b>Depth palette</b>
+                    <em>prime refinements</em>
+                  </span>
+                  <div>
+                    {DUMKA_SUBDIVISION_LEVELS.map((level) => {
+                      const selected = normalizedPalette.includes(level);
+                      return (
+                        <button
+                          type="button"
+                          key={level}
+                          className={selected ? "is-active" : undefined}
+                          aria-label={`Subdivision level ${level}`}
+                          aria-pressed={selected}
+                          disabled={
+                            playbackStructureLocked ||
+                            !setDumkaSubdivisionPalette ||
+                            (!selected && normalizedPalette.length >= 2)
+                          }
+                          onClick={() =>
+                            setDumkaSubdivisionPalette?.(
+                              selected
+                                ? normalizedPalette.filter(
+                                    (candidate) => candidate !== level
+                                  )
+                                : normalizeDumkaSubdivisionPalette([
+                                    ...normalizedPalette,
+                                    level,
+                                  ])
+                            )
+                          }
+                        >
+                          ×{level}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <output>
+                    {dumkaWorkingSubdivision === null
+                      ? "Working grid unavailable"
+                      : `Working Subdivision ${dumkaWorkingSubdivision}`}
+                  </output>
+                  {paletteOverCap ? (
+                    <p role="alert">
+                      Working Subdivision {dumkaWorkingSubdivision} exceeds the
+                      platform maximum {DUMKA_MAX_SUBDIVISION}. Remove a level
+                      or simplify the pattern.
+                    </p>
+                  ) : null}
                 </div>
                 <div
                   className="dumka-roll-row"
@@ -478,6 +596,148 @@ export function GeneratorEditor({
                 </span>
                 <strong>Open Evolve</strong>
               </button>
+              <fieldset className="dumka-depth-controls">
+                <legend>Depth</legend>
+                {dumkaStateDepthDiversityMilli !== null ? (
+                  <div
+                    className="dumka-depth-insight"
+                    role="status"
+                    aria-label={`Depth diversity ${(dumkaStateDepthDiversityMilli / 1_000).toFixed(1)}`}
+                  >
+                    <span>Depth diversity</span>
+                    <output>
+                      {(dumkaStateDepthDiversityMilli / 1_000).toFixed(1)}
+                    </output>
+                    <em>current preview</em>
+                  </div>
+                ) : null}
+                <div className="dumka-depth-control-head">
+                  <span>
+                    <b>Complexity corridor</b>
+                    <em>attack-point depth, 0.0–100.0</em>
+                  </span>
+                  <output>
+                    {(dumkaComplexityFloor / 1_000).toFixed(1)}–
+                    {(dumkaComplexityCeiling / 1_000).toFixed(1)}
+                  </output>
+                </div>
+                <div className="dumka-depth-field-grid">
+                  <label>
+                    <span>Floor</span>
+                    <NumericField
+                      aria-label="Complexity floor"
+                      min={0}
+                      max={dumkaComplexityCeiling / 1_000}
+                      step={0.1}
+                      numericMode="decimal"
+                      size="compact"
+                      data-automation-target={DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET}
+                      value={dumkaComplexityFloor / 1_000}
+                      disabled={
+                        playbackStructureLocked || !setDumkaComplexityFloor
+                      }
+                      onValueCommit={(value) =>
+                        setDumkaComplexityFloor?.(
+                          Math.min(
+                            dumkaComplexityCeiling,
+                            Math.max(0, Math.round(value * 1_000))
+                          )
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Ceiling</span>
+                    <NumericField
+                      aria-label="Complexity ceiling"
+                      min={dumkaComplexityFloor / 1_000}
+                      max={100}
+                      step={0.1}
+                      numericMode="decimal"
+                      size="compact"
+                      data-automation-target={DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET}
+                      value={dumkaComplexityCeiling / 1_000}
+                      disabled={
+                        playbackStructureLocked || !setDumkaComplexityCeiling
+                      }
+                      onValueCommit={(value) =>
+                        setDumkaComplexityCeiling?.(
+                          Math.max(
+                            dumkaComplexityFloor,
+                            Math.min(100_000, Math.round(value * 1_000))
+                          )
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+                <label className="dumka-placement-bias">
+                  <span>
+                    <b>Placement</b>
+                    <em>metric</em>
+                    <output>{Math.round(dumkaPlacementBias)}%</output>
+                    <em>void</em>
+                  </span>
+                  <SliderField
+                    aria-label="Geometric placement bias"
+                    min={0}
+                    max={100}
+                    step={1}
+                    railSize="full"
+                    value={dumkaPlacementBias}
+                    data-automation-target={DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET}
+                    disabled={
+                      playbackStructureLocked || !setDumkaPlacementBias
+                    }
+                    onChange={(event) =>
+                      setDumkaPlacementBias?.(
+                        clamp(event.currentTarget.valueAsNumber, 0, 100)
+                      )
+                    }
+                  />
+                </label>
+                <div
+                  className="dumka-geometric-field"
+                  role="img"
+                  aria-label={`Placement blend: ${Math.round(
+                    100 - dumkaPlacementBias
+                  )}% metric, ${Math.round(dumkaPlacementBias)}% geometric void seeking`}
+                  style={
+                    {
+                      "--dumka-placement-bias": `${clamp(
+                        dumkaPlacementBias,
+                        0,
+                        100
+                      )}%`,
+                      "--dumka-field-slots": Math.max(
+                        1,
+                        geometricProfile.length
+                      ),
+                    } as React.CSSProperties
+                  }
+                >
+                  {geometricProfile.map((preference, slot) => (
+                    <i
+                      key={slot}
+                      aria-hidden="true"
+                      style={
+                        {
+                          "--dumka-field-height": `${Math.max(
+                            8,
+                            Math.round(preference / 10)
+                          )}%`,
+                        } as React.CSSProperties
+                      }
+                    />
+                  ))}
+                  <b aria-hidden="true" />
+                </div>
+                <p>
+                  The corridor limits refined attacks. Placement blends metric
+                  strength with gap seeking; the evolution curve still controls
+                  how quickly legal changes arrive.
+                </p>
+              </fieldset>
               <EvolutionPanels
                 pattern={dumkaPattern}
                 structureLocked={playbackStructureLocked}

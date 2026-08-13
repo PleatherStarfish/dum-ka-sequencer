@@ -34,6 +34,14 @@ pub const MAX_PERCEPTUAL_OPERATIONS: u32 = 256;
 /// [`MAX_PERCEPTUAL_OPERATIONS`] bounds a far historical preview without
 /// making ordinary calibration too coarse.
 pub const MAX_PERCEPTUAL_SCORING_WORK: u64 = 4_096;
+/// Maximum microsteps one Morph target may reserve. Morph recomputes its
+/// deterministic transport frontier after each accepted step, so this cap is
+/// both a gradualism bound and a hostile-patch work bound.
+pub const MAX_MORPH_MICROSTEPS: u32 = 256;
+/// Maximum onset-pair evaluations admitted by one Morph alignment. Equal
+/// cardinality enumerates every cyclic pairing; unequal cardinality runs one
+/// edit-DP per target rotation.
+pub const MAX_MORPH_ALIGNMENT_WORK: u64 = 65_536;
 /// Sentinel used by trace rows produced by the un-authored stochastic layer.
 /// Authored directive IDs validate as positive, so this cannot collide with
 /// score rows. The legacy layer emits it only when a density-corridor clamp
@@ -309,6 +317,9 @@ pub enum DirectiveFamily {
     Consolidate,
     Euclid,
     Stochastic,
+    /// Directed, lattice-exact transport toward an authored Dum-Ka target.
+    /// Morph is directive-only and never enters the stochastic family band.
+    Morph,
 }
 
 impl DirectiveFamily {
@@ -323,12 +334,13 @@ impl DirectiveFamily {
             Self::Consolidate => "consolidate",
             Self::Euclid => "euclid",
             Self::Stochastic => "stochastic",
+            Self::Morph => "morph",
         }
     }
 }
 
 /// Family-specific overrides. `None` inherits the corresponding global knob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectiveOptions {
     #[serde(default)]
@@ -347,6 +359,21 @@ pub struct DirectiveOptions {
     pub density_floor: Option<u32>,
     #[serde(default)]
     pub density_ceiling: Option<u32>,
+    /// Optional directive-local attack-depth corridor, in normalized milli.
+    /// Like density, the pair is all-or-nothing.
+    #[serde(default)]
+    pub complexity_floor: Option<u32>,
+    #[serde(default)]
+    pub complexity_ceiling: Option<u32>,
+    /// Barlow/geometric placement blend. Zero is the historical Barlow order.
+    #[serde(default)]
+    pub placement_bias: Option<u32>,
+    /// Optional palette-prime filter for candidate positions.
+    #[serde(default)]
+    pub subdivision_level: Option<u32>,
+    /// Required target notation for the Morph family.
+    #[serde(default)]
+    pub morph_target: Option<String>,
     #[serde(default)]
     pub rotate_direction: RotateDirection,
 }
@@ -458,6 +485,23 @@ pub struct DensityCorridorClamp {
     pub density_percent: u32,
 }
 
+/// Which side of the active attack-depth corridor prevented an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ComplexityCorridorLimit {
+    Floor,
+    Ceiling,
+}
+
+/// Additive depth-rail truth. Projection, density, and complexity may all be
+/// reported for the same failed frontier without hiding one another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComplexityCorridorClamp {
+    pub limit: ComplexityCorridorLimit,
+    pub complexity_milli: u32,
+}
+
 /// Additive truth for an opt-in perceptually paced transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -485,6 +529,8 @@ pub struct DirectiveTraceEntry {
     pub skipped: DirectiveSkip,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corridor_clamp: Option<DensityCorridorClamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_corridor_clamp: Option<ComplexityCorridorClamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perceptual: Option<PerceptualPacingTrace>,
 }
@@ -754,6 +800,7 @@ pub(crate) fn validate_plan(
             ("euclidInvert", directive.options.euclid_invert),
             ("densityFloor", directive.options.density_floor),
             ("densityCeiling", directive.options.density_ceiling),
+            ("placementBias", directive.options.placement_bias),
         ] {
             if let Some(value) = value.filter(|value| *value > 100) {
                 return Err(GeneratorError::DumkaPlanInvalid {
@@ -780,6 +827,64 @@ pub(crate) fn validate_plan(
                 return Err(GeneratorError::DumkaPlanInvalid {
                     message: format!(
                         "directive {} densityFloor and densityCeiling must both be set or both be omitted",
+                        directive.id
+                    ),
+                });
+            }
+            _ => {}
+        }
+        match (
+            directive.options.complexity_floor,
+            directive.options.complexity_ceiling,
+        ) {
+            (Some(floor), Some(ceiling)) if floor > ceiling => {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} complexityFloor must be at most complexityCeiling, got {floor} > {ceiling}",
+                        directive.id
+                    ),
+                });
+            }
+            (Some(floor), Some(ceiling))
+                if floor > MAX_PERCEPTUAL_DISTANCE_MILLI
+                    || ceiling > MAX_PERCEPTUAL_DISTANCE_MILLI =>
+            {
+                let (name, value) = if floor > MAX_PERCEPTUAL_DISTANCE_MILLI {
+                    ("complexityFloor", floor)
+                } else {
+                    ("complexityCeiling", ceiling)
+                };
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} {name} must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {value}",
+                        directive.id
+                    ),
+                });
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} complexityFloor and complexityCeiling must both be set or both be omitted",
+                        directive.id
+                    ),
+                });
+            }
+            _ => {}
+        }
+        match (directive.family, directive.options.morph_target.as_deref()) {
+            (DirectiveFamily::Morph, Some(target)) if !target.trim().is_empty() => {}
+            (DirectiveFamily::Morph, _) => {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} morph requires options.morphTarget",
+                        directive.id
+                    ),
+                });
+            }
+            (_, Some(_)) => {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} morphTarget is only valid for morph",
                         directive.id
                     ),
                 });
@@ -1143,6 +1248,7 @@ mod tests {
                 limit: DensityCorridorLimit::Ceiling,
                 density_percent: 60,
             }),
+            complexity_corridor_clamp: None,
             perceptual: None,
         };
         assert_eq!(
@@ -1169,6 +1275,7 @@ mod tests {
             applied: 0,
             skipped: DirectiveSkip::Exhausted,
             corridor_clamp: None,
+            complexity_corridor_clamp: None,
             perceptual: Some(PerceptualPacingTrace {
                 model_version: PerceptualModelVersion::V1,
                 actual_milli: 0,

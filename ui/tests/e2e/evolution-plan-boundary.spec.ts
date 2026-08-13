@@ -79,3 +79,132 @@ test("mock fails closed for enabled plans but preserves cycle zero and disabled 
     "mock dumka preview cannot resolve evolving cycle 1; use the real-backend lane"
   );
 });
+
+test("mock validates depth and Morph plan fields before any folded cycle", async ({
+  page,
+}) => {
+  await openCaesura(page, {
+    setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
+  });
+
+  const errors = await page.evaluate(async ({ pattern }) => {
+    const driver = window.__CAESURA_E2E_DRIVER__;
+    if (!driver) throw new Error("missing e2e driver");
+    const spans = [1, 2, 3, 4].map((spanId) => ({
+      spanId,
+      spanLen: 4,
+      label: null,
+      sectionIndex: 1,
+      subdivision: 4,
+    }));
+    const directive = {
+      id: 41,
+      order: 0,
+      enabled: true,
+      fromCycle: 13,
+      toCycle: 13,
+      family: "barlowAdd",
+      pacing: "perCycle",
+      intensity: 15,
+      scope: null,
+      options: { rotateDirection: "earlier" },
+    };
+    const request = (generator: Record<string, unknown>, cycle = 0) => ({
+      spans,
+      enabled: true,
+      generator: {
+        kind: "dumka",
+        pattern,
+        evolutionRate: 0,
+        planLengthCycles: 20,
+        seedMode: { type: "locked", seed: 7 },
+        ...generator,
+      },
+      cycle,
+      cycleBeats: 4,
+      automation: null,
+      trackId: null,
+    });
+    const message = async (
+      generator: Record<string, unknown>,
+      cycle = 0
+    ) => {
+      try {
+        await driver.invoke("generator_preview", {
+          request: request(generator, cycle),
+        });
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    };
+    return {
+      complexityFold: await message(
+        {
+          complexityFloor: 1,
+          complexityCeiling: 100_000,
+          plan: [],
+        },
+        1
+      ),
+      unpairedComplexity: await message({
+        plan: [
+          {
+            ...directive,
+            options: {
+              ...directive.options,
+              complexityFloor: 12_000,
+            },
+          },
+        ],
+      }),
+      missingDepthLevel: await message({
+        subdivisionPalette: [],
+        plan: [
+          {
+            ...directive,
+            options: {
+              ...directive.options,
+              subdivisionLevel: 3,
+            },
+          },
+        ],
+      }),
+      disabledMissingDepthLevel: await message({
+        subdivisionPalette: [],
+        plan: [
+          {
+            ...directive,
+            enabled: false,
+            options: {
+              ...directive.options,
+              subdivisionLevel: 3,
+            },
+          },
+        ],
+      }),
+      missingMorphTarget: await message({
+        plan: [
+          {
+            ...directive,
+            family: "morph",
+            options: { ...directive.options, morphTarget: null },
+          },
+        ],
+      }),
+    };
+  }, { pattern: PATTERN });
+
+  expect(errors).toEqual({
+    complexityFold:
+      "mock dumka preview cannot resolve evolving cycle 1; use the real-backend lane",
+    unpairedComplexity:
+      "dumka plan invalid: directive 41 complexityFloor and complexityCeiling must both be set or both be omitted",
+    missingDepthLevel:
+      "dumka plan invalid: directive 41 subdivisionLevel 3 does not exist on working Subdivision 4",
+    disabledMissingDepthLevel:
+      "dumka plan invalid: directive 41 subdivisionLevel 3 does not exist on working Subdivision 4",
+    missingMorphTarget:
+      "dumka plan invalid: directive 41 morph requires options.morphTarget",
+  });
+});

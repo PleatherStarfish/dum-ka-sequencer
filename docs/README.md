@@ -46,6 +46,10 @@ For platform work:
   protocol, academic basis, limitations, and focused benchmarks.
 - [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md) — the M3.9
   root-cause record and delivered tie-handshake/density-corridor contract.
+- [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md) — the M3.95 working lattice,
+  Barlow-indigestibility complexity rail, price-first Promote/Demote flow,
+  insight-only depth diversity, fixed-point geometric placement, and directed
+  Morph contract.
 - [ADDING_A_GENERATOR.md](ADDING_A_GENERATOR.md) — how to add a generator without
   creating a second preview or transport path.
 - [SECTIONS_SUBDIVISIONS_LOGIC_SPEC.md](SECTIONS_SUBDIVISIONS_LOGIC_SPEC.md) —

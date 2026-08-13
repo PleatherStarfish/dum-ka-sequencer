@@ -83,6 +83,13 @@ interface PlannedGeneratorPreview {
     history: string[];
   };
   spans: SnapshotRhythmSpan[];
+  workingSubdivision?: number | null;
+  complexityCorridor?: {
+    floor: number;
+    ceiling: number;
+  } | null;
+  stateComplexityMilli?: number | null;
+  stateDepthDiversityMilli?: number | null;
   trace: Array<{
     cycle: number;
     directiveId: number;
@@ -337,7 +344,7 @@ test.describe("real backend parity", () => {
     await field.fill(pattern);
     await field.blur();
     await expect(page.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 20"
+      "needs 4 beats · Subdivision 20 · working 20"
     );
     await page.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -399,7 +406,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 1"
+      "needs 4 beats · Subdivision 1 · working 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -563,7 +570,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 1"
+      "needs 4 beats · Subdivision 1 · working 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -814,7 +821,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 8 beats · Subdivision 1"
+      "needs 8 beats · Subdivision 1 · working 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -960,6 +967,321 @@ test.describe("real backend parity", () => {
     expect(playbackDriver.lastTrackPlaybackRequest?.generator).toEqual(
       transitionRequest.generator
     );
+    expect(playbackDriver.invokeErrors).toEqual([]);
+  });
+
+  test("Depth palette and a gentle Morph keep refined stopped preview and playback identical", async ({
+    page,
+  }) => {
+    test.skip(!backend.midiReady, "transport unavailable in this environment");
+    test.setTimeout(120_000);
+
+    await openCaesuraReal(page);
+
+    // Put the authored section on the eventual working grid first. That keeps
+    // every intermediate UI edit structurally valid while the two palette
+    // chips are toggled independently, so any invoke failure below is real.
+    const boundaries = await openMainEditor(page, "boundaries");
+    const firstSection = boundaries.getByLabel("Section 1 inspector");
+    await fillNumeric(numberInputByLabel(firstSection, "Subdivision"), "6");
+    await closeMainEditor(page);
+    await page.waitForFunction(() => {
+      const state = window.__CAESURA_E2E_STATE__ as E2eState | undefined;
+      return Boolean(
+        state?.timelinePreviewReady &&
+          state.preview?.beatGatis.length === 4 &&
+          state.preview.beatGatis.every((gati: number) => gati === 6)
+      );
+    });
+
+    const seedPattern = "x x x x";
+    const morphTarget = "[x x] [x x x] x x";
+    const generator = await openMainEditor(page, "generator");
+    await generator.getByLabel("Generator kind").selectOption("dumka");
+    const pattern = generator.getByLabel("Dum-Ka pattern");
+    await pattern.fill(seedPattern);
+    await pattern.blur();
+    await generator
+      .getByRole("button", { name: "Subdivision level 2" })
+      .click();
+    await generator
+      .getByRole("button", { name: "Subdivision level 3" })
+      .click();
+    await expect(generator.getByLabel("Required structure")).toHaveText(
+      "needs 4 beats · Subdivision 1 · working 6 (palette ×6)"
+    );
+    await expect(
+      generator.getByRole("button", { name: "Structure ready" })
+    ).toBeDisabled();
+    await fillNumeric(generator.getByLabel("Complexity ceiling"), "55");
+    await fillNumeric(
+      generator.getByRole("slider", { name: "Geometric placement bias" }),
+      "65"
+    );
+    await expect(
+      generator.getByRole("img", {
+        name: "Placement blend: 35% metric, 65% geometric void seeking",
+      })
+    ).toBeVisible();
+    await closeMainEditor(page);
+
+    const evolve = await openMainEditor(page, "evolve");
+    const addMorph = evolve.getByRole("button", { name: "Add Morph pin" });
+    await addMorph.focus();
+    await addMorph.press("Enter");
+    await expect(
+      evolve.getByRole("button", { name: "Morph, cycle 1, 25%" })
+    ).toBeVisible();
+    await evolve.getByLabel("Morph target pattern").fill(morphTarget);
+    await expect(
+      evolve.getByText("4 beats · Subdivision 6 · exact on working 6")
+    ).toBeVisible();
+    await evolve.getByRole("button", { name: "Smooth across 4 cycles" }).click();
+    await fillNumeric(evolve.getByLabel("Directive intensity"), "100");
+    await expect(evolve.getByLabel("Directive transition")).toHaveValue(
+      "easeInOut"
+    );
+    await expect(
+      evolve.getByRole("button", {
+        name: "Morph, cycles 1 through 4, 100%, gentle transition",
+      })
+    ).toBeVisible();
+
+    type DepthMorphPlanRow = {
+      family?: string;
+      fromCycle?: number;
+      toCycle?: number;
+      pacing?: string;
+      intensity?: number;
+      options?: { morphTarget?: string | null };
+    };
+    type DepthMorphGenerator = {
+      kind?: string;
+      pattern?: string;
+      subdivisionPalette?: number[];
+      complexityFloor?: number;
+      complexityCeiling?: number;
+      placementBias?: number;
+      plan?: DepthMorphPlanRow[];
+    };
+    type DepthMorphRequest = Record<string, unknown> & {
+      cycle?: number;
+      generator?: DepthMorphGenerator;
+    };
+    const requestMatches = (request: DepthMorphRequest | undefined) => {
+      const row = request?.generator?.plan?.[0];
+      return (
+        request?.cycle === 4 &&
+        request.generator?.kind === "dumka" &&
+        request.generator.pattern === seedPattern &&
+        JSON.stringify(request.generator.subdivisionPalette) === "[2,3]" &&
+        request.generator.complexityFloor === 0 &&
+        request.generator.complexityCeiling === 55_000 &&
+        request.generator.placementBias === 65 &&
+        request.generator.plan?.length === 1 &&
+        row?.family === "morph" &&
+        row.fromCycle === 1 &&
+        row.toCycle === 4 &&
+        row.pacing === "easeInOut" &&
+        row.intensity === 100 &&
+        row.options?.morphTarget === morphTarget
+      );
+    };
+
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        return driver.calls.some((call) => {
+          if (call.command !== "generator_preview") return false;
+          return requestMatches(
+            (call.args as { request?: DepthMorphRequest }).request
+          );
+        });
+      })
+      .toBe(true);
+
+    const authoredDriver = await readRealDriverState(page);
+    const depthCall = authoredDriver.calls
+      .filter((call) => call.command === "generator_preview")
+      .findLast((call) =>
+        requestMatches((call.args as { request?: DepthMorphRequest }).request)
+      );
+    expect(depthCall).toBeDefined();
+    const depthRequest = (
+      depthCall!.args as { request: DepthMorphRequest }
+    ).request;
+    const previews: PlannedGeneratorPreview[] = [];
+    for (let cycle = 0; cycle <= 4; cycle += 1) {
+      previews.push(
+        await backend.invoke<PlannedGeneratorPreview>("generator_preview", {
+          request: { ...depthRequest, cycle },
+        })
+      );
+    }
+
+    expect(previews.map((preview) => preview.workingSubdivision)).toEqual([
+      6, 6, 6, 6, 6,
+    ]);
+    expect(
+      previews.map((preview) => preview.complexityCorridor)
+    ).toEqual([
+      { floor: 0, ceiling: 55_000 },
+      { floor: 0, ceiling: 55_000 },
+      { floor: 0, ceiling: 55_000 },
+      { floor: 0, ceiling: 55_000 },
+      { floor: 0, ceiling: 55_000 },
+    ]);
+    const finalPreview = previews[4]!;
+    expect(finalPreview.stateComplexityMilli).toBeGreaterThan(0);
+    expect(finalPreview.stateComplexityMilli).toBeLessThanOrEqual(55_000);
+    expect(finalPreview.stateDepthDiversityMilli).toBeGreaterThan(0);
+    expect(finalPreview.stateDepthDiversityMilli).toBeLessThanOrEqual(100_000);
+
+    const soundingOnsets = (preview: PlannedGeneratorPreview) => {
+      let spanStart = 0;
+      const onsets: number[] = [];
+      for (const span of preview.spans) {
+        for (const cell of span.cells) {
+          if (!cell.rest && !cell.tiedFromPrevious) {
+            onsets.push(spanStart + cell.start);
+          }
+        }
+        spanStart += span.spanLen;
+      }
+      return { onsets, totalSlots: spanStart };
+    };
+    expect(soundingOnsets(finalPreview)).toEqual({
+      onsets: [0, 3, 6, 8, 10, 12, 18],
+      totalSlots: 24,
+    });
+    expect(
+      finalPreview.spans.map((span) =>
+        span.cells.map((cell) => ({
+          start: cell.start,
+          len: cell.len,
+          rest: cell.rest,
+        }))
+      )
+    ).toEqual([
+      [
+        { start: 0, len: 3, rest: false },
+        { start: 3, len: 3, rest: false },
+      ],
+      [
+        { start: 0, len: 2, rest: false },
+        { start: 2, len: 2, rest: false },
+        { start: 4, len: 2, rest: false },
+      ],
+      [{ start: 0, len: 6, rest: false }],
+      [{ start: 0, len: 6, rest: false }],
+    ]);
+
+    const morphSteps = previews.slice(1).map((preview) => preview.trace[0]);
+    expect(
+      morphSteps.every(
+        (entry) =>
+          entry?.family === "morph" &&
+          entry.applied === entry.requested &&
+          entry.skipped === "none"
+      )
+    ).toBe(true);
+    const appliedByCycle = morphSteps.map((entry) => entry?.applied ?? 0);
+    expect(appliedByCycle.filter((applied) => applied > 0).length).toBeGreaterThan(
+      1
+    );
+    expect(appliedByCycle[0]).toBeLessThan(
+      appliedByCycle.reduce((sum, applied) => sum + applied, 0)
+    );
+
+    const complexityLabel = `Cycle 4 complexity ${(finalPreview.stateComplexityMilli! / 1_000).toFixed(1)}, corridor 0.0 through 55.0, inside corridor`;
+    const diversityLabel = `Cycle 4 depth diversity ${(finalPreview.stateDepthDiversityMilli! / 1_000).toFixed(1)}`;
+    await expect(
+      evolve.getByRole("group", { name: complexityLabel })
+    ).toBeVisible();
+    await expect(evolve.getByLabel(diversityLabel)).toBeVisible();
+    await closeMainEditor(page);
+
+    const stoppedCycle = page.getByLabel("Stopped cycle selector");
+    const nextCycle = stoppedCycle.getByRole("button", {
+      name: "Inspect next stopped cycle",
+    });
+    for (let cycle = 2; cycle <= 4; cycle += 1) {
+      await nextCycle.click();
+      await expect(stoppedCycle.locator("output")).toHaveText(String(cycle));
+    }
+    await page.waitForFunction(() => {
+      const state = window.__CAESURA_E2E_STATE__ as E2eState | undefined;
+      return Boolean(
+        state?.timelineLayoutCycle === 4 &&
+          state.timelinePreviewReady &&
+          state.timelineRhythmReady &&
+          state.timelineLayerSourcesCoherent
+      );
+    });
+    await expect
+      .poll(async () => {
+        const driver = await readRealDriverState(page);
+        const request = driver.lastGeneratorPreviewRequest as
+          | DepthMorphRequest
+          | undefined;
+        const preview = driver.lastGeneratorPreview as
+          | PlannedGeneratorPreview
+          | null;
+        return (
+          requestMatches(request) &&
+          JSON.stringify(preview?.spans) === JSON.stringify(finalPreview.spans) &&
+          preview?.workingSubdivision === 6 &&
+          preview.stateComplexityMilli === finalPreview.stateComplexityMilli &&
+          preview.stateDepthDiversityMilli ===
+            finalPreview.stateDepthDiversityMilli
+        );
+      })
+      .toBe(true);
+
+    const stoppedGenerator = await openMainEditor(page, "generator");
+    await expect(
+      stoppedGenerator.getByLabel(
+        `Depth diversity ${(finalPreview.stateDepthDiversityMilli! / 1_000).toFixed(1)}`
+      )
+    ).toBeVisible();
+    await closeMainEditor(page);
+
+    await page.getByTestId("transport-play").click();
+    await waitForPlaying(page);
+    const realizedByCycle = new Map<number, SnapshotRhythmSpan[]>();
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await backend.invoke<RealSnapshot>(
+            "transport_get_snapshot"
+          );
+          for (let cycle = 1; cycle <= 4; cycle += 1) {
+            const spans = snapshot.realizedRhythmEvents
+              .filter((event) => event.cycle === cycle)
+              .map((event) => event.span)
+              .sort((left, right) => left.spanId - right.spanId);
+            if (spans.length === previews[cycle]!.spans.length) {
+              realizedByCycle.set(cycle, spans);
+            }
+          }
+          return realizedByCycle.size;
+        },
+        { timeout: 45_000, intervals: [250] }
+      )
+      .toBe(4);
+
+    for (let cycle = 1; cycle <= 4; cycle += 1) {
+      expect(realizedByCycle.get(cycle)).toEqual(
+        [...previews[cycle]!.spans].sort(
+          (left, right) => left.spanId - right.spanId
+        )
+      );
+    }
+    const playbackDriver = await readRealDriverState(page);
+    expect(playbackDriver.lastTrackPlaybackRequest?.generator).toEqual(
+      depthRequest.generator
+    );
+    expect(playbackDriver.lastTrackPlaybackRequest?.generatorEnabled).toBe(true);
     expect(playbackDriver.invokeErrors).toEqual([]);
   });
 
@@ -1259,7 +1581,7 @@ test.describe("real backend parity", () => {
     await field.fill(pattern);
     await field.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 2 beats · Subdivision 5"
+      "needs 2 beats · Subdivision 5 · working 5"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(

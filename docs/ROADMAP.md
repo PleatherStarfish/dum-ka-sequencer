@@ -77,7 +77,8 @@ Consolidate (its exact inverse), with a fillComplexity knob and interval
 choice ranked by the same indispensability tables as Add/Remove. Design
 note first: [DUMKA_FIGURES.md](DUMKA_FIGURES.md) (Mongeau–Sankoff
 fragmentation/consolidation; GTTM elaboration; kin.rhythmicator density).
-Finer-than-grid tuplets stay gated on the M6+ upsample platform extension.
+At M3.5 this remained limited to the seed grid; M3.95 later supplied an exact
+prime-refined working grid within the existing Subdivision-64 ceiling.
 
 ## M3.75 — The evolution score (delivered)
 
@@ -113,7 +114,7 @@ with corridor > plan > leash precedence and additive clamp trace. Transport
 production code remained untouched; the evidence and implementation contract live in
 [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md).
 
-## M3.95 — Depth: subdivision palettes, geometric placement, transport morphing (architecture ready)
+## M3.95 — Depth: subdivision palettes, geometric placement, transport morphing (implemented)
 
 Evolution escapes the seed's frozen lattice: an authored prime palette
 refines the fold's working grid (projection already accepts multiples —
@@ -122,8 +123,13 @@ material may exist, a fixed-point geometric placement field gives
 Add/Remove a void-seeking order blendable against Barlow (the
 syncopation-aware chooser), and an exact integer transport morph
 directive delivers directed gradual movement toward a target pattern.
-Phase 0 is clearing the outstanding M3.75–M3.9 audit findings. Full
-implementing-agent specification: [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
+Promote/Demote follows the cheapest positive depth-price step before
+displacement, preventing nearest-slot jumps straight to exotic composite
+denominators. An orthogonal normalized denominator-entropy readout exposes
+mixed-depth variety without making an uncalibrated diversity rail. Spectral
+placement is deliberately distinct from Bjorklund/Euclid and its agreement and
+divergence fingerprints are pinned separately. Full implementation reference:
+[DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
 
 ## M4 — Bass payload (the one platform extension)
 
@@ -142,7 +148,8 @@ transport cycle stays fixed. Design note first (`DUMKA_PHRASE_DRIFT.md`).
 ## M6+ — Unscheduled
 
 - DFT layer: evenness / perfect-balance meters; spectral leash.
-- Morphing toward a second target pattern.
+- Calibrated depth-diversity rail, if listener/audition evidence justifies
+  promoting the current insight-only entropy statistic.
 - Rotation canons across parallel tracks (per-track T_k).
 - Tiling-canon catalog (Vuza) for long-span structure.
 - Platform extensions only if proven necessary: integer upsample factor `k`

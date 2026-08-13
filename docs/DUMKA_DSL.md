@@ -51,9 +51,13 @@ Caps: 128 beats, per-beat Subdivision 64 (the platform's authored maximum),
 The pattern's boundaries determine the structure it needs: **cycle beats**
 = the top-level weight sum, and **Subdivision** = the least common multiple
 of every boundary denominator (per beat). The Generator editor shows this
-("needs 4 beats · Subdivision 20") and **Apply structure** authors it: one
-section, that Subdivision on every beat, no boundaries, no Grouping. Any
-authored Subdivision that is a *multiple* of the requirement also works, but
+("needs 4 beats · Subdivision 20"). An optional M3.95 depth palette multiplies
+that seed requirement once by each selected unique prime level (2/3/5/7, at
+most two) to form the **working Subdivision**; repeated prime factors still
+add another power, so seed Subdivision 4 with palette `{2}` works at 8. The
+result must remain at most 64. **Apply structure** authors one section at the
+working Subdivision, with no boundaries, Grouping, or custom division. Any
+authored Subdivision that is a *multiple* of the working requirement also works, but
 the actual per-beat Subdivision must be uniform across the cycle. The preview
 and playback span inputs carry that rate from exact `PulseSpan` geometry:
 different Grouping span lengths on one grid remain valid, while a section that
@@ -65,6 +69,7 @@ A mismatch is a specific error, never a silent quantize:
 ```
 dumka pattern parse error at line 2, column 7: weight must be 1-512
 dumka structure mismatch: pattern needs Subdivision 5 (or a multiple); the section has 4
+dumka subdivisionPalette needs working Subdivision 80, above the platform maximum 64
 ```
 
 ## Sustains across structural spans (M3.9)

@@ -17,6 +17,7 @@
 //! rather than independent per-span decisions.
 
 pub mod barlow;
+pub mod depth;
 pub mod dsl;
 pub mod euclid;
 pub mod evolve;
@@ -26,6 +27,7 @@ pub mod perceptual;
 pub mod plan;
 pub mod reshape;
 pub mod sioros;
+pub mod spectrum;
 pub mod tree;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +37,7 @@ use super::{
 };
 use evolve::EvolutionInputs;
 use tree::CompiledSeed;
+pub use tree::RequiredStructure;
 
 pub use evolve::{evolution_state, EvolutionState, EvolvedOnset};
 
@@ -44,12 +47,13 @@ pub use perceptual::{
     PerceptualWeights, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use plan::{
-    BeatRange, CurvePoint, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily,
-    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
-    EvolutionCurve, EvolutionDirective, PerceptualPacingTrace, RotateDirection,
-    EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS,
-    MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI,
-    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
+    BeatRange, ComplexityCorridorClamp, ComplexityCorridorLimit, CurvePoint, DensityCorridorClamp,
+    DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectiveOptions, DirectivePacing,
+    DirectiveSkip, DirectiveTraceEntry, EvolutionCurve, EvolutionDirective, PerceptualPacingTrace,
+    RotateDirection, EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS,
+    MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES, MAX_MORPH_ALIGNMENT_WORK,
+    MAX_MORPH_MICROSTEPS, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
+    MAX_PERCEPTUAL_SCORING_WORK,
 };
 
 /// Automation target sampled at each folded cycle's start by both callers.
@@ -64,6 +68,12 @@ pub const DUMKA_FILL_COMPLEXITY_TARGET: &str = "generator.dumka.fillComplexity";
 pub const DUMKA_DENSITY_FLOOR_TARGET: &str = "generator.dumka.densityFloor";
 /// Automation target sampled at each folded cycle's start by both callers.
 pub const DUMKA_DENSITY_CEILING_TARGET: &str = "generator.dumka.densityCeiling";
+/// Automation target sampled at each folded cycle's start by both callers.
+pub const DUMKA_COMPLEXITY_FLOOR_TARGET: &str = "generator.dumka.complexityFloor";
+/// Automation target sampled at each folded cycle's start by both callers.
+pub const DUMKA_COMPLEXITY_CEILING_TARGET: &str = "generator.dumka.complexityCeiling";
+/// Automation target sampled at each folded cycle's start by both callers.
+pub const DUMKA_PLACEMENT_BIAS_TARGET: &str = "generator.dumka.placementBias";
 
 /// The pattern a fresh Dum-Ka config carries: four beats at Subdivision 4,
 /// so it plays on a fresh project's default structure without edits.
@@ -75,6 +85,9 @@ pub struct DumkaGeneratorParams {
     /// Seed notation text, persisted verbatim; parsing happens here.
     #[serde(default = "default_pattern")]
     pub pattern: String,
+    /// Prime depth levels evolution may explore beyond the seed grid.
+    #[serde(default)]
+    pub subdivision_palette: Vec<u32>,
     /// Authored percent chance per cycle that one evolution operator fires
     /// (0 = seed verbatim when no rate automation is active; the M1 behavior
     /// and the serde default).
@@ -91,11 +104,19 @@ pub struct DumkaGeneratorParams {
     /// Maximum onset density, as a percent of the seed grid.
     #[serde(default = "default_density_ceiling")]
     pub density_ceiling: u32,
+    /// Attack-point depth corridor in normalized milliunits.
+    #[serde(default)]
+    pub complexity_floor: u32,
+    #[serde(default = "default_complexity_ceiling")]
+    pub complexity_ceiling: u32,
     /// Barlow candidate-pool temperature: 0 keeps the strict
     /// most/least-indispensable choice; 100 draws uniformly over all
     /// candidates (deterministic integer pool widening, see evolve.rs).
     #[serde(default)]
     pub barlow_temperature: u32,
+    /// Blend Barlow placement with the fixed-point geometric field.
+    #[serde(default)]
+    pub placement_bias: u32,
     /// Per-family operator weights (authored only). The defaults reproduce
     /// the historical Remove 3 / Add 3 / Rotate 2 draw exactly; the Sioros
     /// displacement pair is opt-in at weight 0.
@@ -163,6 +184,10 @@ const fn default_density_ceiling() -> u32 {
     100
 }
 
+const fn default_complexity_ceiling() -> u32 {
+    100_000
+}
+
 const fn default_weight_barlow_remove() -> u32 {
     3
 }
@@ -183,11 +208,15 @@ impl Default for DumkaGeneratorParams {
     fn default() -> Self {
         Self {
             pattern: default_pattern(),
+            subdivision_palette: Vec::new(),
             evolution_rate: 0,
             drift_leash: default_drift_leash(),
             density_floor: 0,
             density_ceiling: default_density_ceiling(),
+            complexity_floor: 0,
+            complexity_ceiling: default_complexity_ceiling(),
             barlow_temperature: 0,
+            placement_bias: 0,
             weight_barlow_remove: default_weight_barlow_remove(),
             weight_barlow_add: default_weight_barlow_add(),
             weight_rotate: default_weight_rotate(),
@@ -209,6 +238,23 @@ impl Default for DumkaGeneratorParams {
 }
 
 impl DumkaGeneratorParams {
+    /// Structure required by the notation and its optional depth palette.
+    /// Apply-structure authors `working_subdivision`; the seed subdivision is
+    /// retained separately so the UI can explain the refinement.
+    pub fn required_structure(&self) -> Result<RequiredStructure, GeneratorError> {
+        let seed = self.compile()?;
+        let working_subdivision =
+            depth::working_subdivision(seed.required_subdivision, &self.subdivision_palette)
+                .map_err(|error| GeneratorError::DumkaDepth {
+                    message: error.to_string(),
+                })?;
+        Ok(RequiredStructure {
+            cycle_beats: seed.total_beats,
+            subdivision: seed.required_subdivision,
+            working_subdivision,
+        })
+    }
+
     pub(super) fn validate(&self) -> Result<(), GeneratorError> {
         for (name, value) in [
             ("evolutionRate", self.evolution_rate),
@@ -216,6 +262,7 @@ impl DumkaGeneratorParams {
             ("densityFloor", self.density_floor),
             ("densityCeiling", self.density_ceiling),
             ("barlowTemperature", self.barlow_temperature),
+            ("placementBias", self.placement_bias),
             ("weightBarlowRemove", self.weight_barlow_remove),
             ("weightBarlowAdd", self.weight_barlow_add),
             ("weightRotate", self.weight_rotate),
@@ -239,6 +286,24 @@ impl DumkaGeneratorParams {
                 ),
             });
         }
+        for (name, value) in [
+            ("complexityFloor", self.complexity_floor),
+            ("complexityCeiling", self.complexity_ceiling),
+        ] {
+            if value > 100_000 {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!("{name} must be 0-100000, got {value}"),
+                });
+            }
+        }
+        if self.complexity_floor > self.complexity_ceiling {
+            return Err(GeneratorError::DumkaPlanInvalid {
+                message: format!(
+                    "complexityFloor must be at most complexityCeiling, got {} > {}",
+                    self.complexity_floor, self.complexity_ceiling
+                ),
+            });
+        }
         if self.euclid_max_run == 0 || self.euclid_max_run > 8 {
             return Err(GeneratorError::DumkaMaxRun {
                 value: self.euclid_max_run,
@@ -246,7 +311,13 @@ impl DumkaGeneratorParams {
         }
         plan::validate_plan(&self.plan, &self.evolution_curve)?;
         let seed = self.compile()?;
-        if barlow::stratification(seed.total_beats, seed.required_subdivision).is_none() {
+        let working =
+            depth::working_subdivision(seed.required_subdivision, &self.subdivision_palette)
+                .map_err(|error| GeneratorError::DumkaDepth {
+                    message: error.to_string(),
+                })?;
+        self.validate_plan_against_working_grid(&seed, working)?;
+        if barlow::stratification(seed.total_beats, working).is_none() {
             if let Some(directive) = self.plan.iter().find(|directive| {
                 directive.enabled
                     && matches!(directive.magnitude, DirectiveMagnitude::Perceptual { .. })
@@ -274,6 +345,74 @@ impl DumkaGeneratorParams {
         let parsed = dsl::parse(&self.pattern).map_err(pattern_error)?;
         tree::compile(&parsed).map_err(pattern_error)
     }
+
+    fn working_seed(&self) -> Result<(CompiledSeed, u32), GeneratorError> {
+        let mut seed = self.compile()?;
+        let working =
+            depth::working_subdivision(seed.required_subdivision, &self.subdivision_palette)
+                .map_err(|error| GeneratorError::DumkaDepth {
+                    message: error.to_string(),
+                })?;
+        seed.required_subdivision = working;
+        Ok((seed, working))
+    }
+
+    fn validate_plan_against_working_grid(
+        &self,
+        seed: &CompiledSeed,
+        working: u32,
+    ) -> Result<(), GeneratorError> {
+        for directive in &self.plan {
+            if let Some(level) = directive.options.subdivision_level {
+                if !depth::slot_level_exists(level, working) {
+                    return Err(GeneratorError::DumkaPlanInvalid {
+                        message: format!(
+                            "directive {} subdivisionLevel {level} does not exist on working Subdivision {working}", directive.id
+                        ),
+                    });
+                }
+            }
+            if directive.family != DirectiveFamily::Morph {
+                continue;
+            }
+            let target_text = directive
+                .options
+                .morph_target
+                .as_deref()
+                .expect("basic plan validation requires morphTarget");
+            let parsed = dsl::parse(target_text).map_err(pattern_error)?;
+            let mut target = tree::compile(&parsed).map_err(pattern_error)?;
+            if target.total_beats != seed.total_beats {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} morph target spans {} beats but the seed spans {}",
+                        directive.id, target.total_beats, seed.total_beats
+                    ),
+                });
+            }
+            if working % target.required_subdivision != 0 {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} morph target needs Subdivision {} which does not divide working Subdivision {working}",
+                        directive.id, target.required_subdivision
+                    ),
+                });
+            }
+            if target.events.is_empty() {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: format!(
+                        "directive {} morph target must contain at least one sounding onset",
+                        directive.id
+                    ),
+                });
+            }
+            let mut working_seed = seed.clone();
+            working_seed.required_subdivision = working;
+            target.required_subdivision = working;
+            evolve::validate_morph_target_work(directive.id, &working_seed, &target)?;
+        }
+        Ok(())
+    }
 }
 
 fn pattern_error(error: dsl::PatternError) -> GeneratorError {
@@ -298,7 +437,7 @@ impl CycleGenerator for DumkaGeneratorParams {
         context: &GeneratorCycleContext<'_>,
     ) -> Result<Vec<GeneratedSpan>, GeneratorError> {
         self.generate_with_trace(context)
-            .map(|(spans, _, _, _)| spans)
+            .map(|(spans, _, _, _, _, _, _, _)| spans)
     }
 }
 
@@ -313,6 +452,10 @@ impl DumkaGeneratorParams {
             Vec<DirectiveTraceEntry>,
             super::DensityCorridorRange,
             Option<super::PerceptualCycleDistance>,
+            u32,
+            super::ComplexityCorridorRange,
+            u32,
+            u32,
         ),
         GeneratorError,
     > {
@@ -324,7 +467,7 @@ impl DumkaGeneratorParams {
             &self.evolution_curve,
             context.cycle,
         )?;
-        let seed = self.compile()?;
+        let (seed, working_subdivision) = self.working_seed()?;
         let inputs = EvolutionInputs {
             seed_value: context.seed,
             cycle: context.cycle,
@@ -332,7 +475,10 @@ impl DumkaGeneratorParams {
             drift_leash: self.drift_leash,
             density_floor: self.density_floor,
             density_ceiling: self.density_ceiling,
+            complexity_floor: self.complexity_floor,
+            complexity_ceiling: self.complexity_ceiling,
             barlow_temperature: self.barlow_temperature,
+            placement_bias: self.placement_bias,
             fill_complexity: self.fill_complexity,
             euclid_max_run: self.euclid_max_run,
             euclid_invert: self.euclid_invert,
@@ -344,6 +490,7 @@ impl DumkaGeneratorParams {
             spans: context.spans,
             cycle_beats: context.cycle_beats,
         };
+        evolve::validate_evolution_grid(&seed, &inputs)?;
         if barlow::stratification(seed.total_beats, seed.required_subdivision).is_none() {
             if let Some(directive) = self.plan.iter().find(|directive| {
                 directive.enabled
@@ -366,12 +513,23 @@ impl DumkaGeneratorParams {
             }
         }
         let resolved = evolve::evolved_seed_with_trace(&seed, &inputs);
-        let (evolved, trace, density_corridor, cycle_distance) = match resolved {
+        let (
+            evolved,
+            trace,
+            density_corridor,
+            cycle_distance,
+            complexity_corridor,
+            state_complexity_milli,
+            state_depth_diversity_milli,
+        ) = match resolved {
             Some(resolved) => (
                 resolved.seed,
                 resolved.trace,
                 resolved.density_corridor,
                 resolved.cycle_distance,
+                resolved.complexity_corridor,
+                resolved.state_complexity_milli,
+                resolved.state_depth_diversity_milli,
             ),
             None => (
                 seed,
@@ -383,13 +541,28 @@ impl DumkaGeneratorParams {
                     ceiling: 100,
                 },
                 None,
+                super::ComplexityCorridorRange {
+                    floor: 0,
+                    ceiling: 100_000,
+                },
+                0,
+                0,
             ),
         };
         let spans = tree::resolve_seed_cells(&evolved, context.cycle_beats, context.spans)
             .map_err(|error| GeneratorError::DumkaStructure {
                 message: error.to_string(),
             })?;
-        Ok((spans, trace, density_corridor, cycle_distance))
+        Ok((
+            spans,
+            trace,
+            density_corridor,
+            cycle_distance,
+            working_subdivision,
+            complexity_corridor,
+            state_complexity_milli,
+            state_depth_diversity_milli,
+        ))
     }
 }
 
@@ -625,11 +798,15 @@ mod tests {
         let spans = per_beat_spans(4, 1);
         let evolving = DumkaGeneratorParams {
             pattern: "x . x .".to_string(),
+            subdivision_palette: Vec::new(),
             evolution_rate: 69,
             drift_leash: 51,
             density_floor: 0,
             density_ceiling: 50,
+            complexity_floor: 0,
+            complexity_ceiling: 100_000,
             barlow_temperature: 0,
+            placement_bias: 0,
             weight_barlow_remove: 37,
             weight_barlow_add: 67,
             weight_rotate: 24,
@@ -711,6 +888,104 @@ mod tests {
                 pattern: DEFAULT_DUMKA_PATTERN.to_string(),
                 ..Default::default()
             }
+        );
+    }
+
+    #[test]
+    fn working_palette_refines_projection_and_reports_depth_insights() {
+        let spans = per_beat_spans(1, 12);
+        let mut config = params("[x . . .]");
+        config.subdivision_palette = vec![3];
+        assert_eq!(
+            config.required_structure().unwrap(),
+            RequiredStructure {
+                cycle_beats: 1,
+                subdivision: 4,
+                working_subdivision: 12,
+            }
+        );
+        let no_automation: &super::super::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        let resolution = resolve_generator_cycle_with_trace(
+            &GeneratorConfig::Dumka(config),
+            &context(&spans, 0, 1, 7, no_automation),
+        )
+        .unwrap();
+
+        assert_eq!(resolution.working_subdivision, Some(12));
+        assert_eq!(
+            resolution.complexity_corridor,
+            Some(super::super::ComplexityCorridorRange {
+                floor: 0,
+                ceiling: 100_000,
+            })
+        );
+        assert_eq!(resolution.state_complexity_milli, Some(0));
+        assert_eq!(resolution.state_depth_diversity_milli, Some(0));
+        let cells = &resolution.spans[0].cells;
+        assert_eq!(cells.iter().map(|cell| cell.len).sum::<u32>(), 12);
+        assert!(!cells[0].rest);
+        assert_eq!(
+            cells[0].len, 3,
+            "the quarter-beat attack is refined onto W=12"
+        );
+    }
+
+    #[test]
+    fn palette_levels_and_morph_targets_validate_against_the_working_grid() {
+        let mut row = EvolutionDirective {
+            id: 91,
+            order: 0,
+            enabled: true,
+            from_cycle: 1,
+            to_cycle: 4,
+            family: DirectiveFamily::Morph,
+            pacing: DirectivePacing::EaseInOut,
+            magnitude: DirectiveMagnitude::OperationQuota,
+            intensity: 100,
+            scope: None,
+            options: DirectiveOptions {
+                subdivision_level: Some(3),
+                morph_target: Some("[. . x . . . . . . . . .]".to_string()),
+                ..DirectiveOptions::default()
+            },
+        };
+        let mut valid = params("[x . . .]");
+        valid.subdivision_palette = vec![3];
+        valid.plan = vec![row.clone()];
+        GeneratorConfig::Dumka(valid).validate().unwrap();
+
+        let mut silent_target = params("[x . . .]");
+        row.options.morph_target = Some("[. . . .]".to_string());
+        silent_target.subdivision_palette = vec![3];
+        silent_target.plan = vec![row.clone()];
+        assert_eq!(
+            GeneratorConfig::Dumka(silent_target)
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "dumka plan invalid: directive 91 morph target must contain at least one sounding onset"
+        );
+
+        let mut missing_level = params("[x . . .]");
+        row.family = DirectiveFamily::BarlowAdd;
+        row.options.morph_target = None;
+        missing_level.plan = vec![row];
+        assert_eq!(
+            GeneratorConfig::Dumka(missing_level)
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "dumka plan invalid: directive 91 subdivisionLevel 3 does not exist on working Subdivision 4"
+        );
+
+        let mut invalid_palette = params("[x . . .]");
+        invalid_palette.subdivision_palette = vec![11];
+        assert_eq!(
+            GeneratorConfig::Dumka(invalid_palette)
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "dumka subdivisionPalette entries must be 2, 3, 5, or 7, got 11"
         );
     }
 

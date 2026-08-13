@@ -2,7 +2,7 @@
 
 exports[`buildAutomationTargetDefs (characterization) > produces a stable, sorted, de-duplicated set of target defs 1`] = `
 {
-  "count": 112,
+  "count": 115,
   "groups": [
     "all",
     "Accent",
@@ -121,12 +121,15 @@ exports[`buildAutomationTargetDefs (characterization) > produces a stable, sorte
     "sequencer.pitch",
     "sequencer.velocity",
     "generator.dumka.barlowTemperature",
+    "generator.dumka.complexityCeiling",
+    "generator.dumka.complexityFloor",
     "generator.example.density",
     "generator.dumka.densityCeiling",
     "generator.dumka.densityFloor",
     "generator.dumka.driftLeash",
     "generator.dumka.evolutionRate",
     "generator.dumka.fillComplexity",
+    "generator.dumka.placementBias",
     "transport.midiOutputChannel",
     "transport.tempoBpm",
   ],

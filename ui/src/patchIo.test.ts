@@ -1524,6 +1524,10 @@ describe("patchIo", () => {
       driftLeash: 60,
       densityFloor: 0,
       densityCeiling: 100,
+      subdivisionPalette: [],
+      complexityFloor: 0,
+      complexityCeiling: 100_000,
+      placementBias: 0,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,
@@ -1590,6 +1594,141 @@ describe("patchIo", () => {
         planLengthCycles: Number.MAX_SAFE_INTEGER,
       })
     ).toMatchObject({ planLengthCycles: 0xffffffff });
+  });
+
+  it("normalizes Depth parameters and directive options into strict engine values", () => {
+    expect(
+      normalizePatchGeneratorConfig({
+        kind: "dumka",
+        subdivisionPalette: [7, 2, 2, 11, 3],
+        complexityFloor: 88_000,
+        complexityCeiling: 42_000,
+        placementBias: 72.6,
+      })
+    ).toMatchObject({
+      subdivisionPalette: [2, 3],
+      complexityFloor: 42_000,
+      complexityCeiling: 42_000,
+      placementBias: 73,
+    });
+
+    const normalized = normalizePatchEvolutionPlan([
+      {
+        id: 9,
+        order: 0,
+        enabled: true,
+        fromCycle: 5,
+        toCycle: 20,
+        family: "morph",
+        pacing: "easeInOut",
+        intensity: 100,
+        options: {
+          complexityFloor: 12_000,
+          complexityCeiling: 60_000,
+          placementBias: 55,
+          subdivisionLevel: 3,
+          morphTarget: "x x x x",
+        },
+      },
+      {
+        id: 10,
+        order: 1,
+        family: "barlowAdd",
+        fromCycle: 2,
+        toCycle: 2,
+        options: { complexityFloor: 10_000 },
+      },
+      {
+        id: 11,
+        order: 2,
+        family: "barlowAdd",
+        fromCycle: 3,
+        toCycle: 3,
+        options: { subdivisionLevel: -1 },
+      },
+    ]);
+    expect(normalized.droppedMalformed).toBe(2);
+    expect(normalized.plan).toHaveLength(1);
+    expect(normalized.plan[0]).toMatchObject({
+      family: "morph",
+      pacing: "easeInOut",
+      options: {
+        complexityFloor: 12_000,
+        complexityCeiling: 60_000,
+        placementBias: 55,
+        subdivisionLevel: 3,
+        morphTarget: "x x x x",
+      },
+    });
+  });
+
+  it("uses the seed lattice when validating enabled level filters and Morph targets", () => {
+    const normalized = normalizePatchEvolutionPlan(
+      [
+        {
+          id: 1,
+          order: 0,
+          enabled: true,
+          fromCycle: 1,
+          toCycle: 1,
+          family: "barlowAdd",
+          intensity: 25,
+          options: { subdivisionLevel: 3 },
+        },
+        {
+          id: 2,
+          order: 1,
+          enabled: true,
+          fromCycle: 2,
+          toCycle: 2,
+          family: "morph",
+          intensity: 25,
+          options: { morphTarget: "x x x" },
+        },
+        {
+          id: 3,
+          order: 2,
+          enabled: false,
+          fromCycle: 3,
+          toCycle: 3,
+          family: "morph",
+          intensity: 25,
+          options: { subdivisionLevel: 2, morphTarget: "x x x" },
+        },
+        {
+          id: 4,
+          order: 3,
+          enabled: true,
+          fromCycle: 4,
+          toCycle: 4,
+          family: "morph",
+          intensity: 25,
+          options: { morphTarget: "x x x x" },
+        },
+      ],
+      { pattern: "x x x x", subdivisionPalette: [2] }
+    );
+
+    expect(normalized.droppedMalformed).toBe(3);
+    expect(normalized.plan.map((row) => row.id)).toEqual([4]);
+
+    const indexed = normalizePatchEvolutionPlan(
+      [
+        {
+          id: 5,
+          order: 0,
+          enabled: true,
+          fromCycle: 1,
+          toCycle: 1,
+          family: "barlowAdd",
+          intensity: 25,
+          options: { subdivisionLevel: 2 },
+        },
+      ],
+      { pattern: "[x . . .]", subdivisionPalette: [3] }
+    );
+    expect(indexed.droppedMalformed).toBe(0);
+    expect(indexed.plan[0]!.options.subdivisionLevel).toBe(2);
   });
 
   it("normalizes evolution plans without changing stable directive identities", () => {
@@ -2126,6 +2265,10 @@ describe("patchIo", () => {
       driftLeash: 25,
       densityFloor: 0,
       densityCeiling: 100,
+      subdivisionPalette: [],
+      complexityFloor: 0,
+      complexityCeiling: 100_000,
+      placementBias: 0,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,

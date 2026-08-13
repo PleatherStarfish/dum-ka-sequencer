@@ -85,6 +85,7 @@ impl CompiledSeed {
         RequiredStructure {
             cycle_beats: self.total_beats,
             subdivision: self.required_subdivision,
+            working_subdivision: self.required_subdivision,
         }
     }
 }
@@ -92,7 +93,12 @@ impl CompiledSeed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequiredStructure {
     pub cycle_beats: u32,
+    /// Minimal grid required by the seed notation itself.
     pub subdivision: u32,
+    /// Fold grid after applying a Dum-Ka subdivision palette. At the pure
+    /// compiled-seed boundary this equals `subdivision`; generator params
+    /// replace it with their validated working lattice.
+    pub working_subdivision: u32,
 }
 
 /// Why compiled events cannot be projected onto the provided span layout.
@@ -622,6 +628,7 @@ mod tests {
         let structure = seed.required_structure();
         assert_eq!(structure.cycle_beats, 4);
         assert_eq!(structure.subdivision, 20);
+        assert_eq!(structure.working_subdivision, 20);
     }
 
     #[test]

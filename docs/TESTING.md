@@ -125,6 +125,22 @@ atomic. An unexpected P9 difference is a regression.
   both DTO fixture directions; editor/persistence coverage; and preview versus
   playback spans from the real backend. Do not adjust `v1` weights in place to
   make a fixture pass—new calibration requires a new model version.
+- A depth-lattice change needs palette canonicalization/cap failures, working-
+  Subdivision structure parity, and an empty-palette byte-identity sweep;
+  exact indigestibility/complexity vectors; price-first Promote/Demote ladders
+  (depth-price delta before displacement); and diversity entropy anchors that
+  also prove the diversity readout never admits, rejects, or reorders a
+  candidate. Exercise density-before-complexity normalization and the common
+  candidate guard across stochastic, curve, quota, and perceptual paths.
+  Geometric tests must pin Q16 recurrence/incremental equivalence, bias-0
+  identity, bias-100 fingerprints, and both the Bjorklund agreement and known
+  divergence cases—spectral placement is not universally Euclidean. Morph
+  needs exact target-grid validation, equal/unequal-cardinality alignment,
+  one-step guard retries, deterministic replay, cardinality honesty, and exact
+  Linear/Gentle endpoints through both ordinary and perceptual pacing. Finish
+  with palette/Morph goldens, two-way DTO and strict-persistence fixtures,
+  invariant strategies, real preview/playback parity, and a fold-to-10k
+  measurement on the refined grid.
 - A preview/playback change needs a stale-result test and timeline/MIDI parity
   coverage.
 - A queue rewrite needs note-balance and future-cycle non-rewrite coverage.
@@ -183,6 +199,19 @@ One local release run reported medians of approximately 1.140 ms for the
 distance case. These are report-only machine measurements, not CI thresholds.
 The exact model and calibration policy are in
 [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md).
+
+For M3.95's refined lattice, run the fold-to-10k case:
+
+```bash
+scripts/bench.sh generator/dumka-depth-fold-cycle-10000
+```
+
+It uses palette `{2,3}`, working Subdivision 24, placement bias 50, and a
+bounded curve tail inside the shared 4,096-score lifetime budget. One local
+release iteration measured approximately **57.170 ms** (checksum 57), versus
+the separate density-corridor plan's documented ~10.66 ms median. That is a
+report-only machine measurement, not a CI threshold; compare like-for-like
+iterations before drawing a performance conclusion.
 
 ## CI
 

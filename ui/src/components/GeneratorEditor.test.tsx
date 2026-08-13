@@ -20,7 +20,7 @@ function props(overrides: Partial<GeneratorEditorProps> = {}): GeneratorEditorPr
     dumkaDensityFloor: 0,
     dumkaDensityCeiling: 100,
     dumkaPreviewError: null,
-    dumkaRequired: { cycleBeats: 4, subdivision: 1 },
+    dumkaRequired: { cycleBeats: 4, subdivision: 1, workingSubdivision: 1 },
     dumkaStructureReady: false,
     dumkaAuthoredSubdivision: null,
     dumkaProjectionSpans: Array.from({ length: 4 }, () => ({
@@ -109,7 +109,7 @@ describe("GeneratorEditor", () => {
       <GeneratorEditor
         {...props({
           kind: "dumka",
-          dumkaRequired: { cycleBeats: 4, subdivision: 5 },
+          dumkaRequired: { cycleBeats: 4, subdivision: 5, workingSubdivision: 5 },
           dumkaStructureReady: true,
           dumkaAuthoredSubdivision: 35,
           onApplyDumkaStructure,
@@ -117,7 +117,7 @@ describe("GeneratorEditor", () => {
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 5 · authored 35 = 7 × 5 (compatible; cells show 7× matra counts)"
+      "needs 4 beats · Subdivision 5 · working 5 · authored 35 = 7 × 5 (compatible; cells show 7× matra counts)"
     );
     const simplify = screen.getByRole("button", { name: "Simplify to 5" });
     fireEvent.click(simplify);
@@ -128,14 +128,14 @@ describe("GeneratorEditor", () => {
       <GeneratorEditor
         {...props({
           kind: "dumka",
-          dumkaRequired: { cycleBeats: 4, subdivision: 5 },
+          dumkaRequired: { cycleBeats: 4, subdivision: 5, workingSubdivision: 5 },
           dumkaStructureReady: true,
           dumkaAuthoredSubdivision: 5,
         })}
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 5"
+      "needs 4 beats · Subdivision 5 · working 5"
     );
     const ready = screen.getByRole("button", { name: "Structure ready" });
     expect((ready as HTMLButtonElement).disabled).toBe(true);
@@ -149,7 +149,7 @@ describe("GeneratorEditor", () => {
         {...props({
           kind: "dumka",
           dumkaPattern: pattern,
-          dumkaRequired: { cycleBeats: 4, subdivision: 20 },
+          dumkaRequired: { cycleBeats: 4, subdivision: 20, workingSubdivision: 20 },
           onDumkaPatternCommit,
         })}
       />
@@ -173,6 +173,61 @@ describe("GeneratorEditor", () => {
     expect(rolled.startsWith("E(")).toBe(true);
     expect(rolled.split(" ")).toHaveLength(4);
     expect(rolled).toMatch(/^E\(\d+,5(?:,\d+)?\) E\(\d+,4(?:,\d+)?\) E\(1,1\) E\(1,1\)$/);
+  });
+
+  it("authors a compact Depth palette, corridor, and placement bias", () => {
+    const setPalette = vi.fn();
+    const setFloor = vi.fn();
+    const setCeiling = vi.fn();
+    const setBias = vi.fn();
+    render(
+      <GeneratorEditor
+        {...props({
+          kind: "dumka",
+          dumkaSubdivisionPalette: [3],
+          dumkaRequired: {
+            cycleBeats: 4,
+            subdivision: 4,
+            workingSubdivision: 12,
+          },
+          dumkaComplexityFloor: 12_000,
+          dumkaComplexityCeiling: 60_000,
+          dumkaPlacementBias: 25,
+          dumkaStateDepthDiversityMilli: 62_500,
+          setDumkaSubdivisionPalette: setPalette,
+          setDumkaComplexityFloor: setFloor,
+          setDumkaComplexityCeiling: setCeiling,
+          setDumkaPlacementBias: setBias,
+        })}
+      />
+    );
+    expect(screen.getByLabelText("Required structure").textContent).toContain(
+      "working 12 (palette ×3)"
+    );
+    expect(screen.getByText("Working Subdivision 12")).toBeTruthy();
+    expect(screen.getByLabelText("Depth diversity 62.5")).toBeTruthy();
+    expect(
+      screen.getByRole("img", {
+        name: "Placement blend: 75% metric, 25% geometric void seeking",
+      })
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Subdivision level 2" }));
+    expect(setPalette).toHaveBeenCalledWith([2, 3]);
+    fireEvent.change(screen.getByLabelText("Complexity floor"), {
+      target: { value: "20.5" },
+    });
+    fireEvent.blur(screen.getByLabelText("Complexity floor"));
+    expect(setFloor).toHaveBeenCalledWith(20_500);
+    fireEvent.change(screen.getByLabelText("Complexity ceiling"), {
+      target: { value: "44.2" },
+    });
+    fireEvent.blur(screen.getByLabelText("Complexity ceiling"));
+    expect(setCeiling).toHaveBeenCalledWith(44_200);
+    fireEvent.keyDown(
+      screen.getByRole("slider", { name: "Geometric placement bias" }),
+      { key: "ArrowRight" }
+    );
+    expect(setBias).toHaveBeenCalledWith(26);
   });
 
   it("does not roll an arbitrary grid when the committed pattern is invalid", () => {
@@ -293,7 +348,7 @@ describe("GeneratorEditor", () => {
         {...props({
           kind: "dumka",
           dumkaPattern: "[[x x x x x]@2 .]@2",
-          dumkaRequired: { cycleBeats: 2, subdivision: 15 },
+          dumkaRequired: { cycleBeats: 2, subdivision: 15, workingSubdivision: 15 },
           dumkaStructureReady: true,
           dumkaProjectionSpans: Array.from({ length: 10 }, () => ({
             spanLen: 3,
@@ -346,13 +401,13 @@ describe("GeneratorEditor", () => {
       <GeneratorEditor
         {...props({
           kind: "dumka",
-          dumkaRequired: { cycleBeats: 4, subdivision: 20 },
+          dumkaRequired: { cycleBeats: 4, subdivision: 20, workingSubdivision: 20 },
           onApplyDumkaStructure,
         })}
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 20"
+      "needs 4 beats · Subdivision 20 · working 20"
     );
     fireEvent.click(screen.getByRole("button", { name: "Apply structure" }));
     expect(onApplyDumkaStructure).toHaveBeenCalledTimes(1);
@@ -361,7 +416,7 @@ describe("GeneratorEditor", () => {
       <GeneratorEditor
         {...props({
           kind: "dumka",
-          dumkaRequired: { cycleBeats: 4, subdivision: 20 },
+          dumkaRequired: { cycleBeats: 4, subdivision: 20, workingSubdivision: 20 },
           dumkaStructureReady: true,
         })}
       />

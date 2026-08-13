@@ -26,6 +26,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 cseq-persist = { path = "../cseq-persist" }
 proptest = { workspace = true }
+serde_json = { workspace = true }
 # The invariant fuzzer (tests/invariants.rs) drives the deterministic, port-less
 # realize hooks that only exist under `feature = "fuzzing"`, so the target
 # requires that feature. Run it with:

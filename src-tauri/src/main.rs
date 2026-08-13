@@ -1116,6 +1116,14 @@ struct GeneratorPreviewDto {
     /// and grids without published Barlow tables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cycle_distance: Option<cseq_rhythm::PerceptualCycleDistance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    working_subdivision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    complexity_corridor: Option<cseq_rhythm::ComplexityCorridorRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_complexity_milli: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_depth_diversity_milli: Option<u32>,
 }
 
 const MAX_STOPPED_PREVIEW_CYCLE: u64 = 10_000;
@@ -2441,7 +2449,16 @@ fn resolve_generator_preview(
     let seed =
         cseq_rhythm::resolve_generator_seed_at_cycle(request.generator.seed_mode(), request.cycle)
             .map_err(|error| error.to_string())?;
-    let (mut spans, trace, density_corridor, cycle_distance) = if request.enabled {
+    let (
+        mut spans,
+        trace,
+        density_corridor,
+        cycle_distance,
+        working_subdivision,
+        complexity_corridor,
+        state_complexity_milli,
+        state_depth_diversity_milli,
+    ) = if request.enabled {
         let automation = |target: &str, sample_cycle: u64, default: f64| {
             let automation = request.automation.as_ref()?;
             // One shared predicate with transport playback: the seam treats
@@ -2482,9 +2499,13 @@ fn resolve_generator_preview(
             resolution.trace,
             resolution.density_corridor,
             resolution.cycle_distance,
+            resolution.working_subdivision,
+            resolution.complexity_corridor,
+            resolution.state_complexity_milli,
+            resolution.state_depth_diversity_milli,
         )
     } else {
-        (Vec::new(), Vec::new(), None, None)
+        (Vec::new(), Vec::new(), None, None, None, None, None, None)
     };
     stamp_preview_cell_velocities(&mut spans, &request.span_velocities);
     Ok(GeneratorPreviewDto {
@@ -2493,6 +2514,10 @@ fn resolve_generator_preview(
         trace,
         density_corridor,
         cycle_distance,
+        working_subdivision,
+        complexity_corridor,
+        state_complexity_milli,
+        state_depth_diversity_milli,
     })
 }
 
@@ -3391,6 +3416,11 @@ const EVOLUTION_OPTION_KEYS: &[&str] = &[
     "fillComplexity",
     "densityFloor",
     "densityCeiling",
+    "complexityFloor",
+    "complexityCeiling",
+    "placementBias",
+    "subdivisionLevel",
+    "morphTarget",
     "euclidMaxRun",
     "euclidInvert",
     "euclidRestPolicy",
@@ -4342,6 +4372,10 @@ mod tests {
             trace: vec![],
             density_corridor: None,
             cycle_distance: None,
+            working_subdivision: None,
+            complexity_corridor: None,
+            state_complexity_milli: None,
+            state_depth_diversity_milli: None,
         };
         let generator_wire =
             serde_json::to_value(generator).expect("generator preview must serialize");
@@ -5675,6 +5709,10 @@ mod tests {
     fn evolution_generator_document() -> serde_json::Value {
         json!({
             "kind": "dumka",
+            "subdivisionPalette": [2, 3],
+            "complexityFloor": 12_000,
+            "complexityCeiling": 60_000,
+            "placementBias": 50,
             "planLengthCycles": 20,
             "plan": [{
                 "id": 41,
@@ -5690,6 +5728,11 @@ mod tests {
                     "fillComplexity": null,
                     "densityFloor": 20,
                     "densityCeiling": 60,
+                    "complexityFloor": 12_000,
+                    "complexityCeiling": 60_000,
+                    "placementBias": 50,
+                    "subdivisionLevel": 2,
+                    "morphTarget": null,
                     "euclidMaxRun": null,
                     "euclidInvert": null,
                     "euclidRestPolicy": null,
@@ -5750,6 +5793,10 @@ mod tests {
     #[test]
     fn validate_patch_document_accepts_evolution_plan_v1_keys() {
         let plan_keys = [
+            "subdivisionPalette",
+            "complexityFloor",
+            "complexityCeiling",
+            "placementBias",
             "plan",
             "planLengthCycles",
             "id",
@@ -5774,6 +5821,11 @@ mod tests {
             "fillComplexity",
             "densityFloor",
             "densityCeiling",
+            "complexityFloor",
+            "complexityCeiling",
+            "placementBias",
+            "subdivisionLevel",
+            "morphTarget",
             "euclidMaxRun",
             "euclidInvert",
             "euclidRestPolicy",
@@ -6355,7 +6407,11 @@ mod dto_fixtures {
             params.seed_mode,
             cseq_rhythm::GeneratorSeedMode::Locked { seed: 20260611 }
         );
-        assert_eq!(params.plan.len(), 4);
+        assert_eq!(params.subdivision_palette, Vec::<u32>::new());
+        assert_eq!(params.complexity_floor, 12_000);
+        assert_eq!(params.complexity_ceiling, 60_000);
+        assert_eq!(params.placement_bias, 50);
+        assert_eq!(params.plan.len(), 5);
         assert_eq!(params.plan[0].id, 101);
         assert_eq!(
             params.plan[0].pacing,
@@ -6386,6 +6442,22 @@ mod dto_fixtures {
             }
         );
         assert_eq!(params.plan[3].intensity, 99);
+        assert_eq!(params.plan[4].id, 105);
+        assert_eq!(params.plan[4].family, cseq_rhythm::DirectiveFamily::Morph);
+        assert!(!params.plan[4].enabled);
+        assert_eq!(params.plan[4].from_cycle, 18);
+        assert_eq!(params.plan[4].to_cycle, 20);
+        assert_eq!(
+            params.plan[4].pacing,
+            cseq_rhythm::DirectivePacing::EaseInOut
+        );
+        assert_eq!(params.plan[4].options.complexity_floor, Some(18_000));
+        assert_eq!(params.plan[4].options.complexity_ceiling, Some(52_000));
+        assert_eq!(params.plan[4].options.placement_bias, Some(65));
+        assert_eq!(
+            params.plan[4].options.morph_target.as_deref(),
+            Some("x x x x")
+        );
         assert_eq!(params.plan_length_cycles, 20);
 
         // The wire config must resolve through the one shared dispatch on the
@@ -6440,6 +6512,16 @@ mod dto_fixtures {
                 ceiling: 60,
             })
         );
+        assert_eq!(preview.working_subdivision, Some(20));
+        assert_eq!(
+            preview.complexity_corridor,
+            Some(cseq_rhythm::ComplexityCorridorRange {
+                floor: 12_000,
+                ceiling: 60_000,
+            })
+        );
+        assert!(preview.state_complexity_milli.is_some());
+        assert!(preview.state_depth_diversity_milli.is_some());
 
         // The Rust-owned response fixture pins the trace side of the DTO. Use
         // the same rich bridge request at its Barlow pin while disabling the
@@ -6461,9 +6543,17 @@ mod dto_fixtures {
         };
         legacy_params.density_floor = 0;
         legacy_params.density_ceiling = 100;
+        legacy_params.complexity_floor = 0;
+        legacy_params.complexity_ceiling = 100_000;
+        legacy_params.placement_bias = 0;
+        legacy_params.subdivision_palette.clear();
         for directive in &mut legacy_params.plan {
             directive.options.density_floor = None;
             directive.options.density_ceiling = None;
+            directive.options.complexity_floor = None;
+            directive.options.complexity_ceiling = None;
+            directive.options.placement_bias = None;
+            directive.options.subdivision_level = None;
         }
         let legacy_preview = resolve_generator_preview(legacy_request, &[])
             .expect("behavior-off corridor request must resolve");
@@ -6477,6 +6567,14 @@ mod dto_fixtures {
             Some(cseq_rhythm::DensityCorridorRange {
                 floor: 0,
                 ceiling: 100,
+            })
+        );
+        assert_eq!(legacy_preview.working_subdivision, Some(20));
+        assert_eq!(
+            legacy_preview.complexity_corridor,
+            Some(cseq_rhythm::ComplexityCorridorRange {
+                floor: 0,
+                ceiling: 100_000,
             })
         );
         let legacy_json = serde_json::to_string_pretty(&legacy_preview)
@@ -6503,6 +6601,53 @@ mod dto_fixtures {
             &ts_fixture("GeneratorPreview", "dumkaGeneratorPreviewFixture", &json),
         );
 
+        // A compact Rust-owned refined-grid vector keeps non-empty-palette
+        // response parity explicit without expanding the rich TS-owned
+        // Subdivision-20 request and all four velocity arrays to Subdivision
+        // 60. Its seed needs Subdivision 1; palette {3} therefore establishes
+        // working Subdivision 3 on ordinary per-beat spans.
+        let depth_request = GeneratorPreviewRequestDto {
+            spans: (0..4)
+                .map(|index| cseq_rhythm::GeneratorSpanInput {
+                    span_id: index + 1,
+                    span_len: 3,
+                    label: None,
+                    section_index: Some(0),
+                    subdivision: Some(3),
+                })
+                .collect(),
+            enabled: true,
+            generator: cseq_rhythm::GeneratorConfig::Dumka(cseq_rhythm::DumkaGeneratorParams {
+                pattern: "x . x .".to_string(),
+                subdivision_palette: vec![3],
+                complexity_floor: 0,
+                complexity_ceiling: 100_000,
+                placement_bias: 50,
+                seed_mode: cseq_rhythm::GeneratorSeedMode::Locked { seed: 20260812 },
+                ..Default::default()
+            }),
+            cycle: 0,
+            cycle_beats: 4,
+            automation: None,
+            track_id: Some("depth-fixture".to_string()),
+            span_velocities: Vec::new(),
+        };
+        let depth_preview = resolve_generator_preview(depth_request, &[])
+            .expect("non-empty palette fixture must resolve on its working grid");
+        assert_eq!(depth_preview.working_subdivision, Some(3));
+        assert_eq!(depth_preview.state_complexity_milli, Some(0));
+        assert_eq!(depth_preview.state_depth_diversity_milli, Some(0));
+        let depth_json = serde_json::to_string_pretty(&depth_preview)
+            .expect("serialize depth-enabled Dum-Ka preview DTO");
+        check_or_update(
+            "dumkaGeneratorDepthPreview.fixture.ts",
+            &ts_fixture(
+                "GeneratorPreview",
+                "dumkaGeneratorDepthPreviewFixture",
+                &depth_json,
+            ),
+        );
+
         // Activate only the request's future perceptual row in a derived
         // preview so Rust serialization pins the additive trace object without
         // rewriting either M3.9 corridor fixture.
@@ -6517,10 +6662,17 @@ mod dto_fixtures {
         perceptual_params.evolution_rate = 0;
         perceptual_params.density_floor = 0;
         perceptual_params.density_ceiling = 100;
+        perceptual_params.complexity_floor = 0;
+        perceptual_params.complexity_ceiling = 100_000;
+        perceptual_params.placement_bias = 0;
         for directive in &mut perceptual_params.plan {
             directive.enabled = false;
             directive.options.density_floor = None;
             directive.options.density_ceiling = None;
+            directive.options.complexity_floor = None;
+            directive.options.complexity_ceiling = None;
+            directive.options.placement_bias = None;
+            directive.options.subdivision_level = None;
         }
         perceptual_params.plan[3].enabled = true;
         let perceptual_preview = resolve_generator_preview(perceptual_request, &[])
@@ -6602,7 +6754,11 @@ mod dto_fixtures {
                 params.plan[2].pacing,
                 cseq_rhythm::DirectivePacing::EaseInOut
             );
-            assert_eq!(params.plan.len(), 4);
+            assert_eq!(params.subdivision_palette, Vec::<u32>::new());
+            assert_eq!(params.complexity_floor, 12_000);
+            assert_eq!(params.complexity_ceiling, 60_000);
+            assert_eq!(params.placement_bias, 50);
+            assert_eq!(params.plan.len(), 5);
             assert_eq!(
                 params.plan[3].pacing,
                 cseq_rhythm::DirectivePacing::PerCycle
@@ -6616,6 +6772,12 @@ mod dto_fixtures {
                     tolerance_milli: 500,
                     max_operations: 16,
                 }
+            );
+            assert_eq!(params.plan[4].family, cseq_rhythm::DirectiveFamily::Morph);
+            assert!(!params.plan[4].enabled);
+            assert_eq!(
+                params.plan[4].options.morph_target.as_deref(),
+                Some("x x x x")
             );
             config
                 .validate()

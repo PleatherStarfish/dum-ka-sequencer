@@ -15,6 +15,7 @@ export interface EvolvePlanPanelProps {
   plan: readonly EvolutionDirective[];
   planLengthCycles: number;
   cycleBeats: number;
+  seedTotalBeats?: number;
   playbackStructureLocked: boolean;
   previewCycle?: number;
   cachedPreviews?: readonly EvolutionCachedPreview[];
@@ -28,6 +29,9 @@ export interface EvolvePlanPanelProps {
   onVisibleCycleRangeChange?: (fromCycle: number, toCycle: number) => void;
   densityFloor?: number;
   densityCeiling?: number;
+  complexityFloor?: number;
+  complexityCeiling?: number;
+  workingSubdivision?: number;
   curve?: EvolutionCurve;
   onCurveChange?: (curve: EvolutionCurve) => void;
 }
@@ -42,6 +46,7 @@ export function EvolvePlanPanel({
   plan,
   planLengthCycles,
   cycleBeats,
+  seedTotalBeats,
   playbackStructureLocked,
   previewCycle = 0,
   cachedPreviews = [],
@@ -55,6 +60,9 @@ export function EvolvePlanPanel({
   onVisibleCycleRangeChange,
   densityFloor = 0,
   densityCeiling = 100,
+  complexityFloor = 0,
+  complexityCeiling = 100_000,
+  workingSubdivision = 1,
   curve,
   onCurveChange,
 }: EvolvePlanPanelProps) {
@@ -147,6 +155,7 @@ export function EvolvePlanPanel({
           plan={plan}
           planLengthCycles={planLengthCycles}
           totalBeats={cycleBeats}
+          seedTotalBeats={seedTotalBeats}
           disabled={disabled}
           previewCycle={previewCycle}
           cachedPreviews={cachedPreviews}
@@ -159,6 +168,9 @@ export function EvolvePlanPanel({
           onVisibleCycleRangeChange={onVisibleCycleRangeChange}
           densityFloor={densityFloor}
           densityCeiling={densityCeiling}
+          complexityFloor={complexityFloor}
+          complexityCeiling={complexityCeiling}
+          workingSubdivision={workingSubdivision}
         />
       </div> : null}
     </details>

@@ -160,5 +160,12 @@ export const dumkaGeneratorLegacyPreviewFixture: GeneratorPreview = {
   "cycleDistance": {
     "modelVersion": "v1",
     "distanceMilli": 7951
-  }
+  },
+  "workingSubdivision": 20,
+  "complexityCorridor": {
+    "floor": 0,
+    "ceiling": 100000
+  },
+  "stateComplexityMilli": 42063,
+  "stateDepthDiversityMilli": 74210
 };

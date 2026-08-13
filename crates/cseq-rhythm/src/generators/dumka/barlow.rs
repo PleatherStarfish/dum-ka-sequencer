@@ -190,6 +190,10 @@ mod tests {
     #[test]
     fn rust_metrics_contract_fixture_matches() {
         use super::super::sioros::metrical_levels;
+        use super::super::spectrum::{
+            blended_order, cosine_table, geometric_add_order, geometric_remove_order,
+            normalized_ranks,
+        };
 
         let grids: Vec<(u32, u32)> = vec![
             (1, 1),
@@ -215,7 +219,7 @@ mod tests {
             (11, 1),
             (4, 13),
         ];
-        let cases = grids
+        let metrical_cases = grids
             .into_iter()
             .map(|(cycle_beats, subdivision)| {
                 let entry = match stratification(cycle_beats, subdivision) {
@@ -234,9 +238,86 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
+        let table_periods = [8u32, 12, 16, 20, 24, 48, 60, 64];
+        let spectrum_tables = table_periods
+            .into_iter()
+            .map(|period| {
+                let harmonics = cosine_table(period)
+                    .into_iter()
+                    .take(4)
+                    .map(|row| {
+                        serde_json::json!({
+                            "harmonic": row.harmonic,
+                            // Five phase samples cross-pin the root
+                            // recurrence without duplicating the full 64×16
+                            // lookup table in a display-only contract.
+                            "cosinePrefix": row.cosine.into_iter().take(5).collect::<Vec<_>>(),
+                            "sinePrefix": row.sine.into_iter().take(5).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "period": period,
+                    "harmonics": harmonics,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let spectrum_cases = [
+            (8u32, vec![], (0..8).collect::<Vec<_>>()),
+            (8, vec![0, 4], vec![1, 2, 3, 5, 6, 7]),
+            (12, vec![0, 4, 8], vec![1, 2, 3, 5, 6, 7, 9, 10, 11]),
+            (20, vec![0, 8, 16], vec![1, 4, 6, 10, 12, 18]),
+            (24, vec![0, 6, 12, 18], vec![1, 3, 8, 10, 14, 16, 20, 22]),
+        ]
+        .into_iter()
+        .map(|(period, onsets, add_candidates)| {
+            let geometric_add = geometric_add_order(period, &onsets, &add_candidates);
+            let geometric_remove = geometric_remove_order(period, &onsets, &onsets);
+            let mut metric_add = add_candidates.clone();
+            metric_add.sort_unstable();
+            let mut metric_remove = onsets.clone();
+            metric_remove.sort_unstable();
+            serde_json::json!({
+                "period": period,
+                "onsets": onsets,
+                "addCandidates": add_candidates,
+                "geometricAddOrder": geometric_add,
+                "geometricRemoveOrder": geometric_remove,
+                "normalizedAddRanks": normalized_ranks(&geometric_add),
+                "blend0": blended_order(&metric_add, &geometric_add, 0),
+                "blend50": blended_order(&metric_add, &geometric_add, 50),
+                "blend100": blended_order(&metric_add, &geometric_add, 100),
+            })
+        })
+        .collect::<Vec<_>>();
+
+        // The weighted fixed-point fingerprint is intentionally not plain
+        // Bjorklund at every cardinality. This W=8 greedy path is the pinned
+        // k=4 divergence called out in the M3.95 design review.
+        let mut fingerprint_onsets = Vec::new();
+        while fingerprint_onsets.len() < 4 {
+            let candidates = (0..8)
+                .filter(|slot| !fingerprint_onsets.contains(slot))
+                .collect::<Vec<_>>();
+            let next = geometric_add_order(8, &fingerprint_onsets, &candidates)[0];
+            fingerprint_onsets.push(next);
+        }
+        assert_eq!(fingerprint_onsets, vec![0, 4, 1, 6]);
+
+        let contract = serde_json::json!({
+            "metricalCases": metrical_cases,
+            "spectrum": {
+                "q16One": super::super::spectrum::Q16_ONE,
+                "maxHarmonics": super::super::spectrum::MAX_HARMONICS,
+                "tables": spectrum_tables,
+                "cases": spectrum_cases,
+                "greedyW8K4Fingerprint": fingerprint_onsets,
+            },
+        });
         let rendered = format!(
             "{}\n",
-            serde_json::to_string_pretty(&cases).expect("serialize metrics contract")
+            serde_json::to_string_pretty(&contract).expect("serialize metrics contract")
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../ui/src/__fixtures__/dumka_metrics_contract.json");

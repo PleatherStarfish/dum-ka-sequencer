@@ -20,15 +20,17 @@ notational split of one held note leaves sounding occupancy unchanged, while
 its new attack can still make a small nonzero contribution. It also prevents
 span layout from masquerading as musical change.
 
-For a fixed cycle of `B` beats and required Subdivision `S`, let `N = B × S`
-be the circular slot count and `M = 100_000`. The state's whole-beat rotation
+For a fixed cycle of `B` beats and working Subdivision `W`, let `N = B × W`
+be the circular slot count and `M = 100_000`. With an empty depth palette,
+`W` is exactly the seed's required Subdivision; palette refinement therefore
+adds positions without changing model `v1`'s weights. The state's whole-beat rotation
 register is applied before scoring. Each onset then contributes:
 
 - an attack at its rotated start slot;
 - circular sounding occupancy for its duration, capped at `N` slots;
 - a stroke class at its attack slot; and
 - onset phase, duration, and cyclic inter-onset interval ratios relative to
-  `S`.
+  `W`.
 
 Every public component is an integer in `0..=M`. The editor divides by 1,000,
 so `5_000` is displayed as `5.0` on a `0.0–100.0` scale. Internally the helper
@@ -140,12 +142,13 @@ reported as `1`, preserving identity as the only exact zero.
 
 Perceptual pacing is opt-in per deterministic directive. At each active cycle:
 
-1. Apply the ordinary density-corridor normalization. The normalized hold is
+1. Apply density normalization and then mean-complexity normalization. The
+   normalized hold is
    legal prefix `P0`; it may already differ from the directive's incoming
    state when a rail moved.
 2. Starting from `P0`, apply the normal identity-seeded family operation one
    step at a time, up to `maxOperations`. Each `Pk` must survive the existing
-   scope, interval, density-corridor, and trial-projection guards. A failed
+   scope, interval, density/complexity-corridor, and trial-projection guards. A failed
    frontier ends the reachable prefix. Initial candidate count is deliberately
    not a cap: a legal operation in a repeatable family can create the next
    candidate.
@@ -180,6 +183,14 @@ The trace keeps that distinction explicit:
   record exactly which comparison was made;
 - `reached` means `abs(actual-target) <= tolerance`; and
 - `exhausted` means no admissible searched prefix reached that tolerance.
+
+The depth rail and its diversity insight are intentionally not extra `v1`
+components. `stateComplexityMilli` uses scaled Barlow indigestibility as a
+candidate constraint; `stateDepthDiversityMilli` uses normalized denominator
+entropy as an insight-only spread statistic. Ratio complexity remains the
+immutable `v1` comparison feature. This separation lets a refined onset cost
+perceptual distance while preventing either new readout from silently changing
+saved `v1` target semantics.
 
 An orphaned scope returns a zero transition and truthful reach/exhaustion
 flags. A corridor-normalized `P0` can be selected. When multiple directives

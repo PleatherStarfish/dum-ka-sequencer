@@ -262,7 +262,7 @@ describe("dumkaRhythmBuilder", () => {
     expect(commit).toEqual({
       ok: true,
       pattern: "[[x .] [x .] [x .] [x .] [x .]]@2",
-      required: { cycleBeats: 2, subdivision: 5 },
+      required: { cycleBeats: 2, subdivision: 5, workingSubdivision: 5 },
     });
     expect(
       compileDumkaPattern(printBuilderPattern(result.nodes))
@@ -312,10 +312,12 @@ describe("dumkaRhythmBuilder", () => {
     expect(before.ok && before.required).toEqual({
       cycleBeats: 3,
       subdivision: 5,
+      workingSubdivision: 5,
     });
     expect(after && after.ok && after.required).toEqual({
       cycleBeats: 3,
       subdivision: 5,
+      workingSubdivision: 5,
     });
   });
 
@@ -608,7 +610,11 @@ describe("dumkaRhythmBuilder", () => {
     }
     const fine = tryCommitBuilder(nodes);
     expect(fine.ok && fine.pattern).toBe("x . x .");
-    expect(fine.ok && fine.required).toEqual({ cycleBeats: 4, subdivision: 1 });
+    expect(fine.ok && fine.required).toEqual({
+      cycleBeats: 4,
+      subdivision: 1,
+      workingSubdivision: 1,
+    });
   });
 
   it("flags sugar, comments, and bars for the rewrite hint", () => {

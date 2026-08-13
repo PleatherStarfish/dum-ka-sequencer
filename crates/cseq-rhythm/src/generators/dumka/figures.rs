@@ -11,9 +11,9 @@
 //!
 //! Placement inside an interval uses the Bjorklund necklace `E(k, n)`
 //! (Toussaint): a true equal tuplet whenever `k` divides `n`, the
-//! maximally even on-grid figure otherwise. Nothing is ever emitted finer
-//! than the grid — a genuine finer-than-grid tuplet stays gated on the
-//! platform upsample extension tracked in ROADMAP M6+.
+//! maximally even on-grid figure otherwise. Nothing is emitted finer than
+//! the resolved working grid; subdivision palettes refine that grid before
+//! evolution, while off-working-grid or continuous timing remains gated.
 //!
 //! Exactness contract: `apply_consolidate` inverts `apply_fragment` on any
 //! sounding interval (`fragment_then_consolidate_is_identity` proves it
@@ -83,6 +83,17 @@ pub fn ranked_fragment_intervals(
             onset_index: None,
         });
     }
+    // A rotated state may be physically projectable even when one onset's
+    // unrotated interval crosses the cycle fence. That interval cannot be
+    // fragmented on this linear metric frame: its interior would include a
+    // slot outside both the grid and `ranks`. Leave it to the rotation and
+    // projection guards instead of indexing one rank past the cycle.
+    intervals.retain(|interval| {
+        interval
+            .start
+            .checked_add(interval.len)
+            .is_some_and(|end| end <= slots)
+    });
     if let Some(window) = window {
         intervals.retain(|interval| {
             window.contains_interval(interval.start, interval.start.saturating_add(interval.len))
@@ -263,6 +274,26 @@ mod tests {
         // Strongest interior pulse wins: the sustain's interior starts at
         // slot 1 (rank 10), then the 4..6 gap (rank 7), then 8..12 (rank 3).
         assert_eq!(as_tuples, vec![(0, 4, true), (4, 2, false), (8, 4, false)]);
+    }
+
+    #[test]
+    fn rotated_onset_crossing_unrotated_cycle_fence_is_not_fragmentable() {
+        // On W=2 over four beats, rotating this state forward one beat makes
+        // the final onset physically span slots 1..3. In the unrotated
+        // operator frame it remains 7..9 and therefore cannot be ranked or
+        // fragmented against the eight-slot grid.
+        let mut s = state(vec![onset(0, 2, "dum"), onset(7, 2, "ka")]);
+        s.rotation_beats = 1;
+        let ranks: Vec<u32> = (0..8).rev().collect();
+
+        let intervals = ranked_fragment_intervals(&s, 8, &ranks, None);
+
+        assert!(intervals
+            .iter()
+            .all(|interval| interval.start + interval.len <= 8));
+        assert!(!intervals
+            .iter()
+            .any(|interval| interval.onset_index == Some(1)));
     }
 
     #[test]

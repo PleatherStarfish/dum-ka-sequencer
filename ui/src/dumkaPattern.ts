@@ -117,7 +117,38 @@ export const DEFAULT_DUMKA_OP_WEIGHTS: DumkaOpWeights = {
 
 export interface DumkaRequiredStructure {
   cycleBeats: number;
+  /** Minimal grid required by the seed notation itself. */
   subdivision: number;
+  /** Fold grid after applying the optional subdivision palette. */
+  workingSubdivision: number;
+}
+
+export const DUMKA_SUBDIVISION_LEVELS = [2, 3, 5, 7] as const;
+export type DumkaSubdivisionLevel = (typeof DUMKA_SUBDIVISION_LEVELS)[number];
+
+/** Tolerant UI/persistence normalization for the authored depth palette. */
+export function normalizeDumkaSubdivisionPalette(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(
+    value.filter(
+      (entry): entry is DumkaSubdivisionLevel =>
+        typeof entry === "number" &&
+        Number.isInteger(entry) &&
+        DUMKA_SUBDIVISION_LEVELS.includes(entry as DumkaSubdivisionLevel)
+    )
+  )]
+    .sort((left, right) => left - right)
+    .slice(0, 2);
+}
+
+export function workingDumkaSubdivision(
+  subdivision: number,
+  palette: readonly number[] = []
+): number {
+  return normalizeDumkaSubdivisionPalette(palette).reduce(
+    (working, level) => working * level,
+    subdivision
+  );
 }
 
 export type DumkaPatternAnalysis =
@@ -134,7 +165,10 @@ export type DumkaBeatSlotAnalysis =
   | { ok: false; issue: DumkaIssue };
 
 /** Editor-facing view of a pattern: its required structure or first issue. */
-export function analyzeDumkaPattern(pattern: string): DumkaPatternAnalysis {
+export function analyzeDumkaPattern(
+  pattern: string,
+  subdivisionPalette: readonly number[] = []
+): DumkaPatternAnalysis {
   const result = compileDumkaPattern(pattern);
   return result.ok
     ? {
@@ -142,6 +176,10 @@ export function analyzeDumkaPattern(pattern: string): DumkaPatternAnalysis {
         required: {
           cycleBeats: result.compiled.totalBeats,
           subdivision: result.compiled.requiredSubdivision,
+          workingSubdivision: workingDumkaSubdivision(
+            result.compiled.requiredSubdivision,
+            subdivisionPalette
+          ),
         },
       }
     : { ok: false, issue: result.issue };
@@ -171,7 +209,10 @@ export function dumkaStructureMatches(
   if (authored.initialJathiWeights.length !== 0) return false;
   if (authored.initialWeights.length !== 1) return false;
   const only = authored.initialWeights[0]!;
-  return only.weight > 0 && only.subdivision % required.subdivision === 0;
+  return (
+    only.weight > 0 &&
+    only.subdivision % required.workingSubdivision === 0
+  );
 }
 
 /** Formats a parse issue exactly like the engine's GeneratorError Display. */
@@ -738,7 +779,10 @@ export function compileDumkaPattern(
  * sounding-event list, this analysis includes rest starts and applies holds
  * before deriving boundaries.
  */
-export function deriveDumkaBeatSlotCounts(text: string): DumkaBeatSlotAnalysis {
+export function deriveDumkaBeatSlotCounts(
+  text: string,
+  subdivisionPalette: readonly number[] = []
+): DumkaBeatSlotAnalysis {
   const result = compileDumkaPatternInternal(text);
   return result.ok
     ? {
@@ -747,6 +791,10 @@ export function deriveDumkaBeatSlotCounts(text: string): DumkaBeatSlotAnalysis {
         required: {
           cycleBeats: result.compiled.totalBeats,
           subdivision: result.compiled.requiredSubdivision,
+          workingSubdivision: workingDumkaSubdivision(
+            result.compiled.requiredSubdivision,
+            subdivisionPalette
+          ),
         },
       }
     : { ok: false, issue: result.issue };

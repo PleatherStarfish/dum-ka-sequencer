@@ -55,7 +55,7 @@ fn generator_seed_mode_strategy() -> impl Strategy<Value = rhythm::GeneratorSeed
 const DUMKA_FUZZ_PATTERNS: [&str; 4] = ["x . x .", "dum . ka .", "[x x] . [x x x] .", "E(3,8)@4"];
 
 fn directive_family(index: usize) -> rhythm::DirectiveFamily {
-    match index % 9 {
+    match index % 10 {
         0 => rhythm::DirectiveFamily::BarlowRemove,
         1 => rhythm::DirectiveFamily::BarlowAdd,
         2 => rhythm::DirectiveFamily::Rotate,
@@ -64,7 +64,8 @@ fn directive_family(index: usize) -> rhythm::DirectiveFamily {
         5 => rhythm::DirectiveFamily::Fragment,
         6 => rhythm::DirectiveFamily::Consolidate,
         7 => rhythm::DirectiveFamily::Euclid,
-        _ => rhythm::DirectiveFamily::Stochastic,
+        8 => rhythm::DirectiveFamily::Stochastic,
+        _ => rhythm::DirectiveFamily::Morph,
     }
 }
 
@@ -73,7 +74,7 @@ fn directive_family(index: usize) -> rhythm::DirectiveFamily {
 fn evolution_plan_strategy() -> impl Strategy<Value = Vec<rhythm::EvolutionDirective>> {
     (
         0_usize..=4,
-        0_usize..9,
+        0_usize..10,
         prop::collection::vec(
             (
                 prop::bool::ANY,
@@ -162,6 +163,16 @@ fn evolution_plan_strategy() -> impl Strategy<Value = Vec<rhythm::EvolutionDirec
                                 fill_complexity: Some(complexity),
                                 density_floor: Some(temperature.min(complexity)),
                                 density_ceiling: Some(temperature.max(complexity)),
+                                complexity_floor: Some(
+                                    temperature.min(complexity).saturating_mul(1_000),
+                                ),
+                                complexity_ceiling: Some(
+                                    temperature.max(complexity).saturating_mul(1_000),
+                                ),
+                                placement_bias: Some(invert),
+                                subdivision_level: None,
+                                morph_target: (family == rhythm::DirectiveFamily::Morph)
+                                    .then(|| "x . x .".to_string()),
                                 euclid_max_run: Some(max_run),
                                 euclid_invert: Some(invert),
                                 euclid_rest_policy: Some(if tied {
@@ -192,6 +203,14 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
         prop::array::uniform8(0_u32..=100),
         (1_u32..=8, 0_u32..=100, prop::bool::ANY),
         evolution_plan_strategy(),
+        prop_oneof![
+            Just(Vec::<u32>::new()),
+            Just(vec![2]),
+            Just(vec![3]),
+            Just(vec![5]),
+            Just(vec![7]),
+            Just(vec![2, 3]),
+        ],
         generator_seed_mode_strategy(),
     )
         .prop_map(
@@ -203,17 +222,31 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                 fill_complexity,
                 weights,
                 (euclid_max_run, euclid_invert, euclid_tied),
-                plan,
+                mut plan,
+                subdivision_palette,
                 seed_mode,
             )| {
+                for (index, directive) in plan.iter_mut().enumerate() {
+                    if index % 2 == 0 {
+                        directive.options.subdivision_level = subdivision_palette.first().copied();
+                    }
+                }
                 rhythm::DumkaGeneratorParams {
                     pattern: DUMKA_FUZZ_PATTERNS[index].to_string(),
+                    subdivision_palette,
                     evolution_rate,
                     drift_leash,
                     barlow_temperature,
                     fill_complexity,
                     density_floor: barlow_temperature.min(fill_complexity),
                     density_ceiling: barlow_temperature.max(fill_complexity),
+                    complexity_floor: barlow_temperature
+                        .min(fill_complexity)
+                        .saturating_mul(1_000),
+                    complexity_ceiling: barlow_temperature
+                        .max(fill_complexity)
+                        .saturating_mul(1_000),
+                    placement_bias: euclid_invert,
                     weight_barlow_remove: weights[0],
                     weight_barlow_add: weights[1],
                     weight_rotate: weights[2],
@@ -250,9 +283,9 @@ fn generator_config_strategy() -> impl Strategy<Value = rhythm::GeneratorConfig>
     ]
 }
 
-/// A single-section score matched to a Dum-Ka pattern's required structure:
-/// the pattern's beat count, a Subdivision that is the smallest required
-/// value times a bounded multiplier, and no Grouping (per-beat spans).
+/// A single-section score matched to a Dum-Ka pattern's working structure:
+/// the pattern's beat count, its palette-refined Subdivision times a bounded
+/// multiplier, and no Grouping (per-beat spans).
 fn dumka_section_score(
     params: &rhythm::DumkaGeneratorParams,
     multiplier_hint: u32,
@@ -261,8 +294,13 @@ fn dumka_section_score(
     let tree = rhythm::generators::dumka::dsl::parse(&params.pattern).expect("fuzz patterns parse");
     let compiled = rhythm::generators::dumka::tree::compile(&tree).expect("fuzz patterns compile");
     let required = compiled.required_structure();
-    let max_multiplier = (16 / required.subdivision).max(1);
-    let subdivision = required.subdivision * multiplier_hint.clamp(1, max_multiplier);
+    let working = rhythm::generators::dumka::depth::working_subdivision(
+        required.subdivision,
+        &params.subdivision_palette,
+    )
+    .expect("strategy emits a legal working Subdivision");
+    let max_multiplier = (64 / working).max(1);
+    let subdivision = working * multiplier_hint.clamp(1, max_multiplier);
     model::Score::subdivision_switch(
         "invariant-dumka",
         model::SubdivisionSwitchSpec {
@@ -490,6 +528,21 @@ fn expected_generator_onsets(
         .collect::<Vec<_>>();
     ticks.sort_unstable();
     ticks
+}
+
+fn resolved_onset_slots(spans: &[rhythm::GeneratedSpan]) -> Vec<u32> {
+    let mut span_start = 0u32;
+    let mut onsets = Vec::new();
+    for span in spans {
+        onsets.extend(
+            span.cells
+                .iter()
+                .filter(|cell| !cell.rest && !cell.tied_from_previous)
+                .map(|cell| span_start + cell.start),
+        );
+        span_start = span_start.saturating_add(span.span_len);
+    }
+    onsets
 }
 
 fn dispatch_order(event: &TransportFuzzQueuedEvent) -> u8 {
@@ -801,7 +854,169 @@ fn evolution_plan_strategy_reaches_bounds_and_every_family() {
             rhythm::DirectiveFamily::Consolidate,
             rhythm::DirectiveFamily::Euclid,
             rhythm::DirectiveFamily::Stochastic,
+            rhythm::DirectiveFamily::Morph,
         ])
+    );
+}
+
+#[test]
+fn dumka_depth_strategy_reaches_every_palette_and_new_control_bounds() {
+    let mut runner = TestRunner::deterministic();
+    let strategy = dumka_params_strategy();
+    let mut palettes = HashSet::new();
+    let mut saw_zero_complexity = false;
+    let mut saw_max_complexity = false;
+    let mut saw_zero_bias = false;
+    let mut saw_max_bias = false;
+    let mut saw_morph = false;
+    let mut saw_level_filter = false;
+    for _ in 0..2_048 {
+        let tree = strategy
+            .new_tree(&mut runner)
+            .expect("Dum-Ka strategy produces a value");
+        let params = tree.current();
+        palettes.insert(params.subdivision_palette.clone());
+        saw_zero_complexity |= params.complexity_floor == 0;
+        saw_max_complexity |= params.complexity_ceiling == 100_000;
+        saw_zero_bias |= params.placement_bias == 0;
+        saw_max_bias |= params.placement_bias == 100;
+        saw_morph |= params
+            .plan
+            .iter()
+            .any(|directive| directive.family == rhythm::DirectiveFamily::Morph);
+        saw_level_filter |= params
+            .plan
+            .iter()
+            .any(|directive| directive.options.subdivision_level.is_some());
+    }
+    assert_eq!(
+        palettes,
+        HashSet::from([vec![], vec![2], vec![3], vec![5], vec![7], vec![2, 3],])
+    );
+    assert!(saw_zero_complexity && saw_max_complexity);
+    assert!(saw_zero_bias && saw_max_bias);
+    assert!(saw_morph && saw_level_filter);
+}
+
+#[test]
+fn subdivision_level_filters_real_add_candidates_on_the_working_grid() {
+    let spans = [rhythm::GeneratorSpanInput {
+        span_id: 1,
+        span_len: 12,
+        label: None,
+        section_index: Some(1),
+        subdivision: Some(12),
+    }];
+    let directive = |subdivision_level| rhythm::EvolutionDirective {
+        id: 501,
+        order: 0,
+        enabled: true,
+        from_cycle: 1,
+        to_cycle: 1,
+        family: rhythm::DirectiveFamily::BarlowAdd,
+        pacing: rhythm::DirectivePacing::PerCycle,
+        magnitude: rhythm::DirectiveMagnitude::OperationQuota,
+        intensity: 100,
+        scope: None,
+        options: rhythm::DirectiveOptions {
+            subdivision_level,
+            ..Default::default()
+        },
+    };
+    let resolve = |subdivision_level| {
+        let config = rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "[x . . .]".to_string(),
+            subdivision_palette: vec![3],
+            evolution_rate: 0,
+            drift_leash: 0,
+            plan: vec![directive(subdivision_level)],
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 501 },
+            ..Default::default()
+        });
+        rhythm::resolve_generator_cycle_with_trace(
+            &config,
+            &rhythm::GeneratorCycleContext {
+                track_id: None,
+                cycle: 1,
+                cycle_beats: 1,
+                spans: &spans,
+                seed: 501,
+                automation: &|_, _, _| None,
+            },
+        )
+        .expect("filtered Add resolves")
+    };
+
+    let filtered = resolve(Some(3));
+    let unfiltered = resolve(None);
+    let filtered_slots = resolved_onset_slots(&filtered.spans);
+    let unfiltered_slots = resolved_onset_slots(&unfiltered.spans);
+    let filtered_additions = filtered_slots
+        .iter()
+        .copied()
+        .filter(|slot| *slot != 0)
+        .collect::<Vec<_>>();
+
+    assert!(!filtered_additions.is_empty());
+    assert!(filtered_additions
+        .iter()
+        .all(|slot| { rhythm::generators::dumka::depth::slot_level_index(*slot, 12) == Some(3) }));
+    assert!(unfiltered_slots.iter().any(|slot| {
+        *slot != 0 && rhythm::generators::dumka::depth::slot_level_index(*slot, 12) != Some(3)
+    }));
+    assert_ne!(filtered_slots, unfiltered_slots);
+    assert!(filtered.trace[0].applied > 0);
+}
+
+#[test]
+fn depth_diversity_is_a_readout_and_does_not_select_an_evolution_path() {
+    let spans = [rhythm::GeneratorSpanInput {
+        span_id: 1,
+        span_len: 12,
+        label: None,
+        section_index: Some(1),
+        subdivision: Some(12),
+    }];
+    let config = rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+        pattern: "[x . x .]".to_string(),
+        subdivision_palette: vec![3],
+        evolution_rate: 100,
+        drift_leash: 100,
+        weight_barlow_remove: 0,
+        weight_barlow_add: 100,
+        weight_rotate: 0,
+        seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 777 },
+        ..Default::default()
+    });
+    let context = rhythm::GeneratorCycleContext {
+        track_id: None,
+        cycle: 3,
+        cycle_beats: 1,
+        spans: &spans,
+        seed: 777,
+        automation: &|_, _, _| None,
+    };
+
+    let observed = rhythm::resolve_generator_cycle_with_trace(&config, &context)
+        .expect("observed resolution succeeds");
+    let ordinary =
+        rhythm::resolve_generator_cycle(&config, &context).expect("ordinary resolution succeeds");
+    let onset_slots = resolved_onset_slots(&observed.spans);
+
+    assert_eq!(ordinary, observed.spans);
+    assert_eq!(
+        observed.state_depth_diversity_milli,
+        Some(rhythm::generators::dumka::depth::depth_diversity_milli(
+            &onset_slots,
+            12,
+        ))
+    );
+    assert!(observed.state_depth_diversity_milli.is_some());
+    assert_eq!(
+        rhythm::resolve_generator_cycle_with_trace(&config, &context)
+            .expect("readout replay succeeds"),
+        observed,
+        "reading diversity cannot admit, reject, or reorder candidates"
     );
 }
 

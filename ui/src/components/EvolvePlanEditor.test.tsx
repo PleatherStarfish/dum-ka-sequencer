@@ -44,8 +44,9 @@ describe("EvolvePlanEditor", () => {
 
     expect(screen.getByText("0 seed")).toBeTruthy();
     expect(screen.getByLabelText("Remove lane")).toBeTruthy();
+    expect(screen.getByLabelText("Morph lane")).toBeTruthy();
     expect(screen.getByLabelText("Stochastic lane")).toBeTruthy();
-    expect(screen.getAllByTitle("Cycle 0 is the locked seed")).toHaveLength(9);
+    expect(screen.getAllByTitle("Cycle 0 is the locked seed")).toHaveLength(10);
   });
 
   it("adds a pin through a lane's keyboard-accessible add control", () => {
@@ -410,6 +411,186 @@ describe("EvolvePlanEditor", () => {
       name: "Cycle 7 step size 0.8, target 5.0 ±0.5, outside tolerance",
     });
     expect(outside.classList.contains("is-outside-target")).toBe(true);
+  });
+
+  it("plots backend complexity inside its rail and labels an independent clamp", () => {
+    render(
+      <EvolvePlanEditor
+        plan={[directive({ family: "barlowAdd", fromCycle: 5, toCycle: 5 })]}
+        planLengthCycles={8}
+        totalBeats={4}
+        previewCycle={5}
+        trace={[
+          {
+            cycle: 5,
+            directiveId: 1,
+            family: "barlowAdd",
+            requested: 2,
+            applied: 1,
+            skipped: "exhausted",
+            complexityCorridorClamp: {
+              limit: "ceiling",
+              complexityMilli: 42_000,
+            },
+          },
+        ]}
+        cachedPreviews={[
+          {
+            cycle: 5,
+            preview: {
+              spans: [],
+              densityCorridor: null,
+              cycleDistance: null,
+              workingSubdivision: 12,
+              stateComplexityMilli: 37_500,
+              stateDepthDiversityMilli: 75_000,
+              complexityCorridor: { floor: 20_000, ceiling: 42_000 },
+            },
+          },
+        ]}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const cell = screen.getByRole("group", {
+      name: "Cycle 5 complexity 37.5, corridor 20.0 through 42.0, inside corridor",
+    });
+    expect(cell.classList.contains("is-within-corridor")).toBe(true);
+    expect(
+      screen.getByLabelText("Cycle 5 depth diversity 75.0")
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        "Add: 1/2, ceiling complexity corridor 42.0, exhausted"
+      )
+    ).toBeTruthy();
+  });
+
+  it("authors and validates a Morph target without bypassing transition pacing", () => {
+    const onPlanChange = vi.fn();
+    const row = directive({
+      family: "morph",
+      fromCycle: 5,
+      toCycle: 20,
+      pacing: "easeInOut",
+      options: {
+        ...DEFAULT_DIRECTIVE_OPTIONS,
+        morphTarget: "x x x x",
+      },
+    });
+    const view = render(
+      <EvolvePlanEditor
+        plan={[row]}
+        planLengthCycles={24}
+        totalBeats={4}
+        workingSubdivision={6}
+        initialSelectedId={1}
+        onPlanChange={onPlanChange}
+      />
+    );
+    expect(
+      (screen.getByLabelText("Directive transition") as HTMLSelectElement)
+        .value
+    ).toBe("easeInOut");
+    expect(
+      screen.getByText("4 beats · Subdivision 1 · exact on working 6")
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Morph target blocks for directive 1")
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Morph target pattern"), {
+      target: { value: "[x x x x x] x x x" },
+    });
+    expect(onPlanChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        family: "morph",
+        pacing: "easeInOut",
+        options: expect.objectContaining({ morphTarget: "[x x x x x] x x x" }),
+      }),
+    ]);
+    view.rerender(
+      <EvolvePlanEditor
+        plan={[
+          {
+            ...row,
+            options: {
+              ...row.options,
+              morphTarget: "[x x x x x] x x x",
+            },
+          },
+        ]}
+        planLengthCycles={24}
+        totalBeats={4}
+        workingSubdivision={6}
+        initialSelectedId={1}
+        onPlanChange={onPlanChange}
+      />
+    );
+    expect(
+      screen.getByText(
+        "dumka plan invalid: directive 1 morph target needs Subdivision 5 which does not divide working Subdivision 6"
+      )
+    ).toBeTruthy();
+  });
+
+  it("offers canonical working-grid depth indices instead of palette primes", () => {
+    const onPlanChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[directive()]}
+        planLengthCycles={12}
+        totalBeats={4}
+        workingSubdivision={12}
+        initialSelectedId={1}
+        onPlanChange={onPlanChange}
+      />
+    );
+
+    const select = screen.getByLabelText(
+      "Subdivision level"
+    ) as HTMLSelectElement;
+    expect(
+      Array.from(select.options).map((option) => option.textContent)
+    ).toEqual([
+      "Any level",
+      "Level 0 · beat starts",
+      "Level 1 · 1/2-beat positions",
+      "Level 2 · 1/4-beat positions",
+      "Level 3 · 1/3-beat positions",
+      "Level 4 · 1/6-beat positions",
+      "Level 5 · 1/12-beat positions",
+    ]);
+
+    fireEvent.change(select, { target: { value: "3" } });
+    expect(onPlanChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        options: expect.objectContaining({ subdivisionLevel: 3 }),
+      }),
+    ]);
+  });
+
+  it("validates Morph beats against the seed while score structure is stale", () => {
+    render(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            family: "morph",
+            options: {
+              ...DEFAULT_DIRECTIVE_OPTIONS,
+              morphTarget: "x x",
+            },
+          }),
+        ]}
+        planLengthCycles={8}
+        totalBeats={4}
+        seedTotalBeats={2}
+        workingSubdivision={1}
+        initialSelectedId={1}
+        onPlanChange={vi.fn()}
+      />
+    );
+    expect(
+      screen.getByText("2 beats · Subdivision 1 · exact on working 1")
+    ).toBeTruthy();
   });
 
   it("toggles before and after audition around the selected directive", () => {

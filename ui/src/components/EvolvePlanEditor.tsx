@@ -11,8 +11,12 @@ import {
   type WheelEvent,
 } from "react";
 
-import type {
-  EvolutionCurve, GeneratorPreview } from "../bridge";
+import type { EvolutionCurve, GeneratorPreview } from "../bridge";
+import { analyzeDumkaPattern, compileDumkaPattern } from "../dumkaPattern";
+import {
+  dumkaSubdivisionLevels,
+  type DumkaSubdivisionLevelDescriptor,
+} from "../dumkaMetrics";
 import {
   MAX_CURVE_OPERATIONS,
   upsertCurvePoint,
@@ -36,12 +40,15 @@ import {
   resizeRange,
   setIntensity,
   setMagnitude,
+  setComplexityCorridor,
   setDensityCorridor,
   setOptions,
   setPacing,
   setScope,
   smoothDirectiveOverFourCycles,
   toggleEnabled,
+  subdivisionLevelValidationError,
+  validateEvolutionPlan,
   type DirectiveFamily,
   type DirectiveOptions,
   type DirectivePacing,
@@ -51,6 +58,7 @@ import {
 } from "../dumkaEvolvePlan";
 import { NumericField } from "../NumericField";
 import { MAX_STOPPED_PREVIEW_CYCLE } from "../timelineModel";
+import { RhythmBuilderMiniBlock } from "./RhythmBuilder";
 
 const CELL_WIDTH = 54;
 const MIN_CELL_WIDTH = 30;
@@ -62,7 +70,16 @@ const VIEWPORT_OVERSCAN = 3;
 
 export interface EvolutionCachedPreview {
   cycle: number;
-  preview: Pick<GeneratorPreview, "spans" | "densityCorridor" | "cycleDistance">;
+  preview: Pick<
+    GeneratorPreview,
+    | "spans"
+    | "densityCorridor"
+    | "cycleDistance"
+    | "workingSubdivision"
+    | "stateComplexityMilli"
+    | "stateDepthDiversityMilli"
+    | "complexityCorridor"
+  >;
 }
 
 export type EvolutionInheritedOptions = Partial<
@@ -72,6 +89,10 @@ export type EvolutionInheritedOptions = Partial<
     | "fillComplexity"
     | "densityFloor"
     | "densityCeiling"
+    | "complexityFloor"
+    | "complexityCeiling"
+    | "placementBias"
+    | "subdivisionLevel"
     | "euclidMaxRun"
     | "euclidInvert"
     | "euclidRestPolicy"
@@ -82,6 +103,9 @@ export interface EvolvePlanEditorProps {
   plan: readonly EvolutionDirective[];
   planLengthCycles: number;
   totalBeats: number;
+  /** Beat count compiled from the Dum-Ka seed. Unlike totalBeats, this stays
+   * authoritative while authored score structure is awaiting Apply. */
+  seedTotalBeats?: number;
   disabled?: boolean;
   /** Cycle currently displayed by the stopped preview/scrubber. */
   previewCycle?: number;
@@ -96,6 +120,9 @@ export interface EvolvePlanEditorProps {
   onVisibleCycleRangeChange?: (fromCycle: number, toCycle: number) => void;
   densityFloor?: number;
   densityCeiling?: number;
+  complexityFloor?: number;
+  complexityCeiling?: number;
+  workingSubdivision?: number;
   /** Composition-level evolution curve; edited via the Curve card and by
    * clicking in the step-size lane while the curve is enabled. */
   curve?: EvolutionCurve;
@@ -128,11 +155,20 @@ interface VisibleCycleRange {
 const familyOptionFields: Partial<
   Record<DirectiveFamily, readonly (keyof DirectiveOptions)[]>
 > = {
-  barlowRemove: ["barlowTemperature"],
-  barlowAdd: ["barlowTemperature"],
-  fragment: ["fillComplexity"],
-  euclid: ["euclidMaxRun", "euclidInvert", "euclidRestPolicy"],
+  barlowRemove: ["barlowTemperature", "placementBias", "subdivisionLevel"],
+  barlowAdd: ["barlowTemperature", "placementBias", "subdivisionLevel"],
+  syncopate: ["subdivisionLevel"],
+  desyncopate: ["subdivisionLevel"],
+  fragment: ["fillComplexity", "subdivisionLevel"],
+  consolidate: ["subdivisionLevel"],
+  euclid: [
+    "euclidMaxRun",
+    "euclidInvert",
+    "euclidRestPolicy",
+    "subdivisionLevel",
+  ],
   rotate: ["rotateDirection"],
+  morph: ["morphTarget"],
 };
 
 function directiveTitle(row: EvolutionDirective): string {
@@ -244,10 +280,13 @@ function traceEntryLabel(
   const corridor = entry.corridorClamp
     ? `, ${entry.corridorClamp.limit} corridor ${entry.corridorClamp.densityPercent}%`
     : "";
+  const complexityCorridor = entry.complexityCorridorClamp
+    ? `, ${entry.complexityCorridorClamp.limit} complexity corridor ${formatPerceptualScore(entry.complexityCorridorClamp.complexityMilli)}`
+    : "";
   const perceptual = entry.perceptual
     ? `, realized ${formatPerceptualScore(entry.perceptual.actualMilli)} vs target ${formatPerceptualScore(entry.perceptual.targetMilli)} ±${formatPerceptualScore(entry.perceptual.toleranceMilli)}${entry.perceptual.reached ? ", within tolerance" : entry.perceptual.exhausted ? ", nearest legal step" : ""}`
     : "";
-  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${perceptual}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
+  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${complexityCorridor}${perceptual}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
   if (
     !directive ||
     directive.pacing === "perCycle" ||
@@ -273,6 +312,58 @@ function scopeRunFromBeat(
     startBeat: Math.min(anchor, beat),
     lenBeats: Math.abs(beat - anchor) + 1,
   };
+}
+
+function morphTargetStatus(
+  target: string | null,
+  seedTotalBeats: number,
+  workingSubdivision: number,
+  directiveId: number
+): { ok: true; summary: string } | { ok: false; message: string } {
+  if (!target) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${directiveId} morph requires options.morphTarget`,
+    };
+  }
+  const analysis = analyzeDumkaPattern(target);
+  if (!analysis.ok) {
+    return {
+      ok: false,
+      message: `dumka pattern parse error at line ${analysis.issue.line}, column ${analysis.issue.col}: ${analysis.issue.message}`,
+    };
+  }
+  if (analysis.required.cycleBeats !== seedTotalBeats) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${directiveId} morph target spans ${analysis.required.cycleBeats} beats but the seed spans ${seedTotalBeats}`,
+    };
+  }
+  const compiled = compileDumkaPattern(target);
+  if (compiled.ok && compiled.compiled.events.length === 0) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${directiveId} morph target must contain at least one sounding onset`,
+    };
+  }
+  if (workingSubdivision % analysis.required.subdivision !== 0) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${directiveId} morph target needs Subdivision ${analysis.required.subdivision} which does not divide working Subdivision ${workingSubdivision}`,
+    };
+  }
+  return {
+    ok: true,
+    summary: `${analysis.required.cycleBeats} beats · Subdivision ${analysis.required.subdivision} · exact on working ${workingSubdivision}`,
+  };
+}
+
+function subdivisionLevelLabel(
+  level: DumkaSubdivisionLevelDescriptor
+): string {
+  return level.denominator === 1
+    ? `Level ${level.index} · beat starts`
+    : `Level ${level.index} · 1/${level.denominator}-beat positions`;
 }
 
 function ScopeGlyph({ row, totalBeats }: { row: EvolutionDirective; totalBeats: number }) {
@@ -351,6 +442,7 @@ export function EvolvePlanEditor({
   plan,
   planLengthCycles,
   totalBeats,
+  seedTotalBeats,
   disabled = false,
   previewCycle = 0,
   cachedPreviews = [],
@@ -364,9 +456,17 @@ export function EvolvePlanEditor({
   onVisibleCycleRangeChange,
   densityFloor = 0,
   densityCeiling = 100,
+  complexityFloor = 0,
+  complexityCeiling = 100_000,
+  workingSubdivision = 1,
   curve = DEFAULT_EVOLUTION_CURVE,
   onCurveChange,
 }: EvolvePlanEditorProps) {
+  const morphSeedBeats = seedTotalBeats ?? totalBeats;
+  const subdivisionLevels = useMemo(
+    () => dumkaSubdivisionLevels(workingSubdivision),
+    [workingSubdivision]
+  );
   const [selectedId, setSelectedId] = useState<number | null>(initialSelectedId);
   const [usedOnly, setUsedOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -454,10 +554,16 @@ export function EvolvePlanEditor({
             ...previewMetrics(entry),
             corridor: entry.preview.densityCorridor ?? null,
             distanceMilli: entry.preview.cycleDistance?.distanceMilli ?? null,
+            complexityMilli: entry.preview.stateComplexityMilli ?? null,
+            depthDiversityMilli:
+              entry.preview.stateDepthDiversityMilli ?? null,
+            complexityCorridor: entry.preview.complexityCorridor ?? null,
+            workingSubdivision:
+              entry.preview.workingSubdivision ?? workingSubdivision,
           },
         ])
       ),
-    [cachedPreviews]
+    [cachedPreviews, workingSubdivision]
   );
   const traceByCycle = useMemo(() => {
     const map = new Map<number, DirectiveTraceEntry[]>();
@@ -644,7 +750,12 @@ export function EvolvePlanEditor({
       setError(result.message);
       return false;
     }
-    onPlanChange(result.plan);
+    const contextual = validateEvolutionPlan(result.plan, workingSubdivision);
+    if (!contextual.ok) {
+      setError(contextual.message);
+      return false;
+    }
+    onPlanChange(contextual.plan);
     setSelectedId(nextSelection);
     setError(null);
     return true;
@@ -657,7 +768,14 @@ export function EvolvePlanEditor({
   };
 
   const add = (family: DirectiveFamily, cycle: number) => {
-    const result = addPin(plan, family, cycle);
+    const result = addPin(
+      plan,
+      family,
+      cycle,
+      family === "morph"
+        ? Array.from({ length: Math.max(1, morphSeedBeats) }, () => "x").join(" ")
+        : undefined
+    );
     const id = result.ok
       ? result.plan.find((row) => !plan.some((prior) => prior.id === row.id))?.id ??
         null
@@ -859,6 +977,21 @@ export function EvolvePlanEditor({
   };
 
   const selectedOptionFields = selected ? familyOptionFields[selected.family] ?? [] : [];
+  const previewDepthDiversityMilli =
+    previewByCycle.get(previewCycle)?.depthDiversityMilli ?? null;
+  const selectedMorphStatus =
+    selected?.family === "morph"
+      ? morphTargetStatus(
+          selected.options.morphTarget,
+          morphSeedBeats,
+          workingSubdivision,
+          selected.id
+        )
+      : null;
+  const currentSubdivisionLevelError = subdivisionLevelValidationError(
+    plan,
+    workingSubdivision
+  );
 
   return (
     <section
@@ -872,6 +1005,16 @@ export function EvolvePlanEditor({
           <h2>Evolution score</h2>
           <p>Pins apply once. Ranges repeat a quota or pace one target across cycles.</p>
         </div>
+        {previewDepthDiversityMilli !== null ? (
+          <output
+            className="evolve-plan-depth-insight"
+            aria-label={`Cycle ${previewCycle} depth diversity ${formatPerceptualScore(previewDepthDiversityMilli)}`}
+          >
+            <span>Depth diversity</span>
+            <b>{formatPerceptualScore(previewDepthDiversityMilli)}</b>
+            <em>cycle {previewCycle}</em>
+          </output>
+        ) : null}
         <label className="evolve-plan-used-toggle">
           <input
             type="checkbox"
@@ -1113,6 +1256,9 @@ export function EvolvePlanEditor({
                             ? "is-partial"
                             : "",
                           entry.corridorClamp ? "is-corridor-clamped" : "",
+                          entry.complexityCorridorClamp
+                            ? "is-complexity-clamped"
+                            : "",
                         ]
                           .filter(Boolean)
                           .map((state) => ` ${state}`)
@@ -1239,6 +1385,60 @@ export function EvolvePlanEditor({
                       className="evolve-plan-step-bar"
                       aria-hidden="true"
                       style={{ height: `${Math.max(realized > 0 ? 2 : 1, scale(realized))}%` }}
+                    />
+                  ) : null}
+                </span>
+              );
+            })}
+          </div>
+
+          <div
+            className="evolve-plan-complexity-lane"
+            aria-label="Complexity lane"
+          >
+            <span className="evolve-plan-lane-name">Complexity</span>
+            {cycles.map((cycle) => {
+              const metrics = previewByCycle.get(cycle);
+              const realized = metrics?.complexityMilli ?? null;
+              const corridor = metrics?.complexityCorridor ?? {
+                floor: complexityFloor,
+                ceiling: complexityCeiling,
+              };
+              const within =
+                realized !== null &&
+                realized >= corridor.floor &&
+                realized <= corridor.ceiling;
+              const label =
+                realized === null
+                  ? `Cycle ${cycle} complexity not cached`
+                  : `Cycle ${cycle} complexity ${formatPerceptualScore(realized)}, corridor ${formatPerceptualScore(corridor.floor)} through ${formatPerceptualScore(corridor.ceiling)}${within ? ", inside corridor" : ", outside corridor"}`;
+              return (
+                <span
+                  key={cycle}
+                  className={`evolve-plan-complexity-cell${
+                    within ? " is-within-corridor" : ""
+                  }`}
+                  role="group"
+                  aria-label={label}
+                  title={label}
+                  style={{ gridColumn: cycle + 2 }}
+                >
+                  <i
+                    className="evolve-plan-complexity-band"
+                    aria-hidden="true"
+                    style={{
+                      bottom: `${corridor.floor / 1_000}%`,
+                      height: `${Math.max(
+                        1,
+                        (corridor.ceiling - corridor.floor) / 1_000
+                      )}%`,
+                    }}
+                  />
+                  {realized !== null ? (
+                    <i
+                      className="evolve-plan-complexity-mark"
+                      aria-hidden="true"
+                      style={{ bottom: `${realized / 1_000}%` }}
                     />
                   ) : null}
                 </span>
@@ -1753,6 +1953,99 @@ export function EvolvePlanEditor({
                 ) : null}
               </fieldset>
 
+              <fieldset className="evolve-plan-options evolve-plan-corridor-options">
+                <legend>Complexity corridor</legend>
+                <label className="evolve-plan-enable">
+                  <input
+                    type="checkbox"
+                    aria-label="Override complexity corridor"
+                    checked={
+                      selected.options.complexityFloor !== null &&
+                      selected.options.complexityCeiling !== null
+                    }
+                    disabled={disabled}
+                    onChange={(event) =>
+                      updateSelected((row) =>
+                        setComplexityCorridor(
+                          plan,
+                          row.id,
+                          event.currentTarget.checked
+                            ? {
+                                floor:
+                                  inheritedOptions.complexityFloor ??
+                                  complexityFloor,
+                                ceiling:
+                                  inheritedOptions.complexityCeiling ??
+                                  complexityCeiling,
+                              }
+                            : null
+                        )
+                      )
+                    }
+                  />
+                  <span>
+                    {selected.options.complexityFloor === null
+                      ? `Inherit global · ${formatPerceptualScore(complexityFloor)}–${formatPerceptualScore(complexityCeiling)}`
+                      : "Override corridor"}
+                  </span>
+                </label>
+                {selected.options.complexityFloor !== null &&
+                selected.options.complexityCeiling !== null ? (
+                  <div className="evolve-plan-field-grid">
+                    <label>
+                      <span>Floor</span>
+                      <NumericField
+                        aria-label="Directive complexity floor"
+                        value={selected.options.complexityFloor / 1_000}
+                        min={0}
+                        max={selected.options.complexityCeiling / 1_000}
+                        step={0.1}
+                        numericMode="decimal"
+                        size="compact"
+                        disabled={disabled}
+                        onValueCommit={(value) =>
+                          updateSelected((row) =>
+                            setComplexityCorridor(plan, row.id, {
+                              floor: Math.min(
+                                Math.max(0, Math.round(value * 1_000)),
+                                row.options.complexityCeiling ?? complexityCeiling
+                              ),
+                              ceiling:
+                                row.options.complexityCeiling ?? complexityCeiling,
+                            })
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Ceiling</span>
+                      <NumericField
+                        aria-label="Directive complexity ceiling"
+                        value={selected.options.complexityCeiling / 1_000}
+                        min={selected.options.complexityFloor / 1_000}
+                        max={100}
+                        step={0.1}
+                        numericMode="decimal"
+                        size="compact"
+                        disabled={disabled}
+                        onValueCommit={(value) =>
+                          updateSelected((row) =>
+                            setComplexityCorridor(plan, row.id, {
+                              floor:
+                                row.options.complexityFloor ?? complexityFloor,
+                              ceiling: Math.max(
+                                row.options.complexityFloor ?? complexityFloor,
+                                Math.min(100_000, Math.round(value * 1_000))
+                              ),
+                            })
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </fieldset>
+
               {selectedOptionFields.length > 0 ? (
                 <fieldset className="evolve-plan-options">
                   <legend>Family options</legend>
@@ -1761,6 +2054,42 @@ export function EvolvePlanEditor({
                   ) : null}
                   {selectedOptionFields.includes("fillComplexity") ? (
                     <NullableOptionField label="Fill complexity" value={selected.options.fillComplexity} inheritedValue={inheritedOptions.fillComplexity as number | null | undefined} min={0} max={100} disabled={disabled} onChange={(value) => updateSelected((row) => setOptions(plan, row.id, { fillComplexity: value }))} />
+                  ) : null}
+                  {selectedOptionFields.includes("placementBias") ? (
+                    <NullableOptionField label="Placement bias" value={selected.options.placementBias} inheritedValue={inheritedOptions.placementBias as number | null | undefined} min={0} max={100} disabled={disabled} onChange={(value) => updateSelected((row) => setOptions(plan, row.id, { placementBias: value }))} />
+                  ) : null}
+                  {selectedOptionFields.includes("subdivisionLevel") ? (
+                    <label>
+                      <span>Subdivision level</span>
+                      <select
+                        aria-label="Subdivision level"
+                        value={selected.options.subdivisionLevel ?? "inherit"}
+                        disabled={disabled}
+                        onChange={(event) =>
+                          updateSelected((row) =>
+                            setOptions(plan, row.id, {
+                              subdivisionLevel:
+                                event.currentTarget.value === "inherit"
+                                  ? null
+                                  : Number(event.currentTarget.value),
+                            })
+                          )
+                        }
+                      >
+                        <option value="inherit">
+                          Any level
+                          {inheritedOptions.subdivisionLevel !== null &&
+                          inheritedOptions.subdivisionLevel !== undefined
+                            ? ` · inherited Level ${inheritedOptions.subdivisionLevel}`
+                            : ""}
+                        </option>
+                        {subdivisionLevels.map((level) => (
+                          <option key={level.index} value={level.index}>
+                            {subdivisionLevelLabel(level)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   ) : null}
                   {selectedOptionFields.includes("euclidMaxRun") ? (
                     <NullableOptionField label="Euclid max run" value={selected.options.euclidMaxRun} inheritedValue={inheritedOptions.euclidMaxRun as number | null | undefined} min={1} max={8} disabled={disabled} onChange={(value) => updateSelected((row) => setOptions(plan, row.id, { euclidMaxRun: value }))} />
@@ -1786,6 +2115,48 @@ export function EvolvePlanEditor({
                         <option value="silent">Silent</option>
                       </select>
                     </label>
+                  ) : null}
+                  {selectedOptionFields.includes("morphTarget") ? (
+                    <div className="evolve-plan-morph-target">
+                      <label>
+                        <span>Target pattern</span>
+                        <textarea
+                          aria-label="Morph target pattern"
+                          rows={4}
+                          spellCheck={false}
+                          value={selected.options.morphTarget ?? ""}
+                          disabled={disabled}
+                          onChange={(event) =>
+                            updateSelected((row) =>
+                              setOptions(plan, row.id, {
+                                morphTarget: event.currentTarget.value,
+                              })
+                            )
+                          }
+                        />
+                      </label>
+                      {selectedMorphStatus?.ok ? (
+                        <>
+                          <p className="is-valid" role="status">
+                            {selectedMorphStatus.summary}
+                          </p>
+                          <RhythmBuilderMiniBlock
+                            pattern={selected.options.morphTarget ?? ""}
+                            label={`Morph target blocks for directive ${selected.id}`}
+                          />
+                        </>
+                      ) : (
+                        <p role="alert">
+                          {selectedMorphStatus?.message ??
+                            "Enter a target pattern."}
+                        </p>
+                      )}
+                      <small>
+                        Morph transports attacks toward this exact lattice
+                        target. Transition or perceptual Step size still sets
+                        the cycle-to-cycle rate.
+                      </small>
+                    </div>
                   ) : null}
                 </fieldset>
               ) : null}
@@ -1818,7 +2189,11 @@ export function EvolvePlanEditor({
         </aside>
       </div>
 
-      {error ? <p className="evolve-plan-error" role="alert">{error}</p> : null}
+      {error ?? currentSubdivisionLevelError ? (
+        <p className="evolve-plan-error" role="alert">
+          {error ?? currentSubdivisionLevelError}
+        </p>
+      ) : null}
       <p className="evolve-plan-key-hint">
         Arrow keys move. Shift + arrow resizes. Alt + drag duplicates. Wheel
         pans; Control or Command + wheel zooms.

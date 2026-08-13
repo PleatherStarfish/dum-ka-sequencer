@@ -10,7 +10,12 @@ import {
   formatDumkaParseError,
   type DumkaCompiled,
 } from "../../../src/dumkaPattern";
-import { stratification } from "../../../src/dumkaMetrics";
+import {
+  dumkaSubdivisionLevels,
+  stateComplexityMilli,
+  stateDepthDiversityMilli,
+  stratification,
+} from "../../../src/dumkaMetrics";
 import { transportSnapshotFixture } from "../../../src/__fixtures__/dto/transportSnapshot.fixture";
 
 /**
@@ -54,7 +59,35 @@ const DUMKA_MOCK_PATTERNS: string[] = [
 
 type DumkaMockEntry =
   | { error: string }
-  | { compiled: DumkaCompiled; gridSupported: boolean };
+  | {
+      compiled: DumkaCompiled;
+      gridSupported: boolean;
+      depthMetrics: Record<
+        string,
+        { complexityMilli: number; diversityMilli: number }
+      >;
+      depthLevels: Record<string, number[]>;
+    };
+
+const DUMKA_MOCK_PALETTES = [2, 3, 5, 7]
+  .flatMap((first, index, levels) => [
+    [first],
+    ...levels.slice(index + 1).map((second) => [first, second]),
+  ])
+  .concat([[]]);
+
+function dumkaMockWorkingSubdivisions(requiredSubdivision: number): number[] {
+  return [
+    ...new Set(
+      DUMKA_MOCK_PALETTES.map((palette) =>
+        palette.reduce(
+          (working, level) => working * level,
+          requiredSubdivision
+        )
+      )
+    ),
+  ];
+}
 
 function buildDumkaMockTable(): Record<string, DumkaMockEntry> {
   const table: Record<string, DumkaMockEntry> = {};
@@ -71,6 +104,39 @@ function buildDumkaMockTable(): Record<string, DumkaMockEntry> {
               result.compiled.totalBeats,
               result.compiled.requiredSubdivision
             ) !== null,
+          depthMetrics: Object.fromEntries(
+            dumkaMockWorkingSubdivisions(
+              result.compiled.requiredSubdivision
+            ).map((workingSubdivision) => {
+              const onsetSlots = result.compiled.events.map(
+                (event) =>
+                  (event.start.num * workingSubdivision) / event.start.den
+              );
+              return [
+                String(workingSubdivision),
+                {
+                  complexityMilli: stateComplexityMilli(
+                    onsetSlots,
+                    workingSubdivision
+                  ),
+                  diversityMilli: stateDepthDiversityMilli(
+                    onsetSlots,
+                    workingSubdivision
+                  ),
+                },
+              ];
+            })
+          ),
+          depthLevels: Object.fromEntries(
+            dumkaMockWorkingSubdivisions(
+              result.compiled.requiredSubdivision
+            ).map((workingSubdivision) => [
+              String(workingSubdivision),
+              dumkaSubdivisionLevels(workingSubdivision).map(
+                (level) => level.denominator
+              ),
+            ])
+          ),
         }
       : { error: formatDumkaParseError(result.issue) };
   }
@@ -1228,9 +1294,11 @@ export async function installMockTauri(
         | "weightConsolidate"
         | "fillComplexity"
         | "weightEuclid"
-        | "euclidInvert",
+        | "euclidInvert"
+        | "placementBias",
       raw: unknown,
-      defaultValue: number
+      defaultValue: number,
+      directiveId?: unknown
     ): number => {
       const value = raw === undefined ? defaultValue : raw;
       // Two distinct rejection layers, mirroring the real backend: a
@@ -1252,7 +1320,39 @@ export async function installMockTauri(
         );
       }
       if (value > 100) {
+        if (directiveId !== undefined) {
+          throw new Error(
+            `dumka plan invalid: directive ${String(directiveId)} ${name} must be 0-100, got ${value}`
+          );
+        }
         throw new Error(`dumka ${name} must be 0-100, got ${value}`);
+      }
+      return value;
+    };
+
+    const dumkaComplexity = (
+      name: "complexityFloor" | "complexityCeiling",
+      raw: unknown,
+      defaultValue: number,
+      directiveId?: unknown
+    ): number => {
+      const value = raw === undefined ? defaultValue : raw;
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        !Number.isInteger(value) ||
+        value < 0
+      ) {
+        throw new Error(
+          `mock dumka preview rejected ${name} ${String(value)}: the engine's serde boundary refuses non-u32 values before generator validation`
+        );
+      }
+      if (value > 100_000) {
+        const scope =
+          directiveId === undefined ? "" : `directive ${String(directiveId)} `;
+        throw new Error(
+          `dumka plan invalid: ${scope}${name} must be 0-100000, got ${value}`
+        );
       }
       return value;
     };
@@ -1330,6 +1430,21 @@ export async function installMockTauri(
             `dumka plan invalid: densityFloor must be at most densityCeiling, got ${densityFloor} > ${densityCeiling}`
           );
         }
+        const complexityFloor = dumkaComplexity(
+          "complexityFloor",
+          generator.complexityFloor,
+          0
+        );
+        const complexityCeiling = dumkaComplexity(
+          "complexityCeiling",
+          generator.complexityCeiling,
+          100_000
+        );
+        if (complexityFloor > complexityCeiling) {
+          throw new Error(
+            `dumka plan invalid: complexityFloor must be at most complexityCeiling, got ${complexityFloor} > ${complexityCeiling}`
+          );
+        }
         dumkaPercent("driftLeash", generator.driftLeash, 25);
         dumkaPercent("barlowTemperature", generator.barlowTemperature, 0);
         dumkaPercent("weightBarlowRemove", generator.weightBarlowRemove, 3);
@@ -1342,6 +1457,7 @@ export async function installMockTauri(
         dumkaPercent("fillComplexity", generator.fillComplexity, 0);
         dumkaPercent("weightEuclid", generator.weightEuclid, 0);
         dumkaPercent("euclidInvert", generator.euclidInvert, 0);
+        dumkaPercent("placementBias", generator.placementBias, 0);
         {
           const rawMaxRun = generator.euclidMaxRun ?? 1;
           const maxRun = Number(rawMaxRun);
@@ -1367,6 +1483,658 @@ export async function installMockTauri(
           throw new Error(entry.error);
         }
         const compiledSeed = entry.compiled;
+        const rawPalette = generator.subdivisionPalette ?? [];
+        if (!Array.isArray(rawPalette)) {
+          throw new Error(
+            "mock dumka preview rejected subdivisionPalette: the engine's serde boundary requires an array"
+          );
+        }
+        const palette: number[] = [];
+        for (const rawLevel of rawPalette) {
+          if (
+            typeof rawLevel !== "number" ||
+            !Number.isInteger(rawLevel) ||
+            rawLevel < 0
+          ) {
+            throw new Error(
+              `mock dumka preview rejected subdivisionPalette entry ${String(rawLevel)}: the engine's serde boundary refuses non-u32 values before generator validation`
+            );
+          }
+          if (![2, 3, 5, 7].includes(rawLevel)) {
+            throw new Error(
+              `dumka subdivisionPalette entries must be 2, 3, 5, or 7, got ${rawLevel}`
+            );
+          }
+          if (!palette.includes(rawLevel)) palette.push(rawLevel);
+        }
+        if (palette.length > 2) {
+          throw new Error(
+            `dumka subdivisionPalette supports at most 2 levels, got ${palette.length}`
+          );
+        }
+        const workingSubdivision = palette.reduce(
+          (working, level) => working * level,
+          compiledSeed.requiredSubdivision
+        );
+        if (workingSubdivision > 64) {
+          throw new Error(
+            `dumka subdivisionPalette needs working Subdivision ${workingSubdivision}, above the platform maximum 64`
+          );
+        }
+        if (generator.plan !== undefined && !Array.isArray(generator.plan)) {
+          throw new Error(
+            "mock dumka preview rejected plan: the engine's serde boundary requires an array"
+          );
+        }
+        const planRows = Array.isArray(generator.plan) ? generator.plan : [];
+        if (planRows.length > 256) {
+          throw new Error(
+            `dumka plan invalid: plan supports at most 256 directives, got ${planRows.length}`
+          );
+        }
+        const knownFamilies = [
+          "barlowRemove",
+          "barlowAdd",
+          "rotate",
+          "syncopate",
+          "desyncopate",
+          "fragment",
+          "consolidate",
+          "euclid",
+          "stochastic",
+          "morph",
+        ];
+        const requireUnsignedInteger = (
+          value: unknown,
+          label: string
+        ): number => {
+          if (
+            typeof value !== "number" ||
+            !Number.isFinite(value) ||
+            !Number.isInteger(value) ||
+            value < 0
+          ) {
+            throw new Error(
+              `mock dumka preview rejected ${label} ${String(value)}: the engine's serde boundary refuses unsigned-integer values before generator validation`
+            );
+          }
+          return value;
+        };
+        const rejectUnknownKeys = (
+          object: Record<string, unknown>,
+          allowed: readonly string[],
+          label: string
+        ) => {
+          const unknown = Object.keys(object).find(
+            (key) => !allowed.includes(key)
+          );
+          if (unknown) {
+            throw new Error(
+              `mock dumka preview rejected unknown ${label} key ${unknown}: the engine's serde boundary denies unknown fields`
+            );
+          }
+        };
+        if (
+          generator.evolutionCurve !== undefined &&
+          (typeof generator.evolutionCurve !== "object" ||
+            generator.evolutionCurve === null ||
+            Array.isArray(generator.evolutionCurve))
+        ) {
+          throw new Error(
+            "mock dumka preview rejected evolutionCurve: the engine's serde boundary requires an object"
+          );
+        }
+        const curve =
+          typeof generator.evolutionCurve === "object" &&
+          generator.evolutionCurve !== null
+            ? (generator.evolutionCurve as Record<string, unknown>)
+            : {};
+        rejectUnknownKeys(
+          curve,
+          ["enabled", "modelVersion", "toleranceMilli", "maxOperations", "points"],
+          "evolutionCurve"
+        );
+        if (
+          curve.modelVersion !== undefined &&
+          curve.modelVersion !== "v1"
+        ) {
+          throw new Error(
+            `mock dumka preview rejected curve modelVersion ${String(curve.modelVersion)}: the engine's serde boundary refuses unknown versions`
+          );
+        }
+        const curvePoints = Array.isArray(curve.points) ? curve.points : [];
+        if (curvePoints.length > 64) {
+          throw new Error(
+            `dumka plan invalid: curve supports at most 64 points, got ${curvePoints.length}`
+          );
+        }
+        const normalizedCurvePoints: Array<{ cycle: number; targetMilli: number }> = [];
+        let priorCurveCycle: number | null = null;
+        for (const rawPoint of curvePoints) {
+          if (typeof rawPoint !== "object" || rawPoint === null) {
+            throw new Error(
+              "mock dumka preview rejected evolutionCurve point: the engine's serde boundary requires an object"
+            );
+          }
+          const point = rawPoint as Record<string, unknown>;
+          rejectUnknownKeys(point, ["cycle", "targetMilli"], "curve point");
+          const pointCycle = requireUnsignedInteger(
+            point.cycle,
+            "curve point cycle"
+          );
+          const targetMilli = requireUnsignedInteger(
+            point.targetMilli,
+            "curve targetMilli"
+          );
+          if (pointCycle === 0) {
+            throw new Error(
+              "dumka plan invalid: curve point cycles must be ≥ 1"
+            );
+          }
+          if (priorCurveCycle !== null && pointCycle <= priorCurveCycle) {
+            throw new Error(
+              "dumka plan invalid: curve points must have strictly ascending cycles"
+            );
+          }
+          if (targetMilli > 100_000) {
+            throw new Error(
+              `dumka plan invalid: curve targetMilli must be 0-100000, got ${targetMilli}`
+            );
+          }
+          priorCurveCycle = pointCycle;
+          normalizedCurvePoints.push({ cycle: pointCycle, targetMilli });
+        }
+        const curveTolerance = requireUnsignedInteger(
+          curve.toleranceMilli ?? 500,
+          "curve toleranceMilli"
+        );
+        if (curveTolerance > 100_000) {
+          throw new Error(
+            `dumka plan invalid: curve toleranceMilli must be 0-100000, got ${curveTolerance}`
+          );
+        }
+        const curveMaxOperations = requireUnsignedInteger(
+          curve.maxOperations ?? 4,
+          "curve maxOperations"
+        );
+        if (curveMaxOperations === 0 || curveMaxOperations > 8) {
+          throw new Error(
+            `dumka plan invalid: curve maxOperations must be 1-8, got ${curveMaxOperations}`
+          );
+        }
+        if (normalizedCurvePoints.length > 1) {
+          const curveSpan =
+            normalizedCurvePoints[normalizedCurvePoints.length - 1]!.cycle -
+            normalizedCurvePoints[0]!.cycle;
+          if (curveSpan > 512) {
+            throw new Error(
+              `dumka plan invalid: curve spans ${curveSpan} cycles between its first and last points, the maximum is 512`
+            );
+          }
+        }
+        const curveTargetMilliAt = (sampleCycle: number): number => {
+          if (
+            curve.enabled !== true ||
+            normalizedCurvePoints.length === 0 ||
+            sampleCycle < normalizedCurvePoints[0]!.cycle ||
+            sampleCycle >
+              normalizedCurvePoints[normalizedCurvePoints.length - 1]!.cycle
+          ) {
+            return 0;
+          }
+          let previous = normalizedCurvePoints[0]!;
+          for (const point of normalizedCurvePoints) {
+            if (point.cycle === sampleCycle) return point.targetMilli;
+            if (point.cycle > sampleCycle) {
+              const span = point.cycle - previous.cycle;
+              const offset = sampleCycle - previous.cycle;
+              const numerator =
+                (point.targetMilli - previous.targetMilli) * offset;
+              const half = Math.trunc(span / 2);
+              const rounded =
+                numerator >= 0
+                  ? Math.trunc((numerator + half) / span)
+                  : Math.trunc((numerator - half) / span);
+              return Math.min(
+                100_000,
+                Math.max(0, previous.targetMilli + rounded)
+              );
+            }
+            previous = point;
+          }
+          return 0;
+        };
+        let requestedPerceptualWork = 0;
+        if (curve.enabled === true && normalizedCurvePoints.length > 0) {
+          const firstCurveCycle = Math.max(
+            1,
+            normalizedCurvePoints[0]!.cycle
+          );
+          const lastCurveCycle =
+            normalizedCurvePoints[normalizedCurvePoints.length - 1]!.cycle;
+          for (
+            let sampleCycle = firstCurveCycle;
+            sampleCycle <= lastCurveCycle;
+            sampleCycle += 1
+          ) {
+            if (curveTargetMilliAt(sampleCycle) > 0) {
+              requestedPerceptualWork += curveMaxOperations + 1;
+            }
+          }
+        }
+        const seenDirectiveIds = new Set<number>();
+        for (const rawDirective of planRows) {
+          if (typeof rawDirective !== "object" || rawDirective === null) {
+            throw new Error(
+              "mock dumka preview rejected directive: the engine's serde boundary requires an object"
+            );
+          }
+          const directive = rawDirective as Record<string, unknown>;
+          rejectUnknownKeys(
+            directive,
+            [
+              "id",
+              "order",
+              "enabled",
+              "fromCycle",
+              "toCycle",
+              "family",
+              "pacing",
+              "magnitude",
+              "intensity",
+              "scope",
+              "options",
+            ],
+            "directive"
+          );
+          const directiveId = requireUnsignedInteger(
+            directive.id,
+            "directive id"
+          );
+          if (directiveId === 0) {
+            throw new Error(
+              "dumka plan invalid: directive id must be at least 1"
+            );
+          }
+          if (directiveId >= Number.MAX_SAFE_INTEGER) {
+            throw new Error(
+              `dumka plan invalid: directive id ${directiveId} collides with the reserved curve sentinel ${Number.MAX_SAFE_INTEGER}`
+            );
+          }
+          if (seenDirectiveIds.has(directiveId)) {
+            throw new Error(
+              `dumka plan invalid: duplicate directive id ${directiveId}`
+            );
+          }
+          seenDirectiveIds.add(directiveId);
+          requireUnsignedInteger(
+            directive.order,
+            `directive ${directiveId} order`
+          );
+          if (typeof directive.enabled !== "boolean") {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} enabled ${String(directive.enabled)}: the engine's serde boundary requires a boolean`
+            );
+          }
+          const fromCycle = requireUnsignedInteger(
+            directive.fromCycle,
+            `directive ${directiveId} fromCycle`
+          );
+          const toCycle = requireUnsignedInteger(
+            directive.toCycle,
+            `directive ${directiveId} toCycle`
+          );
+          const intensity = requireUnsignedInteger(
+            directive.intensity,
+            `directive ${directiveId} intensity`
+          );
+          if (fromCycle === 0) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} fromCycle must be at least 1`
+            );
+          }
+          if (toCycle < fromCycle) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} toCycle must be at least fromCycle`
+            );
+          }
+          if (intensity > 100) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} intensity must be 0-100, got ${intensity}`
+            );
+          }
+          if (!knownFamilies.includes(String(directive.family))) {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} family ${String(directive.family)}: the engine's serde boundary refuses unknown families`
+            );
+          }
+          const pacing = directive.pacing ?? "perCycle";
+          if (!["perCycle", "linear", "easeInOut"].includes(String(pacing))) {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} pacing ${String(pacing)}: the engine's serde boundary refuses unknown pacing`
+            );
+          }
+          if (
+            directive.magnitude !== undefined &&
+            (typeof directive.magnitude !== "object" ||
+              directive.magnitude === null ||
+              Array.isArray(directive.magnitude))
+          ) {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} magnitude: the engine's serde boundary requires an object`
+            );
+          }
+          const magnitude = (directive.magnitude ?? {
+            mode: "operationQuota",
+          }) as Record<string, unknown>;
+          rejectUnknownKeys(
+            magnitude,
+            magnitude.mode === "perceptual"
+              ? [
+                  "mode",
+                  "modelVersion",
+                  "targetMilli",
+                  "toleranceMilli",
+                  "maxOperations",
+                ]
+              : ["mode"],
+            `directive ${directiveId} magnitude`
+          );
+          if (magnitude.mode === "perceptual") {
+            if (magnitude.modelVersion !== "v1") {
+              throw new Error(
+                `mock dumka preview rejected directive ${directiveId} magnitude modelVersion ${String(magnitude.modelVersion)}: the engine's serde boundary refuses unknown versions`
+              );
+            }
+            const targetMilli = requireUnsignedInteger(
+              magnitude.targetMilli,
+              `directive ${directiveId} magnitude targetMilli`
+            );
+            const toleranceMilli = requireUnsignedInteger(
+              magnitude.toleranceMilli,
+              `directive ${directiveId} magnitude toleranceMilli`
+            );
+            const maxOperations = requireUnsignedInteger(
+              magnitude.maxOperations,
+              `directive ${directiveId} magnitude maxOperations`
+            );
+            if (targetMilli > 100_000) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} magnitude targetMilli must be 0-100000, got ${targetMilli}`
+              );
+            }
+            if (toleranceMilli > 100_000) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} magnitude toleranceMilli must be 0-100000, got ${toleranceMilli}`
+              );
+            }
+            if (maxOperations === 0 || maxOperations > 256) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} magnitude maxOperations must be 1-256, got ${maxOperations}`
+              );
+            }
+            if (pacing !== "perCycle") {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} perceptual magnitude pacing must be perCycle`
+              );
+            }
+            if (directive.family === "stochastic") {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} stochastic magnitude must be operationQuota`
+              );
+            }
+            if (directive.enabled === true) {
+              requestedPerceptualWork +=
+                (toCycle - fromCycle + 1) * (maxOperations + 1);
+            }
+          } else if (magnitude.mode !== "operationQuota") {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} magnitude ${String(magnitude.mode)}: the engine's serde boundary refuses unknown magnitudes`
+            );
+          }
+          if (typeof directive.scope === "object" && directive.scope !== null) {
+            const scope = directive.scope as Record<string, unknown>;
+            rejectUnknownKeys(
+              scope,
+              ["startBeat", "lenBeats"],
+              `directive ${directiveId} scope`
+            );
+            requireUnsignedInteger(
+              scope.startBeat,
+              `directive ${directiveId} scope startBeat`
+            );
+            const lenBeats = requireUnsignedInteger(
+              scope.lenBeats,
+              `directive ${directiveId} scope lenBeats`
+            );
+            if (lenBeats === 0) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} scope lenBeats must be at least 1`
+              );
+            }
+          }
+          if (
+            directive.scope !== undefined &&
+            directive.scope !== null &&
+            typeof directive.scope !== "object"
+          ) {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} scope: the engine's serde boundary requires an object or null`
+            );
+          }
+          if (directive.family === "stochastic" && pacing !== "perCycle") {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} stochastic pacing must be perCycle`
+            );
+          }
+          if (
+            directive.options !== undefined &&
+            (typeof directive.options !== "object" ||
+              directive.options === null ||
+              Array.isArray(directive.options))
+          ) {
+            throw new Error(
+              `mock dumka preview rejected directive ${directiveId} options: the engine's serde boundary requires an object`
+            );
+          }
+          const options = (directive.options ?? {}) as Record<string, unknown>;
+          rejectUnknownKeys(
+            options,
+            [
+              "barlowTemperature",
+              "fillComplexity",
+              "densityFloor",
+              "densityCeiling",
+              "complexityFloor",
+              "complexityCeiling",
+              "placementBias",
+              "subdivisionLevel",
+              "morphTarget",
+              "euclidMaxRun",
+              "euclidInvert",
+              "euclidRestPolicy",
+              "rotateDirection",
+            ],
+            `directive ${directiveId} options`
+          );
+          for (const optionName of [
+            "barlowTemperature",
+            "fillComplexity",
+            "euclidInvert",
+            "densityFloor",
+            "densityCeiling",
+            "placementBias",
+          ] as const) {
+            const optionValue = options[optionName];
+            if (optionValue !== null && optionValue !== undefined) {
+              dumkaPercent(
+                optionName,
+                optionValue,
+                0,
+                directiveId
+              );
+            }
+          }
+          const localDensityFloor =
+            options.densityFloor === null || options.densityFloor === undefined
+              ? null
+              : Number(options.densityFloor);
+          const localDensityCeiling =
+            options.densityCeiling === null || options.densityCeiling === undefined
+              ? null
+              : Number(options.densityCeiling);
+          if ((localDensityFloor === null) !== (localDensityCeiling === null)) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} densityFloor and densityCeiling must both be set or both be omitted`
+            );
+          }
+          if (
+            localDensityFloor !== null &&
+            localDensityCeiling !== null &&
+            localDensityFloor > localDensityCeiling
+          ) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} densityFloor must be at most densityCeiling, got ${localDensityFloor} > ${localDensityCeiling}`
+            );
+          }
+          const localComplexityFloor =
+            options.complexityFloor === null || options.complexityFloor === undefined
+              ? null
+              : requireUnsignedInteger(
+                  options.complexityFloor,
+                  `directive ${directiveId} complexityFloor`
+                );
+          const localComplexityCeiling =
+            options.complexityCeiling === null || options.complexityCeiling === undefined
+              ? null
+              : requireUnsignedInteger(
+                  options.complexityCeiling,
+                  `directive ${directiveId} complexityCeiling`
+                );
+          if ((localComplexityFloor === null) !== (localComplexityCeiling === null)) {
+            throw new Error(
+              `dumka plan invalid: directive ${String(directive.id)} complexityFloor and complexityCeiling must both be set or both be omitted`
+            );
+          }
+          if (
+            localComplexityFloor !== null &&
+            localComplexityCeiling !== null &&
+            localComplexityFloor > localComplexityCeiling
+          ) {
+            throw new Error(
+              `dumka plan invalid: directive ${String(directive.id)} complexityFloor must be at most complexityCeiling, got ${localComplexityFloor} > ${localComplexityCeiling}`
+            );
+          }
+          if (
+            localComplexityFloor !== null &&
+            localComplexityCeiling !== null &&
+            (localComplexityFloor > 100_000 ||
+              localComplexityCeiling > 100_000)
+          ) {
+            const [name, value] =
+              localComplexityFloor > 100_000
+                ? ["complexityFloor", localComplexityFloor]
+                : ["complexityCeiling", localComplexityCeiling];
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} ${name} must be 0-100000, got ${value}`
+            );
+          }
+          if (options.euclidMaxRun !== null && options.euclidMaxRun !== undefined) {
+            const maxRun = requireUnsignedInteger(
+              options.euclidMaxRun,
+              `directive ${directiveId} euclidMaxRun`
+            );
+            if (maxRun === 0 || maxRun > 8) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} euclidMaxRun must be 1-8, got ${maxRun}`
+              );
+            }
+          }
+          if (
+            options.subdivisionLevel !== null &&
+            options.subdivisionLevel !== undefined
+          ) {
+            if (
+              typeof options.subdivisionLevel !== "number" ||
+              !Number.isInteger(options.subdivisionLevel) ||
+              options.subdivisionLevel < 0 ||
+              options.subdivisionLevel > 0xffff_ffff
+            ) {
+              throw new Error(
+                `mock dumka preview rejected directive ${directiveId} subdivisionLevel ${String(options.subdivisionLevel)}: the engine's serde boundary refuses non-u32 values before generator validation`
+              );
+            }
+            const level = options.subdivisionLevel;
+            const levels = entry.depthLevels[String(workingSubdivision)] ?? [];
+            if (level >= levels.length) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} subdivisionLevel ${String(options.subdivisionLevel)} does not exist on working Subdivision ${workingSubdivision}`
+              );
+            }
+          }
+          if (directive.family === "morph") {
+            const target = options.morphTarget;
+            if (typeof target !== "string" || target.trim().length === 0) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} morph requires options.morphTarget`
+              );
+            }
+            if (directive.enabled !== true) continue;
+            const targetEntry = driverOptions.dumkaMockTable[target];
+            if (!targetEntry) {
+              throw new Error(
+                `mock dumka preview has no precompiled entry for Morph target: ${target} — add it to DUMKA_MOCK_PATTERNS in mockTauri.ts`
+              );
+            }
+            if ("error" in targetEntry) throw new Error(targetEntry.error);
+            if (targetEntry.compiled.events.length === 0) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} morph target must contain at least one sounding onset`
+              );
+            }
+            if (targetEntry.compiled.totalBeats !== compiledSeed.totalBeats) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} morph target spans ${targetEntry.compiled.totalBeats} beats but the seed spans ${compiledSeed.totalBeats}`
+              );
+            }
+            if (workingSubdivision % targetEntry.compiled.requiredSubdivision !== 0) {
+              throw new Error(
+                `dumka plan invalid: directive ${directiveId} morph target needs Subdivision ${targetEntry.compiled.requiredSubdivision} which does not divide working Subdivision ${workingSubdivision}`
+              );
+            }
+          } else if (
+            options.morphTarget !== null &&
+            options.morphTarget !== undefined
+          ) {
+            throw new Error(
+              `dumka plan invalid: directive ${directiveId} morphTarget is only valid for morph`
+            );
+          }
+        }
+        if (requestedPerceptualWork > 4_096) {
+          throw new Error(
+            `dumka perceptual plan reserves ${Math.trunc(requestedPerceptualWork)} scoring operations, exceeding the limit of 4096`
+          );
+        }
+        for (let leftIndex = 0; leftIndex < planRows.length; leftIndex += 1) {
+          const left = planRows[leftIndex] as Record<string, unknown>;
+          for (let rightIndex = leftIndex + 1; rightIndex < planRows.length; rightIndex += 1) {
+            const right = planRows[rightIndex] as Record<string, unknown>;
+            if (left.family !== right.family) continue;
+            const firstShared = Math.max(
+              Number(left.fromCycle),
+              Number(right.fromCycle)
+            );
+            if (
+              firstShared <=
+              Math.min(Number(left.toCycle), Number(right.toCycle))
+            ) {
+              throw new Error(
+                `dumka plan overlap: ${String(left.family)} directives ${String(left.id)} and ${String(right.id)} share cycle ${firstShared}`
+              );
+            }
+          }
+        }
         const seedMode = (generator.seedMode ?? {}) as Record<string, unknown>;
         const seed = resolveGeneratorSeed(seedMode, BigInt(cycle));
         const seedDto = {
@@ -1377,6 +2145,68 @@ export async function installMockTauri(
         if (request.enabled === false) {
           return { seed: seedDto, spans: [], trace: [] };
         }
+        const sampledDensityFloor = sampleAutomationTarget(
+          request,
+          "generator.dumka.densityFloor",
+          1,
+          cycle,
+          densityFloor
+        );
+        const sampledDensityCeiling = sampleAutomationTarget(
+          request,
+          "generator.dumka.densityCeiling",
+          1,
+          cycle,
+          densityCeiling
+        );
+        const effectiveDensityCeiling = Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(sampledDensityCeiling ?? densityCeiling)
+          )
+        );
+        const effectiveDensityFloor = Math.min(
+          effectiveDensityCeiling,
+          Math.max(
+            0,
+            Math.min(
+              100,
+              Math.round(sampledDensityFloor ?? densityFloor)
+            )
+          )
+        );
+        const sampledComplexityFloor = sampleAutomationTarget(
+          request,
+          "generator.dumka.complexityFloor",
+          1,
+          cycle,
+          complexityFloor
+        );
+        const sampledComplexityCeiling = sampleAutomationTarget(
+          request,
+          "generator.dumka.complexityCeiling",
+          1,
+          cycle,
+          complexityCeiling
+        );
+        const effectiveComplexityCeiling = Math.max(
+          0,
+          Math.min(
+            100_000,
+            Math.round(sampledComplexityCeiling ?? complexityCeiling)
+          )
+        );
+        const effectiveComplexityFloor = Math.min(
+          effectiveComplexityCeiling,
+          Math.max(
+            0,
+            Math.min(
+              100_000,
+              Math.round(sampledComplexityFloor ?? complexityFloor)
+            )
+          )
+        );
         const evolutionIsAutomated = hasEnabledAutomationSource(
           request,
           "generator.dumka.evolutionRate"
@@ -1384,6 +2214,15 @@ export async function installMockTauri(
         const densityIsAutomated =
           hasEnabledAutomationSource(request, "generator.dumka.densityFloor") ||
           hasEnabledAutomationSource(request, "generator.dumka.densityCeiling");
+        const complexityIsAutomated =
+          hasEnabledAutomationSource(
+            request,
+            "generator.dumka.complexityFloor"
+          ) ||
+          hasEnabledAutomationSource(
+            request,
+            "generator.dumka.complexityCeiling"
+          );
         const hasEnabledPlan =
           Array.isArray(generator.plan) &&
           generator.plan.some(
@@ -1412,9 +2251,12 @@ export async function installMockTauri(
           cycle > 0 &&
           (evolutionRate > 0 ||
             evolutionIsAutomated ||
-            densityFloor > 0 ||
-            densityCeiling < 100 ||
+            effectiveDensityFloor > 0 ||
+            effectiveDensityCeiling < 100 ||
             densityIsAutomated ||
+            effectiveComplexityFloor > 0 ||
+            effectiveComplexityCeiling < 100_000 ||
+            complexityIsAutomated ||
             hasEnabledPlan ||
             hasActiveCurve)
         ) {
@@ -1458,9 +2300,9 @@ export async function installMockTauri(
             `spans carry ${totalMatras} steps over ${cycleBeats} beats; a uniform per-beat Subdivision is required`
           );
         }
-        if (actualSubdivision % compiledSeed.requiredSubdivision !== 0) {
+        if (actualSubdivision % workingSubdivision !== 0) {
           structureError(
-            `pattern needs Subdivision ${compiledSeed.requiredSubdivision} (or a multiple); the section has ${actualSubdivision}`
+            `pattern needs Subdivision ${workingSubdivision} (or a multiple); the section has ${actualSubdivision}`
           );
         }
         const intervals = compiledSeed.events.map((event) => {
@@ -1519,14 +2361,27 @@ export async function installMockTauri(
           cycle >= 1 && entry.gridSupported
             ? { modelVersion: "v1" as const, distanceMilli: 0 }
             : null;
+        const depthMetrics = entry.depthMetrics[String(workingSubdivision)];
+        if (!depthMetrics) {
+          throw new Error(
+            `mock dumka preview has no precomputed depth metrics for working Subdivision ${workingSubdivision}`
+          );
+        }
         return {
           seed: seedDto,
           spans: stampSpanVelocities(request, outSpans),
           trace: [],
           densityCorridor: {
-            floor: densityFloor,
-            ceiling: densityCeiling,
+            floor: effectiveDensityFloor,
+            ceiling: effectiveDensityCeiling,
           },
+          workingSubdivision,
+          complexityCorridor: {
+            floor: effectiveComplexityFloor,
+            ceiling: effectiveComplexityCeiling,
+          },
+          stateComplexityMilli: depthMetrics.complexityMilli,
+          stateDepthDiversityMilli: depthMetrics.diversityMilli,
           cycleDistance,
         };
       }

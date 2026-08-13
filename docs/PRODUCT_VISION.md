@@ -19,8 +19,9 @@ generator seam:
 | Add / subtract onsets | Barlow indispensability ranking — add or remove attacks in order of metric importance, preserving the groove | `generators/dumka/barlow.rs`, `evolve.rs` (M2) |
 | Density / sparsity | Bjorklund/Euclidean `E(k,n)` maximal evenness; Barlow "metric field strength" as a temperature | `lattice.rs`, `evolve.rs` (M2) |
 | Temporal displacement | Beat-class rotation `T_k`; Sioros–Guedes reversible syncopate/de-syncopate operators | `lattice.rs` (M2), `sioros.rs` (M3) |
+| Rhythmic depth and placement | Prime-refined working lattice; Barlow-indigestibility mean-depth rail; fixed-point geometric gap field | `depth.rs`, `spectrum.rs`, `evolve.rs` (M3.95) |
 | Long-distance structure | Drift leash (edit distance to the seed); rotation canons across parallel tracks; tiling canons later | `evolve.rs` (M2), roadmap |
-| Interpolation / continuous | DFT evenness and perfect-balance meters; morphing toward a target pattern; Messiaen added-value **phrase drift** inside a fixed super-cycle | roadmap (`dft.rs`, `phrase.rs`) |
+| Directed interpolation | Exact circular transport/edit Morph toward a target pattern; Messiaen added-value **phrase drift** inside a fixed super-cycle later | `evolve.rs` (M3.95), roadmap (`phrase.rs`) |
 
 The seed's own tree supplies the metric stratification, so Barlow and
 Sioros–Guedes operators preserve the *authored* feel rather than an assumed

@@ -132,7 +132,7 @@ pub enum DirectiveMagnitude {
 #[serde(rename_all = "camelCase")]
 pub enum DirectiveFamily {
     BarlowRemove, BarlowAdd, Rotate, Syncopate, Desyncopate,
-    Fragment, Consolidate, Euclid,
+    Fragment, Consolidate, Euclid, Morph,
     /// Schedules the legacy stochastic layer explicitly (§6).
     Stochastic,
 }
@@ -148,6 +148,11 @@ pub struct DirectiveOptions {
     pub euclid_rest_policy: Option<EuclidRestPolicy>,
     pub density_floor: Option<u32>,        // paired local corridor override
     pub density_ceiling: Option<u32>,
+    pub complexity_floor: Option<u32>,     // paired mean-depth override
+    pub complexity_ceiling: Option<u32>,
+    pub placement_bias: Option<u32>,       // Barlow ↔ geometric blend
+    pub subdivision_level: Option<u32>,    // enabled palette prime filter
+    pub morph_target: Option<String>,      // required only for Morph
 }
 ```
 
@@ -186,6 +191,13 @@ beat/Subdivision grid. On an unsupported grid, any enabled perceptual row
 fails authoring validation immediately, including a future row; disabled rows
 retain the ordinary unsupported-grid fallback.
 
+`Morph` is deterministic and directive-only. Its `morphTarget` must compile to
+the same beat count and a required Subdivision that divides the active working
+Subdivision. Non-Morph rows reject that field. `subdivisionLevel` names an
+enabled palette prime and filters candidate placements; it is not a Sioros
+tree-depth index. Complexity overrides are paired, bounded
+`0..=100000`, and use the same local-over-global precedence as density.
+
 Enabled perceptual rows also share a plan-wide lifetime budget of 4,096
 distance evaluations. Each active row-cycle reserves `maxOperations + 1`
 scores, including prefix zero; the sum uses saturating arithmetic. The editor
@@ -195,22 +207,24 @@ later offending rows so their authored data can be repaired.
 ## 4. Magnitude semantics — exact, per family
 
 With absent/`OperationQuota` magnitude, intensity is a **deterministic quota**,
-not a probability. Let `C(c)` be
+not a probability. Let `K(c)` be
 the candidate count the family sees at cycle `c` *within scope* (sounding
 onsets for Remove; silent-uncovered slots for Add; legal vectors for the
 Sioros pair; fragmentable intervals / consolidatable runs for figures;
-reshape windows for Euclid; `total_beats` for Rotate).
+reshape windows for Euclid; remaining target micro-steps for Morph;
+`total_beats` for Rotate). `K` is named separately from the mean depth
+functional `C(x)` in [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
 
-- **Pin** (`from == to`): apply `n = ceil(intensity × C(c) / 100)`
+- **Pin** (`from == to`): apply `n = ceil(intensity × K(c) / 100)`
   operations at that cycle (bounded by candidate exhaustion; each
   application recomputes candidates).
 - **Per-cycle range** (the compatibility default): per covered cycle, an
   **error-diffusion accumulator** (Bresenham) spreads the same rate evenly:
-  `acc += intensity × C(c) / 100; n = floor(acc); acc -= n`.
+  `acc += intensity × K(c) / 100; n = floor(acc); acc -= n`.
   The accumulator is per-directive fold state, reset at `from_cycle`.
   Candidate counts are recomputed after previous edits. This is the exact
   original range behavior and can deliberately compound a transformation.
-- **Linear / Ease-in-out range**: freeze `C₀` at `from_cycle`, derive one
+- **Linear / Ease-in-out range**: freeze `K₀` at `from_cycle`, derive one
   target quota `Q` with the corresponding pin rule, and distribute `Q` across
   the inclusive range from integer cumulative progress. Linear uses a straight
   ramp. Ease-in/out uses integer smoothstep; it starts and ends more gently.
@@ -226,6 +240,13 @@ reshape windows for Euclid; `total_beats` for Rotate).
 - **Stochastic**: intensity replaces `evolutionRate` for the covered
   cycles; the family draw uses the authored weights as today. It rejects
   Linear/Ease-in-out because a probability envelope cannot guarantee a tween.
+- **Morph**: candidate count is the remaining exact micro-steps to the target.
+  One operation moves an aligned onset one shortest-arc slot, adopts matching
+  duration/class attributes, inserts one unmatched target, or deletes one
+  unmatched source. Linear/Gentle quota pacing distributes this finite path;
+  perceptual magnitude evaluates only its ordinary legal prefixes. Density,
+  mean complexity, scope, tie, and projection vetoes are retained and never
+  repaid as a later burst.
 
 Within one application, target choice uses the family's existing ranked
 candidate order + temperature pool (directive override or global), with
@@ -245,7 +266,7 @@ active cycle the fold first includes its corridor-normalized hold as prefix
 zero, then sequentially attempts up to `maxOperations` ordinary identity-seeded
 operations. Every examined prefix has passed the family's scope, interval,
 density-corridor, and trial-projection guards; the first failed frontier ends
-the search. Initial `C(c)` is not a cap because repeatable operations can create
+the search. Initial `K(c)` is not a cap because repeatable operations can create
 new candidates. The planner scores each reachable prefix against the state
 handed to this directive and selects minimum absolute target error; a tie keeps
 the smaller prefix. An exact target stops further work. `toleranceMilli`
@@ -263,8 +284,8 @@ feature formulas and important non-claims.
 ## 5. Scope — "only the last 2 beats"
 
 `BeatRange {start_beat, len_beats}` ⇒ slot window
-`[start×S, (start+len)×S)` on the unrotated grid (S = required
-Subdivision). Threading: every `ranked_*` candidate enumerator
+`[start×W, (start+len)×W)` on the unrotated working grid. Threading: every
+`ranked_*` candidate enumerator
 (barlow orders in `evolve.rs`, `figures::ranked_*`,
 `reshape::ranked_reshape_windows`, `sioros::legal_*`) gains an optional
 `window: Option<SlotRange>` filter; a candidate qualifies only if its
@@ -298,10 +319,12 @@ beat-strip glyph.
 - **Rails**: directive applications are exempt from the drift leash (the
   author demanded exactly this change; a silently vetoed pin is the
   "uncontrolled" feeling this design kills) but are **never** exempt from
-  their effective density corridor, trial projection, or interval disjointness —
+  their effective density and complexity corridors, trial projection, or
+  interval disjointness —
   playability stays inviolable. A projection-vetoed application is
   skipped and **traced**. The leash continues to govern `Stochastic`
-  cycles. Precedence is corridor > plan > leash, with projection absolute.
+  cycles. Precedence is density corridor > complexity corridor > plan >
+  leash, with projection absolute.
 
 ## 7. Observability — the trace (DTO extension)
 
@@ -317,6 +340,7 @@ pub struct DirectiveTraceEntry {
     pub applied: u32,     // survived projection
     pub skipped: DirectiveSkip, // None | OrphanedScope | Projection | Exhausted
     pub corridor_clamp: Option<DensityCorridorClamp>, // independent clamp truth
+    pub complexity_corridor_clamp: Option<ComplexityCorridorClamp>,
     pub perceptual: Option<PerceptualPacingTrace>,     // opt-in calibration truth
 }
 
@@ -331,9 +355,11 @@ pub struct PerceptualPacingTrace {
 ```
 
 Wire: `generator_preview` response carries `trace: Vec<DirectiveTraceEntry>`
-plus the fold-owned cycle-effective `densityCorridor { floor, ceiling }`
-(serde default empty; absent for non-Dum-Ka responses, while cycle 0 reports
-the authored/automated Dum-Ka rail even though evolution itself is bypassed). Both DTO
+plus `workingSubdivision`, the fold-owned cycle-effective density and
+complexity corridors, `stateComplexityMilli`, and insight-only
+`stateDepthDiversityMilli`. Trace defaults empty and the additive depth fields
+are absent for non-Dum-Ka responses; cycle 0 still reports the authored or
+automated Dum-Ka rails even though evolution itself is bypassed. Both DTO
 fixture directions regenerate; the mock — which cannot fold — keeps
 failing loudly for any evolving cycle and now treats a non-empty enabled
 plan as evolving. Playback needs no trace (the ledger is the truth); the
@@ -436,6 +462,12 @@ Normalization mirrors patch rules; ids allocated
   hold remains visible rather than masquerading as an inactive gap. A selected
   perceptual row shows its backend `actual` versus `target ± tolerance`; its
   trace tick still uses applied/skipped/corridor truth.
+- **Depth lane and insight**: a second thin band plots backend
+  `stateComplexityMilli` against the effective complexity corridor. Density
+  and complexity clamp markers remain independently labelled, including a
+  stalled normalization that could not reach its rail. The nearby Depth
+  diversity value is normalized denominator entropy from the backend; it is
+  intentionally not drawn as a rail or used to judge admissibility.
 - **Preview comparison**: selecting a directive scrubs the stopped preview
   (`userPreviewCycle`) to its `from_cycle`; a "before/after" toggle flips
   between `from_cycle − 1` and `from_cycle`. This is deliberately a visual
@@ -462,9 +494,12 @@ active."
   fail-closed key screening for every new field name against
   `STRIPPED_PATCH_KEYS`).
 - Generator params persist `densityFloor` / `densityCeiling` (0/100 defaults),
-  and directive options may carry the paired overrides. Partial, inverted, or
-  unknown override semantics fail closed during tolerant recall and strict
-  invoke validation.
+  `subdivisionPalette` (empty default), `complexityFloor` /
+  `complexityCeiling` (0/100000 defaults), and `placementBias` (0 default).
+  Directive options may carry paired density/complexity overrides,
+  placement bias, an enabled palette-prime filter, and Morph's target. Partial,
+  inverted, misplaced, or unknown semantics fail closed during tolerant recall
+  and strict invoke validation.
 - DTO fixtures: `dumka_generator_preview_request.json` and
   `dumka_patch_document.json` regenerate with a rich four-directive plan
   (a Per-cycle pin, a scoped Linear range, a disabled Gentle directive, and a
@@ -474,9 +509,10 @@ active."
 - Mock: plan-aware "evolving" predicate; still resolves cycle 0 and
   non-evolving configs bit-exactly; still throws the pinned message for
   folded cycles.
-- Automation registry: **112 targets**. The two scalar corridor rails are
-  cycle-start targets; the plan remains non-automatable because it is
-  tuple-valued, scoped, and ordered.
+- Automation registry: **115 targets** after M3.95. Density's two scalar rails,
+  complexity's two scalar rails, and Placement bias are cycle-start targets;
+  the plan remains non-automatable because it is tuple-valued, scoped, and
+  ordered.
 
 ## 10. Test matrix (regression-first)
 
@@ -486,7 +522,7 @@ Engine:
 - Scheduling: active-set per cycle (pins, ranges, order, enabled,
   same-family overlap rejection).
 - Quota math: pin quota exactness; legacy Per-cycle Bresenham property — over
-  `[from..to]`, `Σ applied == round(Σ intensity·C(c)/100) ± 1` with no
+  `[from..to]`, `Σ applied == round(Σ intensity·K(c)/100) ± 1` with no
   cycle exceeding `ceil` (proptest).
 - Gradual pacing: pinned linear/ease vectors, monotone integer cumulative
   targets, exact final target, duration-one pin identity, no projection
@@ -565,6 +601,7 @@ UI:
   same-family pins at adjacent `order`s is the escape hatch.
 - **Directive-level seed override**: defer; `id`-salting already gives
   each directive its own stream.
-- **Morph-toward-target as a family** (M6+ DFT work): the directive
-  schema deliberately leaves room (`family` is an enum; options are
-  defaulted) — no schema break needed later.
+- **Morph-toward-target as a family**: delivered in M3.95 as a directive-only
+  exact working-lattice transport. Spectral-invariance wander and an authored
+  spectral leash remain separate future work; see
+  [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).

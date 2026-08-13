@@ -299,6 +299,15 @@ cargo test --workspace
 4. Add a `parity_*` Rust test deriving the lane from `finalized_cycle_ledger` and
    asserting it equals the scheduled MIDI, including a Cycle-Flux case.
 
+Generator-authoring readouts such as working Subdivision, density/complexity
+corridors, mean depth, depth diversity, placement field, and directive trace
+are deliberately **not** playback layers. They describe the fold state that
+produced the generic resolved spans; the generator lane and audible MIDI still
+come from those same spans. If one of these insights becomes a playback lane in
+the future, it must first join both source/tick-space registries and gain the
+same finalized-ledger parity proof—never re-run depth or spectral math in the
+timeline.
+
 Targeted seam tests (each closes one documented gap):
 
 - `parity_parallel_conflict_removes_group_from_midi_and_survivors_tile` — a

@@ -9,6 +9,14 @@ and constant-time feature-off path. With an active lane, every historical
 cycle is sampled independently; a later 0% value freezes the completed prefix
 instead of erasing evolution produced by earlier nonzero values.
 
+When `subdivisionPalette` is nonempty, the seed is lifted exactly onto a
+working Subdivision `W = seedSubdivision × product(unique palette levels)`
+before the fold. The palette admits up to two levels from 2/3/5/7 and `W` must
+remain at most 64. Every operator, metrical context, perceptual comparison, and
+projector then uses `W`; an empty palette is the byte-compatible legacy grid.
+The exact depth, geometry, and Morph contracts are in
+[DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
+
 ## Authored evolution score and gradual pacing (M3.75/M3.8)
 
 `DumkaGeneratorParams.plan` replaces chance-driven pacing wherever an enabled
@@ -46,8 +54,8 @@ legal prefixes up to `maxOperations`, stopping at the first guard failure or
 exact target. Initial candidate count does not cap repeatable families. It
 chooses the nearest target and breaks equal errors toward the smaller prefix.
 Its target replaces intensity and therefore
-requires Per cycle pacing; Stochastic rejects it. Scope, density corridor, and
-trial projection continue to govern the search. See
+requires Per cycle pacing; Stochastic rejects it. Scope, density and complexity
+corridors, and trial projection continue to govern the search. See
 [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md) for the exact seven
 components, bounds, calibration status, and limitations.
 
@@ -59,7 +67,15 @@ figure, Consolidate can merge a run, and Euclid can redistribute a whole
 beat/cycle. Those families therefore remain capable of an audible structural
 step even when their applications are paced gradually.
 
-Optional beat scope is converted to an exact slot interval on the seed grid.
+`Morph` is the directed exception to an undirected operator family: its target
+is another exact Dum-Ka pattern with the same beat count whose requirement
+divides `W`. Exact circular transport/edit alignment exposes one movement,
+attribute edit, insertion, or deletion at a time. The existing quota schedules
+those micro-steps, and perceptual magnitude searches only their legal prefix;
+there is no audio crossfade or second renderer. Corridor, scope, tie, and trial-
+projection guards remain absolute at every intermediate state.
+
+Optional beat scope is converted to an exact slot interval on the working grid.
 Candidates must remain inside it: figure/reshape intervals are contained,
 Sioros source and landing both qualify, and scoped Rotate cyclically shifts only
 the window. A pattern edit that makes a scope orphaned does not brick playback;
@@ -69,7 +85,8 @@ Authored directives are exempt from the drift leash because the change is
 explicit, but never from the density corridor, interval disjointness, or trial
 projection. Valid paired ties across adjacent spans are projectable; dangling
 or cycle-wrapping ties remain forbidden. Preview returns per-cycle
-`{requested, applied, skipped, corridorClamp?, perceptual?}` trace entries for
+`{requested, applied, skipped, corridorClamp?, complexityCorridorClamp?,
+perceptual?}` trace entries for
 the requested cycle (`none`, `orphanedScope`, `projection`, or `exhausted`). In
 perceptual mode, `requested` is the number of successfully examined nonzero
 prefixes, `applied` is the selected prefix (possibly zero), and the additive object reports model,
@@ -95,6 +112,7 @@ fires:
 | Fragment | 0 (opt-in) | Splits one held note (or one silent run) into an `E(k,n)` figure over its own slots — a true equal tuplet when k divides n, the maximally even on-grid figure otherwise | Mongeau & Sankoff 1990 fragmentation; Bjorklund placement; [figures.rs](../crates/cseq-rhythm/src/generators/dumka/figures.rs) |
 | Consolidate | 0 (opt-in) | Merges a contiguous sounding run back into one held note — Fragment's exact inverse on sounding intervals | Mongeau & Sankoff 1990 consolidation; the round trip is property-tested exhaustively |
 | Euclid | 0 (opt-in) | Redistributes one window's onsets (each beat, or the whole cycle) onto the maximally even necklace with an identity-seeded rotation; count and classes preserved unless inversion fires | Bjorklund/Toussaint via the platform's Caesura-inherited masks; [reshape.rs](../crates/cseq-rhythm/src/generators/dumka/reshape.rs) |
+| Morph | directive only | Moves, edits, inserts, or deletes one aligned onset micro-step toward an exact target pattern on the working lattice | Integer circular transport/edit alignment; [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md) |
 
 The operator is drawn from the **authored per-family weights** (each
 0–100) over one identity-seeded band; the defaults reproduce M2's 3/3/2
@@ -124,8 +142,9 @@ ranks by the indispensability of the strongest pulse the figure would
 newly articulate (fragment) or the weakest onset the merge would remove
 (consolidate), widened by the temperature pool. Figures charge the drift
 leash like adds and removes — a fragment of k pieces spends k−1 (k from
-silence). Paired cross-span ties now project normally. Finer-than-grid tuplets remain
-gated on the platform upsample extension (ROADMAP M6+).
+silence). Paired cross-span ties now project normally. The working subdivision
+palette gives figures exact finer-than-seed positions within the platform
+maximum; off-lattice/continuous timing remains out of scope.
 
 **Euclid reshape knobs** (authored only): `euclidMaxRun` (1–8; above 1
 the reshaped onsets cluster into bursts of at most that length, Caesura's
@@ -152,6 +171,12 @@ most/least-indispensable choice, 100 draws uniformly over all candidates.
 This is an integer approximation of Barlow's real-valued "metric field
 strength" probability formula, chosen so replay never depends on
 platform-varying transcendental functions.
+
+**Placement bias** (0–100, `generator.dumka.placementBias`) blends that Barlow
+candidate order with the pinned Q16 geometric gap field before temperature
+widens the pool. Zero is exact legacy Barlow order; 100 is pure spectral
+void-seeking. The spectral objective is not universally Bjorklund: its known
+agreement and divergence fingerprints are intentional and pinned separately.
 
 Indispensability is computed constructively — group starts take the top
 ranks by prime Ψ; every off-pulse ranks by its inner stratum band, ordered
@@ -190,6 +215,22 @@ Rust-generated `dumka_metrics_contract.json`); see
   `stochastic`, is the reserved trace source for a clamped legacy layer.
   Preview also returns the fold-owned cycle-effective floor/ceiling so the
   Evolve band remains truthful under automation and ordered overrides.
+- **Complexity corridor** (`complexityFloor` / `complexityCeiling`, automated
+  at `generator.dumka.complexityFloor` /
+  `generator.dumka.complexityCeiling`): mean scaled Barlow indigestibility of
+  attack-point denominators is controlled on `0..=100000`. Defaults 0/100000
+  switch the rail off. Density normalization runs first because it changes the
+  mean's denominator; complexity normalization then promotes or demotes each
+  original onset at most once. Candidate order minimizes the strictly positive
+  depth-price change before displacement, placement rank, and slot. Every
+  family and the perceptual/curve frontier share the same complexity admission
+  check. A discrete or projection-blocked target can remain outside the band,
+  but an independent `complexityCorridorClamp` must then remain visible beside
+  density and projection truth; silent stalls are forbidden.
+- **Depth diversity** (`stateDepthDiversityMilli` in preview) is normalized
+  Shannon entropy of the reduced-denominator multiset. It answers whether
+  several levels coexist; it is insight only, not a fourth rail. A uniformly
+  deep state can therefore have high complexity and zero diversity.
 - **Drift leash** (`driftLeash`, `generator.dumka.driftLeash`): the
   symmetric difference between the current and seed onset sets may never
   exceed `⌈leash% × seed onsets⌉`. Add, Remove, and the M3 displacement
@@ -203,9 +244,10 @@ Rust-generated `dumka_metrics_contract.json`); see
   actual structural spans. Paired cross-span tie chains are legal; malformed
   ties, overlap, incompatible grids, or broken tiling are not. Evolution can
   stall; playback can never break.
-- **Precedence**: corridor > explicit plan > stochastic drift leash; projection
-  remains an absolute playability postcondition. A directive may exceed the
-  leash, but it cannot exceed the corridor or bypass projection.
+- **Precedence**: density corridor > complexity corridor > explicit plan >
+  stochastic drift leash; projection remains an absolute playability
+  postcondition. A directive may exceed the leash, but it cannot exceed either
+  corridor or bypass projection.
 - Out-of-range authored knobs are rejected with a pinned Display
   (`dumka evolutionRate must be 0-100, got 101`), never clamped; the
   automation samplers clamp their sampled values like every other target.
@@ -247,6 +289,14 @@ distance evaluations over their complete authored ranges; each active
 row-cycle reserves `maxOperations + 1` for prefix zero and the nonzero search.
 This prevents a valid far-cycle preview from multiplying the dense-distance
 case into minutes of replay work.
+
+The refined-grid release case is
+`generator/dumka-depth-fold-cycle-10000`: palette `{2,3}`, working
+Subdivision 24, placement bias 50, and a bounded nonzero curve tail through
+cycle 10,000. One local release iteration measured approximately **57.170
+ms** (checksum 57). This is a report-only machine measurement, not a CI
+threshold; the command and its like-for-like caveat are in
+[TESTING.md](TESTING.md).
 
 The mock e2e driver deliberately does not port the fold. It projects the seed
 at cycle 0, or at a later cycle only when the authored rate is 0 and no enabled

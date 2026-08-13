@@ -114,6 +114,29 @@ span-only delegate; both share the same exhaustive dispatch and generator
 implementation, so adding a variant does not create a second preview algorithm. See
 [ADDING_A_GENERATOR.md](ADDING_A_GENERATOR.md).
 
+M3.95 adds a working lattice inside that same fold. `dumka/depth.rs` validates
+the authored prime palette, derives `workingSubdivision`, prices reduced
+within-beat attack denominators with exact scaled Barlow indigestibility, and
+computes two deliberately orthogonal observables: mean state complexity and
+normalized denominator entropy. Only mean complexity participates in the
+complexity corridor; depth diversity is preview insight and never candidate
+admission. Corridor Promote/Demote candidates sort by the smallest positive
+depth-price change before displacement, so refinement walks the cheapest
+depth ladder rather than jumping to the nearest but most exotic slot.
+
+`dumka/spectrum.rs` supplies a pinned Q16 low-harmonic placement field.
+`placementBias` blends its gap-seeking order with Barlow order before the
+existing temperature pool; bias 0 is the legacy identity endpoint. This
+spectral objective can diverge from a Bjorklund necklace and is not the Euclid
+operator in disguise. `ui/src/dumkaMetrics.ts` mirrors the display-only order
+from Rust-emitted roots and cases with the same integer recurrence; it is not a
+second playback resolver. The directive-only Morph family compiles its target
+onto the same working lattice, aligns attacks by exact circular transport/edit
+cost, and exposes one legal micro-step at a time to ordinary quota or
+perceptual prefix pacing. Density, complexity, scope, tie, and projection
+guards remain common admission predicates. Exact formulas and non-claims are
+in [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
+
 A deterministic plan row may instead opt into the versioned perceptual
 step-size planner in `dumka/perceptual.rs` + `evolve.rs`. It scores the
 directive's incoming state against every reachable legal operator prefix,
@@ -179,8 +202,9 @@ React section drafts
     velocities via cseq_transport::rhythm_span_matra_velocities)
   → generator_preview (spans + optional spanVelocities)
   → resolve_generator_cycle_with_trace, then per-cell velocity stamping
-    (spans + fold-owned effective density corridor + evolution trace,
-    including authored directives and reserved directiveId 0 legacy clamps)
+    (spans + working Subdivision + fold-owned density/complexity corridors +
+    state complexity/depth-diversity insights + evolution trace, including
+    authored directives and reserved directiveId 0 legacy clamps)
   → timeline structure + generator lane (accent-shaded cells)
 ```
 
@@ -278,6 +302,11 @@ Evolution directive pacing is part of the v1 plan row. Absence materializes as
 `perCycle` for compatibility. Tolerant patch recall drops an explicitly
 unknown pacing (or a smoothed Stochastic row) with the malformed-row warning;
 the Tauri/Rust invoke boundary remains strict for direct DTO input.
+Depth fields are additive v1 generator data: absent palette, default
+`0..100000` complexity corridor, and placement bias 0 preserve the legacy
+fold. Morph targets and directive subdivision-level filters stay inside the
+plan row. Preview-only `workingSubdivision`, state metrics, corridors, and
+clamp trace never enter the persisted authored shape.
 Directive magnitude is an additive tagged field. Absence or explicit
 `operationQuota` canonicalizes to the historical omitted shape. A
 `perceptual` row must pin `modelVersion: v1`, use `perCycle`, remain within the

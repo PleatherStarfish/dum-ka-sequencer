@@ -8,10 +8,11 @@ use rayon::prelude::*;
 use cseq_model::SubdivisionPolicy;
 use cseq_rhythm::{
     perceptual_distance, resolve_channel_hocket, ChannelAssignMode, ChannelHocketSpec,
-    ChannelTransition, DirectiveFamily, DirectiveMagnitude, DirectiveOptions, DumkaGeneratorParams,
-    EvolutionDirective, EvolutionState, EvolvedOnset, ExampleGeneratorParams, GeneratorConfig,
-    GeneratorCycleContext, GeneratorSeedMode, GeneratorSpanInput, MarkovOrder, PerceptualContext,
-    PerceptualModel, RhythmSeedMode,
+    ChannelTransition, CurvePoint, DirectiveFamily, DirectiveMagnitude, DirectiveOptions,
+    DumkaGeneratorParams, EvolutionCurve, EvolutionDirective, EvolutionState, EvolvedOnset,
+    ExampleGeneratorParams, GeneratorConfig, GeneratorCycleContext, GeneratorSeedMode,
+    GeneratorSpanInput, MarkovOrder, PerceptualContext, PerceptualModel, PerceptualModelVersion,
+    RhythmSeedMode,
 };
 
 struct BenchCase {
@@ -154,6 +155,11 @@ fn bench_cases() -> Vec<BenchCase> {
             name: "generator/dumka-fold-corridor-cycle-10000",
             description: "fold Dum-Ka to cycle 10000 through a legal 16-directive plan with a 25-60% density corridor",
             run: || resolve_dumka_generator(10_000),
+        },
+        BenchCase {
+            name: "generator/dumka-depth-fold-cycle-10000",
+            description: "fold Dum-Ka to cycle 10000 on palette {2,3} with 50% geometric placement and a bounded perceptual curve",
+            run: || resolve_dumka_depth_generator(10_000),
         },
         BenchCase {
             name: "generator/dumka-perceptual-planner-cycle-1",
@@ -302,6 +308,65 @@ fn resolve_dumka_generator(cycle: u64) -> usize {
         },
     )
     .expect("Dum-Ka generator resolves")
+    .iter()
+    .map(|span| span.cells.len())
+    .sum()
+}
+
+fn resolve_dumka_depth_generator(cycle: u64) -> usize {
+    static SPANS: OnceLock<Vec<GeneratorSpanInput>> = OnceLock::new();
+    let spans = SPANS.get_or_init(|| {
+        (0..4)
+            .map(|index| GeneratorSpanInput {
+                span_id: index as u64 + 1,
+                span_len: 24,
+                label: None,
+                section_index: Some(1),
+                subdivision: Some(24),
+            })
+            .collect()
+    });
+    let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
+        subdivision_palette: vec![2, 3],
+        evolution_rate: 0,
+        drift_leash: 100,
+        placement_bias: 50,
+        density_floor: 25,
+        density_ceiling: 60,
+        evolution_curve: EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 1,
+            // The nonzero tail stays inside the shared 4,096-score lifetime
+            // bound while still exercising a long-history, refined-lattice
+            // fold at the requested cycle-10,000 benchmark horizon.
+            points: vec![
+                CurvePoint {
+                    cycle: 9_489,
+                    target_milli: 2_000,
+                },
+                CurvePoint {
+                    cycle: 10_000,
+                    target_milli: 6_000,
+                },
+            ],
+        },
+        seed_mode: GeneratorSeedMode::Locked { seed: 42 },
+        ..Default::default()
+    });
+    cseq_rhythm::resolve_generator_cycle(
+        black_box(&config),
+        &GeneratorCycleContext {
+            track_id: None,
+            cycle: black_box(cycle),
+            cycle_beats: 4,
+            spans: black_box(spans),
+            seed: 42,
+            automation: &|_, _, _| None,
+        },
+    )
+    .expect("depth-enabled Dum-Ka generator resolves")
     .iter()
     .map(|span| span.cells.len())
     .sum()

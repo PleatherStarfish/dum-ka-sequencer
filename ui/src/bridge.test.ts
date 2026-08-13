@@ -60,6 +60,10 @@ describe("bridge lossless seed DTO normalization", () => {
     });
     expect(preview.trace).toEqual([]);
     expect(preview.densityCorridor).toBeNull();
+    expect(preview.workingSubdivision).toBeNull();
+    expect(preview.complexityCorridor).toBeNull();
+    expect(preview.stateComplexityMilli).toBeNull();
+    expect(preview.stateDepthDiversityMilli).toBeNull();
   });
 
   it("preserves directive trace entries at the invoke boundary", async () => {
@@ -74,9 +78,17 @@ describe("bridge lossless seed DTO normalization", () => {
           requested: 2,
           applied: 1,
           skipped: "projection",
+          complexityCorridorClamp: {
+            limit: "ceiling",
+            complexityMilli: 42_000,
+          },
         },
       ],
       densityCorridor: { floor: 20, ceiling: 60 },
+      workingSubdivision: 12,
+      complexityCorridor: { floor: 10_000, ceiling: 42_000 },
+      stateComplexityMilli: 37_500,
+      stateDepthDiversityMilli: 62_500,
     });
 
     const preview = await bridge.generatorPreview({} as bridge.GeneratorPreviewRequest);
@@ -84,6 +96,13 @@ describe("bridge lossless seed DTO normalization", () => {
       expect.objectContaining({ directiveId: 41, applied: 1, skipped: "projection" }),
     ]);
     expect(preview.densityCorridor).toEqual({ floor: 20, ceiling: 60 });
+    expect(preview.workingSubdivision).toBe(12);
+    expect(preview.complexityCorridor).toEqual({
+      floor: 10_000,
+      ceiling: 42_000,
+    });
+    expect(preview.stateComplexityMilli).toBe(37_500);
+    expect(preview.stateDepthDiversityMilli).toBe(62_500);
   });
 
   it("offers only Dum-Ka extensions so pickers never invite Caesura files", () => {
@@ -116,6 +135,10 @@ describe("bridge lossless seed DTO normalization", () => {
         driftLeash: 25,
         densityFloor: 0,
         densityCeiling: 100,
+        subdivisionPalette: [],
+        complexityFloor: 0,
+        complexityCeiling: 100_000,
+        placementBias: 0,
         barlowTemperature: 0,
         weightBarlowRemove: 3,
         weightBarlowAdd: 3,
@@ -155,6 +178,10 @@ describe("bridge lossless seed DTO normalization", () => {
       driftLeash: 25,
       densityFloor: 0,
       densityCeiling: 100,
+      subdivisionPalette: [],
+      complexityFloor: 0,
+      complexityCeiling: 100_000,
+      placementBias: 0,
       barlowTemperature: 0,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,

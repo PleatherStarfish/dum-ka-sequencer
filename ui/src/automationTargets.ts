@@ -65,6 +65,12 @@ export const DUMKA_DENSITY_FLOOR_AUTOMATION_TARGET =
   "generator.dumka.densityFloor";
 export const DUMKA_DENSITY_CEILING_AUTOMATION_TARGET =
   "generator.dumka.densityCeiling";
+export const DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET =
+  "generator.dumka.complexityFloor";
+export const DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET =
+  "generator.dumka.complexityCeiling";
+export const DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET =
+  "generator.dumka.placementBias";
 export const DUMKA_FILL_COMPLEXITY_AUTOMATION_TARGET =
   "generator.dumka.fillComplexity";
 export const DUMKA_BARLOW_TEMPERATURE_AUTOMATION_TARGET =
@@ -508,6 +514,9 @@ export type AutomationTargetBuildInput = {
   dumkaDriftLeash: number;
   dumkaDensityFloor: number;
   dumkaDensityCeiling: number;
+  dumkaComplexityFloor: number;
+  dumkaComplexityCeiling: number;
+  dumkaPlacementBias: number;
   midiOutputChannel: number;
   scorePitch: number;
   scoreVelocity: number;
@@ -601,6 +610,42 @@ export function buildAutomationTargetDefs(
       "Density ceiling",
       "Generator",
       input.dumkaDensityCeiling,
+      "cycleStart"
+    )
+  );
+
+  add(
+    makeIntegerTarget(
+      DUMKA_COMPLEXITY_FLOOR_AUTOMATION_TARGET,
+      "Complexity floor",
+      "Generator",
+      input.dumkaComplexityFloor,
+      0,
+      100_000,
+      "cycleStart",
+      "milli"
+    )
+  );
+
+  add(
+    makeIntegerTarget(
+      DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
+      "Complexity ceiling",
+      "Generator",
+      input.dumkaComplexityCeiling,
+      0,
+      100_000,
+      "cycleStart",
+      "milli"
+    )
+  );
+
+  add(
+    makePercentTarget(
+      DUMKA_PLACEMENT_BIAS_AUTOMATION_TARGET,
+      "Placement bias",
+      "Generator",
+      input.dumkaPlacementBias,
       "cycleStart"
     )
   );

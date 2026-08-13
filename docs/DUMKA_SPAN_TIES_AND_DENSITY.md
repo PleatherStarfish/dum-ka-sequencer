@@ -146,6 +146,13 @@ set is the onset density the piece keeps**, no matter which layer
   sparkline crossing the band is impossible after cycle 1, and the trace
   ticks explain every clamp.
 
+M3.95 adds a separate **complexity corridor** after this density pass. The
+order is load-bearing: density changes onset count, which is the denominator
+of mean depth; only then may complexity move existing attacks between depth
+levels. Each rail keeps its own clamp/stall truth in trace. The independent
+depth-diversity entropy readout is not a rail and therefore cannot authorize or
+veto any density change. See [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
+
 ## 4. Why this is lasting
 
 Both fixes convert implicit policy into explicit, tested contract:
@@ -223,5 +230,6 @@ no mechanism gain. Rejected.
   where cycle identity itself is in motion; fencing stays.
 - **Corridor on stroke-class balance** (not just count): defer to M4
   bass payload, where classes become audible as pitch.
-- **Upsample factor `k`** (true finer-than-grid tuplets): unchanged,
-  still M6+, orthogonal to both fixes here.
+- **Finer-than-seed tuplets**: delivered later by M3.95's exact prime
+  subdivision palette within the platform's Subdivision-64 ceiling. Truly
+  off-lattice/continuous onset time remains deferred.

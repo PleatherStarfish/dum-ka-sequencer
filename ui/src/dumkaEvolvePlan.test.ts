@@ -26,6 +26,7 @@ import {
   reorder,
   resizeRange,
   setDensityCorridor,
+  setComplexityCorridor,
   setIntensity,
   setMagnitude,
   setOptions,
@@ -34,6 +35,7 @@ import {
   smoothDirectiveOverFourCycles,
   toggleEnabled,
   validateEvolutionPlan,
+  normalizeSubdivisionPalette,
   type EvolutionDirective,
 } from "./dumkaEvolvePlan";
 
@@ -64,6 +66,92 @@ function planOf(result: ReturnType<typeof addPin>): EvolutionDirective[] {
 }
 
 describe("dumka evolution plan model", () => {
+  it("normalizes depth controls without changing perceptual pacing", () => {
+    expect(normalizeSubdivisionPalette([7, 3, 3, 2, 11])).toEqual([2, 3]);
+    const row = pin(1, "barlowAdd", 4);
+    const normalized = normalizeEvolutionPlan([
+      {
+        ...row,
+        magnitude: { ...DEFAULT_PERCEPTUAL_MAGNITUDE },
+        options: {
+          ...row.options,
+          complexityFloor: 70_000,
+          complexityCeiling: 20_000,
+          placementBias: 77,
+          subdivisionLevel: 1,
+        },
+      },
+    ])[0]!;
+    expect(normalized.pacing).toBe("perCycle");
+    expect(normalized.magnitude).toEqual(DEFAULT_PERCEPTUAL_MAGNITUDE);
+    expect(normalized.options).toMatchObject({
+      complexityFloor: 20_000,
+      complexityCeiling: 70_000,
+      placementBias: 77,
+      subdivisionLevel: 1,
+    });
+    expect(validateEvolutionPlan([normalized], 12).ok).toBe(true);
+    expect(
+      validateEvolutionPlan(
+        [
+          {
+            ...normalized,
+            enabled: false,
+            options: { ...normalized.options, subdivisionLevel: 6 },
+          },
+        ],
+        12
+      )
+    ).toEqual({
+      ok: false,
+      message:
+        "dumka plan invalid: directive 1 subdivisionLevel 6 does not exist on working Subdivision 12",
+    });
+  });
+
+  it("authors paired complexity rails and a directed Morph target", () => {
+    const added = planOf(addPin([], "morph", 5, "x x x x"));
+    expect(added[0]).toMatchObject({
+      family: "morph",
+      options: { morphTarget: "x x x x" },
+    });
+    const ranged = planOf(resizeRange(added, added[0]!.id, 5, 20));
+    const paced = planOf(setPacing(ranged, added[0]!.id, "easeInOut"));
+    expect(paced[0]!.pacing).toBe("easeInOut");
+    const corridor = planOf(
+      setComplexityCorridor(paced, added[0]!.id, {
+        floor: 12_000,
+        ceiling: 44_000,
+      })
+    );
+    expect(corridor[0]!.options).toMatchObject({
+      complexityFloor: 12_000,
+      complexityCeiling: 44_000,
+    });
+    expect(
+      validateEvolutionPlan([
+        {
+          ...corridor[0]!,
+          options: { ...corridor[0]!.options, morphTarget: null },
+        },
+      ])
+    ).toEqual({
+      ok: false,
+      message: `dumka plan invalid: directive ${added[0]!.id} morph requires options.morphTarget`,
+    });
+    expect(
+      validateEvolutionPlan([
+        {
+          ...corridor[0]!,
+          options: { ...corridor[0]!.options, morphTarget: ". . . ." },
+        },
+      ])
+    ).toEqual({
+      ok: false,
+      message: `dumka plan invalid: directive ${added[0]!.id} morph target must contain at least one sounding onset`,
+    });
+  });
+
   it("normalizes ids, orders, cycles, quota, scope, and options", () => {
     const row = pin(4, "euclid", 3, 9);
     const normalized = normalizeEvolutionPlan([

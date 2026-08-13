@@ -41,21 +41,26 @@ use super::perceptual::{
     PerceptualModelVersion,
 };
 use super::plan::{
-    active_directives, pin_quota, rotate_pin_quota, slot_range, DensityCorridorClamp,
-    DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectivePacing, DirectiveSkip,
-    DirectiveTraceEntry, EvolutionCurve, EvolutionDirective, PerceptualPacingTrace,
-    RangeAccumulator, RotateDirection, SlotRange, EVOLUTION_CURVE_TRACE_ID,
-    LEGACY_EVOLUTION_TRACE_ID,
+    active_directives, pin_quota, rotate_pin_quota, slot_range, ComplexityCorridorClamp,
+    ComplexityCorridorLimit, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily,
+    DirectiveMagnitude, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, EvolutionCurve,
+    EvolutionDirective, PerceptualPacingTrace, RangeAccumulator, RotateDirection, SlotRange,
+    EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_MORPH_ALIGNMENT_WORK,
+    MAX_MORPH_MICROSTEPS,
 };
 use super::sioros::{
     desyncopate_at, legal_desyncopations, legal_syncopations, metrical_levels, syncopation_target,
 };
 use super::tree::{CompiledSeed, SeedEvent};
 use super::{
-    DUMKA_BARLOW_TEMPERATURE_TARGET, DUMKA_DENSITY_CEILING_TARGET, DUMKA_DENSITY_FLOOR_TARGET,
+    DUMKA_BARLOW_TEMPERATURE_TARGET, DUMKA_COMPLEXITY_CEILING_TARGET,
+    DUMKA_COMPLEXITY_FLOOR_TARGET, DUMKA_DENSITY_CEILING_TARGET, DUMKA_DENSITY_FLOOR_TARGET,
     DUMKA_DRIFT_LEASH_TARGET, DUMKA_EVOLUTION_RATE_TARGET, DUMKA_FILL_COMPLEXITY_TARGET,
 };
-use crate::generators::{DensityCorridorRange, GeneratorAutomationSampler, GeneratorSpanInput};
+use crate::generators::{
+    ComplexityCorridorRange, DensityCorridorRange, GeneratorAutomationSampler, GeneratorError,
+    GeneratorSpanInput,
+};
 use cseq_model::Rational;
 
 const SALT_FIRE: u64 = 0xD0A1_5EED_0001_0001;
@@ -76,6 +81,34 @@ const SALT_EUCLID_ROT: u64 = 0xD0A1_5EED_0008_0008;
 /// Euclid reshape's inversion chance (0..100 against euclidInvert).
 const SALT_EUCLID_INV: u64 = 0xD0A1_5EED_0009_0009;
 const SALT_PLAN: u64 = 0xD0A1_5EED_0010_0010;
+
+/// Cumulative scan, candidate, and trial-projection work available to complexity
+/// normalization during one requested-cycle reconstruction. A corridor can
+/// be sampled on every historical cycle, so this lifetime guard matters more
+/// than a per-call cap: once exhausted, later normalizations deterministically
+/// hold and keep reporting the active floor/ceiling clamp.
+const MAX_COMPLEXITY_NORMALIZATION_WORK: u64 = 65_536;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComplexityNormalizationBudget {
+    remaining: u64,
+}
+
+impl ComplexityNormalizationBudget {
+    const fn new() -> Self {
+        Self {
+            remaining: MAX_COMPLEXITY_NORMALIZATION_WORK,
+        }
+    }
+
+    fn spend(&mut self, work: u64) -> bool {
+        if self.remaining < work {
+            return false;
+        }
+        self.remaining -= work;
+        true
+    }
+}
 
 /// Per-family operator weights, in the fixed band order the draw uses.
 /// The defaults reproduce the historical 3/3/2-of-8 mapping bit-exactly
@@ -150,9 +183,14 @@ pub struct EvolutionInputs<'a> {
     /// folded cycle so replay preserves the complete historical shape.
     pub density_floor: u32,
     pub density_ceiling: u32,
+    /// Authored attack-depth rail fallbacks, sampled at every fold cycle.
+    pub complexity_floor: u32,
+    pub complexity_ceiling: u32,
     /// Authored fallback for the Barlow candidate-pool temperature; the
     /// automation lane is sampled at each folded cycle like rate and leash.
     pub barlow_temperature: u32,
+    /// Barlow/geometric placement blend sampled at every fold cycle.
+    pub placement_bias: u32,
     /// Authored fallback for Fragment's figure-size bias; sampled per
     /// folded cycle like rate, leash, and temperature.
     pub fill_complexity: u32,
@@ -292,7 +330,7 @@ fn normalization_clamp(
     after: &EvolutionState,
     corridor: DensityCorridor,
 ) -> Option<DensityCorridorClamp> {
-    match after.onsets.len().cmp(&before.onsets.len()) {
+    let changed = match after.onsets.len().cmp(&before.onsets.len()) {
         std::cmp::Ordering::Less => Some(DensityCorridorClamp {
             limit: DensityCorridorLimit::Ceiling,
             density_percent: corridor.ceiling_percent,
@@ -302,7 +340,12 @@ fn normalization_clamp(
             density_percent: corridor.floor_percent,
         }),
         std::cmp::Ordering::Equal => None,
-    }
+    };
+    // A projection fence can leave normalization with no admissible next
+    // edit. Do not let an unchanged-but-still-outside state look like an
+    // ordinary hold: the active rail remains independently truthful in the
+    // preview trace.
+    changed.or_else(|| corridor.clamp_for(after.onsets.len()))
 }
 
 fn sampled_density_corridor(
@@ -343,6 +386,89 @@ fn sampled_density_corridor_with_presence(
         DensityCorridor::new(sampled_floor.min(sampled_ceiling), sampled_ceiling, slots),
         floor_sample.is_some() || ceiling_sample.is_some(),
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComplexityCorridor {
+    floor_milli: u32,
+    ceiling_milli: u32,
+}
+
+impl ComplexityCorridor {
+    fn clamp_for(self, state: &EvolutionState, working: u32) -> Option<ComplexityCorridorClamp> {
+        let complexity = super::depth::state_complexity_milli(&state_slots(state), working);
+        if complexity < self.floor_milli {
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Floor,
+                complexity_milli: self.floor_milli,
+            })
+        } else if complexity > self.ceiling_milli {
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Ceiling,
+                complexity_milli: self.ceiling_milli,
+            })
+        } else {
+            None
+        }
+    }
+
+    const fn range(self) -> ComplexityCorridorRange {
+        ComplexityCorridorRange {
+            floor: self.floor_milli,
+            ceiling: self.ceiling_milli,
+        }
+    }
+}
+
+fn sampled_complexity_corridor(inputs: &EvolutionInputs<'_>, cycle: u64) -> ComplexityCorridor {
+    sampled_complexity_corridor_with_presence(inputs, cycle).0
+}
+
+fn sampled_complexity_corridor_with_presence(
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+) -> (ComplexityCorridor, bool) {
+    let floor_sample = (inputs.automation)(
+        DUMKA_COMPLEXITY_FLOOR_TARGET,
+        cycle,
+        f64::from(inputs.complexity_floor),
+    );
+    let ceiling_sample = (inputs.automation)(
+        DUMKA_COMPLEXITY_CEILING_TARGET,
+        cycle,
+        f64::from(inputs.complexity_ceiling),
+    );
+    let floor = floor_sample
+        .unwrap_or(f64::from(inputs.complexity_floor))
+        .round()
+        .clamp(0.0, 100_000.0) as u32;
+    let ceiling = ceiling_sample
+        .unwrap_or(f64::from(inputs.complexity_ceiling))
+        .round()
+        .clamp(0.0, 100_000.0) as u32;
+    (
+        ComplexityCorridor {
+            floor_milli: floor.min(ceiling),
+            ceiling_milli: ceiling,
+        },
+        floor_sample.is_some() || ceiling_sample.is_some(),
+    )
+}
+
+fn directive_complexity_corridor(
+    directive: &EvolutionDirective,
+    global: ComplexityCorridor,
+) -> ComplexityCorridor {
+    match (
+        directive.options.complexity_floor,
+        directive.options.complexity_ceiling,
+    ) {
+        (Some(floor), Some(ceiling)) => ComplexityCorridor {
+            floor_milli: floor.min(ceiling),
+            ceiling_milli: ceiling,
+        },
+        _ => global,
+    }
 }
 
 fn directive_density_corridor(
@@ -500,6 +626,73 @@ fn state_slots(state: &EvolutionState) -> Vec<u32> {
     state.onsets.iter().map(|onset| onset.slot).collect()
 }
 
+/// A scoped attack owns its complete sounding interval, not only its onset.
+/// This keeps destructive and displacement edits from reaching across a
+/// directive boundary through an inherited sustain.
+fn onset_fits_window(onset: &EvolvedOnset, window: Option<SlotRange>) -> bool {
+    window.map_or(true, |window| {
+        onset
+            .slot
+            .checked_add(onset.dur)
+            .is_some_and(|end| window.contains_interval(onset.slot, end))
+    })
+}
+
+/// Sioros moves preserve duration, so both the source interval and the
+/// destination interval must be contained by an authored scope.
+fn onset_move_fits_window(
+    state: &EvolutionState,
+    from: u32,
+    to: u32,
+    window: Option<SlotRange>,
+) -> bool {
+    let Some(window) = window else {
+        return true;
+    };
+    state
+        .onsets
+        .iter()
+        .find(|onset| onset.slot == from)
+        .is_some_and(|onset| {
+            let source_end = onset.slot.checked_add(onset.dur);
+            let destination_end = to.checked_add(onset.dur);
+            source_end.is_some_and(|end| window.contains_interval(onset.slot, end))
+                && destination_end.is_some_and(|end| window.contains_interval(to, end))
+        })
+}
+
+fn scoped_legal_syncopations(
+    state: &EvolutionState,
+    template: &[u32],
+    beat_level: u32,
+    window: Option<SlotRange>,
+) -> Vec<super::sioros::SiorosVector> {
+    let onset_slots = state_slots(state);
+    legal_syncopations(&onset_slots, template, beat_level, window)
+        .into_iter()
+        .filter(|&vector| {
+            syncopation_target(&onset_slots, template, vector, beat_level)
+                .is_some_and(|landing| onset_move_fits_window(state, vector.pulse, landing, window))
+        })
+        .collect()
+}
+
+fn scoped_legal_desyncopations(
+    state: &EvolutionState,
+    template: &[u32],
+    beat_level: u32,
+    window: Option<SlotRange>,
+) -> Vec<u32> {
+    let onset_slots = state_slots(state);
+    legal_desyncopations(&onset_slots, template, beat_level, window)
+        .into_iter()
+        .filter(|&pulse| {
+            desyncopate_at(&onset_slots, template, pulse, beat_level)
+                .is_some_and(|(source, _)| onset_move_fits_window(state, source, pulse, window))
+        })
+        .collect()
+}
+
 fn state_is_projectable(
     seed: &CompiledSeed,
     state: &EvolutionState,
@@ -601,19 +794,230 @@ fn normalize_to_density_corridor(
     current
 }
 
+/// Deterministically push or pull attack depth into the active rail. Every
+/// onset is touched at most once per pass, and every move is trial-projected.
+fn normalize_to_complexity_corridor(
+    seed: &CompiledSeed,
+    state: &EvolutionState,
+    ranks: &[u32],
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    placement_bias_override: Option<u32>,
+    corridor: ComplexityCorridor,
+    work_budget: &mut ComplexityNormalizationBudget,
+) -> (EvolutionState, Option<ComplexityCorridorClamp>) {
+    let working = seed.required_subdivision;
+    let cycle_slots = seed.total_beats.saturating_mul(working);
+    // The default rail admits the metric's complete codomain. Preserve the
+    // behavior-off fold without even rescoring a dense inherited state.
+    if corridor.floor_milli == 0 && corridor.ceiling_milli == 100_000 {
+        return (state.clone(), None);
+    }
+    let initial = super::depth::state_complexity_milli(&state_slots(state), working);
+    if initial >= corridor.floor_milli && initial <= corridor.ceiling_milli {
+        return (state.clone(), None);
+    }
+    let promote = initial < corridor.floor_milli;
+    let placement_bias = placement_bias_override.unwrap_or_else(|| {
+        sampled_percent(
+            inputs,
+            super::DUMKA_PLACEMENT_BIAS_TARGET,
+            inputs.placement_bias,
+            cycle,
+        )
+    });
+    let mut current = state.clone();
+    // Source priority is invariant until that original onset is consumed:
+    // normalization only moves the selected source, and a moved source is
+    // never revisited. Sort once instead of rebuilding and sorting the same
+    // source list after every successful move.
+    let mut source_slots = state_slots(state);
+    source_slots.sort_by_key(|&slot| {
+        let depth = super::depth::onset_depth(slot, working);
+        if promote {
+            (depth, ranks[slot as usize], slot)
+        } else {
+            (u32::MAX - depth, u32::MAX - ranks[slot as usize], slot)
+        }
+    });
+    for source_slot in source_slots {
+        let complexity = super::depth::state_complexity_milli(&state_slots(&current), working);
+        if (promote && complexity >= corridor.floor_milli)
+            || (!promote && complexity <= corridor.ceiling_milli)
+        {
+            break;
+        }
+        // Account for the state scan, source lookup, and coverage map before
+        // performing them. This makes the lifetime cap effective even when a
+        // nearly full multi-beat grid has only one silent candidate.
+        let scan_work = u64::from(cycle_slots)
+            .saturating_add(u64::try_from(current.onsets.len()).unwrap_or(u64::MAX));
+        if !work_budget.spend(scan_work) {
+            break;
+        }
+        let Some(index) = current
+            .onsets
+            .iter()
+            .position(|onset| onset.slot == source_slot)
+        else {
+            continue;
+        };
+        // A fully covered grid has no legal movement target. This case is
+        // common after a density-floor articulation pass and must not sort
+        // and rescan every onset merely to discover the same fact.
+        let occupied = occupied_slots(&current, cycle_slots);
+        let candidates = (0..cycle_slots)
+            .filter(|slot| !occupied[*slot as usize])
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            break;
+        }
+        // Candidate pricing is linear in the silent set. With geometric
+        // placement active, field construction also scans the current onset
+        // set; charge that extra scan before building it.
+        let candidate_work = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
+        let geometric_work = if placement_bias == 0 {
+            0
+        } else {
+            u64::try_from(current.onsets.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::from(working))
+        };
+        if !work_budget.spend(candidate_work.saturating_add(geometric_work)) {
+            break;
+        }
+        let source = current.onsets[index].clone();
+        let placement_order = blended_candidate_order(
+            &candidates,
+            &current,
+            ranks,
+            working,
+            placement_bias,
+            // Promote and Demote both choose a silent target. The
+            // mirror is depth-price direction, not deletion energy at
+            // a target that does not yet exist.
+            true,
+        );
+        let placement_ranks = super::spectrum::normalized_ranks(&placement_order);
+        let moves = if promote {
+            super::depth::promotion_candidates(
+                source.slot,
+                working,
+                cycle_slots,
+                &candidates,
+                &placement_ranks,
+            )
+        } else {
+            super::depth::demotion_candidates(
+                source.slot,
+                working,
+                cycle_slots,
+                &candidates,
+                &placement_ranks,
+            )
+        };
+        for movement in moves {
+            // Trial projection can be substantially more expensive than
+            // pure candidate pricing, so it consumes an additional unit.
+            if !work_budget.spend(1) {
+                break;
+            }
+            let mut candidate = current.clone();
+            candidate.onsets[index].slot = movement.slot;
+            candidate.onsets.sort_by_key(|onset| onset.slot);
+            let candidate_complexity =
+                super::depth::state_complexity_milli(&state_slots(&candidate), working);
+            if ((!promote && candidate_complexity >= corridor.floor_milli)
+                || (promote && candidate_complexity <= corridor.ceiling_milli))
+                && state_is_projectable(seed, &candidate, inputs)
+            {
+                current = candidate;
+                break;
+            }
+        }
+    }
+    let limit = if promote {
+        ComplexityCorridorLimit::Floor
+    } else {
+        ComplexityCorridorLimit::Ceiling
+    };
+    (
+        current,
+        Some(ComplexityCorridorClamp {
+            limit,
+            complexity_milli: if promote {
+                corridor.floor_milli
+            } else {
+                corridor.ceiling_milli
+            },
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_to_active_corridors(
+    seed: &CompiledSeed,
+    state: &EvolutionState,
+    ranks: &[u32],
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    placement_bias_override: Option<u32>,
+    density: DensityCorridor,
+    complexity: ComplexityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
+) -> (
+    EvolutionState,
+    Option<DensityCorridorClamp>,
+    Option<ComplexityCorridorClamp>,
+) {
+    let density_normalized = normalize_to_density_corridor(seed, state, ranks, inputs, density);
+    let density_clamp = normalization_clamp(state, &density_normalized, density)
+        .or_else(|| density.clamp_for(density_normalized.onsets.len()));
+    let (normalized, complexity_clamp) = normalize_to_complexity_corridor(
+        seed,
+        &density_normalized,
+        ranks,
+        inputs,
+        cycle,
+        placement_bias_override,
+        complexity,
+        complexity_work_budget,
+    );
+    (normalized, density_clamp, complexity_clamp)
+}
+
+fn legacy_corridor_trace(
+    cycle: u64,
+    density: Option<DensityCorridorClamp>,
+    complexity: Option<ComplexityCorridorClamp>,
+) -> Option<DirectiveTraceEntry> {
+    (density.is_some() || complexity.is_some()).then_some(DirectiveTraceEntry {
+        cycle,
+        directive_id: LEGACY_EVOLUTION_TRACE_ID,
+        family: DirectiveFamily::Stochastic,
+        requested: 0,
+        applied: 0,
+        skipped: DirectiveSkip::None,
+        corridor_clamp: density,
+        complexity_corridor_clamp: complexity,
+        perceptual: None,
+    })
+}
+
 /// Tightening an automated leash must not leave an inherited state outside
 /// the new bound. Undo added onsets first (weakest first), then restore missing
-/// seed onsets (strongest first), trial-projecting every change. This is
+/// authored-anchor onsets (strongest first), trial-projecting every change. This is
 /// deterministic constraint normalization, not the cycle's stochastic op.
 fn normalize_to_leash(
     seed: &CompiledSeed,
     state: &EvolutionState,
-    seed_slots: &[u32],
+    leash_anchor: &EvolutionState,
     ranks: &[u32],
     inputs: &EvolutionInputs<'_>,
     budget: u32,
 ) -> EvolutionState {
-    if symmetric_difference(&state_slots(state), seed_slots) <= budget {
+    let anchor_slots = state_slots(leash_anchor);
+    if symmetric_difference(&state_slots(state), &anchor_slots) <= budget {
         return state.clone();
     }
 
@@ -622,11 +1026,11 @@ fn normalize_to_leash(
         .onsets
         .iter()
         .map(|onset| onset.slot)
-        .filter(|slot| seed_slots.binary_search(slot).is_err())
+        .filter(|slot| anchor_slots.binary_search(slot).is_err())
         .collect::<Vec<_>>();
     added_slots.sort_by_key(|&slot| (ranks[slot as usize], slot));
     for slot in added_slots {
-        if symmetric_difference(&state_slots(&current), seed_slots) <= budget {
+        if symmetric_difference(&state_slots(&current), &anchor_slots) <= budget {
             return current;
         }
         let mut candidate = current.clone();
@@ -636,12 +1040,12 @@ fn normalize_to_leash(
         }
     }
 
-    let initial_seed_state = seed_state(seed);
     let current_slots = state_slots(&current);
-    let mut missing_onsets = initial_seed_state
+    let mut missing_onsets = leash_anchor
         .onsets
-        .into_iter()
+        .iter()
         .filter(|onset| current_slots.binary_search(&onset.slot).is_err())
+        .cloned()
         .collect::<Vec<_>>();
     missing_onsets.sort_by(|a, b| {
         ranks[b.slot as usize]
@@ -649,7 +1053,7 @@ fn normalize_to_leash(
             .then_with(|| a.slot.cmp(&b.slot))
     });
     for onset in missing_onsets {
-        if symmetric_difference(&state_slots(&current), seed_slots) <= budget {
+        if symmetric_difference(&state_slots(&current), &anchor_slots) <= budget {
             return current;
         }
         let mut candidate = current.clone();
@@ -664,22 +1068,21 @@ fn normalize_to_leash(
         }
     }
 
-    if symmetric_difference(&state_slots(&current), seed_slots) <= budget {
+    if symmetric_difference(&state_slots(&current), &anchor_slots) <= budget {
         return current;
     }
 
     // A changed span layout can make an otherwise valid partial restoration
-    // impossible at the retained rotation. Prefer the exact seed at that
-    // rotation, then the unrotated seed. If even the authored seed is invalid
+    // impossible at the retained rotation. Prefer the exact authored anchor
+    // at that rotation, then at its own authored rotation. If even the anchor is invalid
     // on the supplied spans, returning it makes final projection report the
     // existing structure mismatch instead of emitting an over-budget state.
-    let mut fallback = seed_state(seed);
+    let mut fallback = leash_anchor.clone();
     fallback.rotation_beats = state.rotation_beats;
     if state_is_projectable(seed, &fallback, inputs) {
         return fallback;
     }
-    fallback.rotation_beats = 0;
-    fallback
+    leash_anchor.clone()
 }
 
 #[cfg(test)]
@@ -696,8 +1099,20 @@ fn step(
 ) -> (EvolutionState, Option<DirectiveTraceEntry>) {
     let slots = seed.total_beats * seed.required_subdivision;
     let corridor = sampled_density_corridor(inputs, cycle, slots);
+    let leash_anchor = seed_state(seed);
+    let mut complexity_work_budget = ComplexityNormalizationBudget::new();
     step_with_corridor(
-        seed, state, seed_slots, ranks, template, beat_level, inputs, cycle, corridor,
+        seed,
+        state,
+        &leash_anchor,
+        seed_slots.len(),
+        ranks,
+        template,
+        beat_level,
+        inputs,
+        cycle,
+        corridor,
+        &mut complexity_work_budget,
     )
 }
 
@@ -705,23 +1120,37 @@ fn step(
 fn step_with_corridor(
     seed: &CompiledSeed,
     state: &EvolutionState,
-    seed_slots: &[u32],
+    leash_anchor: &EvolutionState,
+    seed_onset_count: usize,
     ranks: &[u32],
     template: &[u32],
     beat_level: u32,
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     corridor: DensityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (EvolutionState, Option<DirectiveTraceEntry>) {
     step_scoped(
-        seed, seed_slots, state, ranks, template, beat_level, inputs, cycle, None, corridor,
+        seed,
+        leash_anchor,
+        seed_onset_count,
+        state,
+        ranks,
+        template,
+        beat_level,
+        inputs,
+        cycle,
+        None,
+        corridor,
+        complexity_work_budget,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn step_scoped(
     seed: &CompiledSeed,
-    seed_slots: &[u32],
+    leash_anchor: &EvolutionState,
+    seed_onset_count: usize,
     state: &EvolutionState,
     ranks: &[u32],
     template: &[u32],
@@ -730,24 +1159,50 @@ fn step_scoped(
     cycle: u64,
     window: Option<SlotRange>,
     corridor: DensityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (EvolutionState, Option<DirectiveTraceEntry>) {
     let drift_leash = sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
-    let budget = (drift_leash * seed_slots.len() as u32).div_ceil(100);
-    let leashed = normalize_to_leash(seed, state, seed_slots, ranks, inputs, budget);
+    let budget = (drift_leash * seed_onset_count as u32).div_ceil(100);
+    let leashed = normalize_to_leash(seed, state, leash_anchor, ranks, inputs, budget);
     let slots = seed.total_beats * seed.required_subdivision;
     // Corridor > leash: when the two constraints disagree, normalize the
-    // leash first and leave the corridor as the final inherited-state rail.
-    let current = normalize_to_density_corridor(seed, &leashed, ranks, inputs, corridor);
-    let normalization_clamp = normalization_clamp(&leashed, &current, corridor);
-    let trace = |requested, applied, skipped, corridor_clamp| DirectiveTraceEntry {
-        cycle,
-        directive_id: LEGACY_EVOLUTION_TRACE_ID,
-        family: DirectiveFamily::Stochastic,
-        requested,
-        applied,
-        skipped,
-        corridor_clamp,
-        perceptual: None,
+    // leash first and leave both corridors as the final inherited-state rails.
+    let complexity_corridor = sampled_complexity_corridor(inputs, cycle);
+    let (current, normalization_clamp, normalization_complexity_clamp) =
+        normalize_to_active_corridors(
+            seed,
+            &leashed,
+            ranks,
+            inputs,
+            cycle,
+            None,
+            corridor,
+            complexity_corridor,
+            complexity_work_budget,
+        );
+    let trace = |requested, applied, skipped, corridor_clamp, complexity_corridor_clamp| {
+        DirectiveTraceEntry {
+            cycle,
+            directive_id: LEGACY_EVOLUTION_TRACE_ID,
+            family: DirectiveFamily::Stochastic,
+            requested,
+            applied,
+            skipped,
+            corridor_clamp,
+            complexity_corridor_clamp,
+            perceptual: None,
+        }
+    };
+    let normalization_trace = || {
+        (normalization_clamp.is_some() || normalization_complexity_clamp.is_some()).then(|| {
+            trace(
+                0,
+                0,
+                DirectiveSkip::None,
+                normalization_clamp,
+                normalization_complexity_clamp,
+            )
+        })
     };
 
     let evolution_rate = sampled_percent(
@@ -759,22 +1214,22 @@ fn step_scoped(
     if evolution_rate == 0
         || draw(inputs.seed_value, cycle, SALT_FIRE, 100) >= u64::from(evolution_rate)
     {
-        return (
-            current,
-            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-        );
+        return (current, normalization_trace());
     }
 
     let Some(op) = drawn_op(&inputs.op_weights, inputs.seed_value, cycle) else {
-        return (
-            current,
-            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-        );
+        return (current, normalization_trace());
     };
     let temperature = sampled_percent(
         inputs,
         DUMKA_BARLOW_TEMPERATURE_TARGET,
         inputs.barlow_temperature,
+        cycle,
+    );
+    let placement_bias = sampled_percent(
+        inputs,
+        super::DUMKA_PLACEMENT_BIAS_TARGET,
+        inputs.placement_bias,
         cycle,
     );
 
@@ -783,34 +1238,30 @@ fn step_scoped(
     match op {
         Op::Remove => {
             if current.onsets.len() <= 1 {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             // Weakest-first candidate order; the temperature pool widens
             // toward uniform. Ranks are a permutation, so index 0 at
             // temperature 0 is exactly the historical argmin.
-            let mut order: Vec<usize> = (0..current.onsets.len()).collect();
-            order.retain(|&index| {
-                window.map_or(true, |window| {
-                    window.contains_slot(current.onsets[index].slot)
-                })
-            });
+            let candidates = current
+                .onsets
+                .iter()
+                .filter(|onset| onset_fits_window(onset, window))
+                .map(|onset| onset.slot)
+                .collect::<Vec<_>>();
+            let order = blended_candidate_order(
+                &candidates,
+                &current,
+                ranks,
+                seed.required_subdivision,
+                placement_bias,
+                false,
+            );
             if order.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
-            order.sort_by_key(|&index| {
-                (
-                    ranks[current.onsets[index].slot as usize],
-                    current.onsets[index].slot,
-                )
-            });
             let pick = pool_pick(order.len(), temperature, inputs.seed_value, cycle);
-            candidate.onsets.remove(order[pick]);
+            candidate.onsets.retain(|onset| onset.slot != order[pick]);
         }
         Op::Add => {
             // An "empty pulse" must be silent, not merely free of another
@@ -829,12 +1280,16 @@ fn step_scoped(
                 .filter(|&s| !occupied[s as usize])
                 .filter(|&slot| window.map_or(true, |window| window.contains_slot(slot)))
                 .collect();
-            silent.sort_by_key(|&slot| (std::cmp::Reverse(ranks[slot as usize]), slot));
+            silent = blended_candidate_order(
+                &silent,
+                &current,
+                ranks,
+                seed.required_subdivision,
+                placement_bias,
+                true,
+            );
             if silent.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let slot = silent[pool_pick(silent.len(), temperature, inputs.seed_value, cycle)];
             let class = current
@@ -871,11 +1326,7 @@ fn step_scoped(
                 let Some(rotated) =
                     windowed_rotate(&current, window, seed.required_subdivision, direction)
                 else {
-                    return (
-                        current,
-                        normalization_clamp
-                            .map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                    );
+                    return (current, normalization_trace());
                 };
                 candidate = rotated;
             } else {
@@ -890,12 +1341,9 @@ fn step_scoped(
             // Displacement operates in the unrotated metric frame like the
             // Barlow operators; the rotation register turns the result.
             let onset_slots = state_slots(&current);
-            let vectors = legal_syncopations(&onset_slots, template, beat_level, window);
+            let vectors = scoped_legal_syncopations(&current, template, beat_level, window);
             if vectors.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let vector = vectors[draw(
                 inputs.seed_value,
@@ -905,21 +1353,15 @@ fn step_scoped(
             ) as usize];
             let Some(landing) = syncopation_target(&onset_slots, template, vector, beat_level)
             else {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             };
             move_onset(&mut candidate, vector.pulse, landing);
         }
         Op::Desyncopate => {
             let onset_slots = state_slots(&current);
-            let pulses = legal_desyncopations(&onset_slots, template, beat_level, window);
+            let pulses = scoped_legal_desyncopations(&current, template, beat_level, window);
             if pulses.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let pulse = pulses[draw(
                 inputs.seed_value,
@@ -929,10 +1371,7 @@ fn step_scoped(
             ) as usize];
             let Some((source, _vector)) = desyncopate_at(&onset_slots, template, pulse, beat_level)
             else {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             };
             move_onset(&mut candidate, source, pulse);
         }
@@ -943,10 +1382,7 @@ fn step_scoped(
             let intervals =
                 super::figures::ranked_fragment_intervals(&current, slots, ranks, window);
             if intervals.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let interval =
                 intervals[pool_pick(intervals.len(), temperature, inputs.seed_value, cycle)];
@@ -972,6 +1408,7 @@ fn step_scoped(
                             limit: DensityCorridorLimit::Ceiling,
                             density_percent: corridor.ceiling_percent,
                         }),
+                        normalization_complexity_clamp,
                     )),
                 );
             }
@@ -1006,10 +1443,7 @@ fn step_scoped(
         Op::Consolidate => {
             let runs = super::figures::ranked_consolidate_runs(&current, ranks, window);
             if runs.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let mut run = runs[pool_pick(runs.len(), temperature, inputs.seed_value, cycle)];
             let unconstrained_count = run.count;
@@ -1025,6 +1459,7 @@ fn step_scoped(
                             limit: DensityCorridorLimit::Floor,
                             density_percent: corridor.floor_percent,
                         }),
+                        normalization_complexity_clamp,
                     )),
                 );
             }
@@ -1046,10 +1481,7 @@ fn step_scoped(
                 window,
             );
             if windows.is_empty() {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             }
             let window = windows[pool_pick(windows.len(), temperature, inputs.seed_value, cycle)];
             let options = super::reshape::ReshapeOptions {
@@ -1066,33 +1498,10 @@ fn step_scoped(
                 rest_policy: inputs.euclid_rest_policy,
             };
             let Some(reshaped) = super::reshape::apply_reshape(&current, &window, &options) else {
-                return (
-                    current,
-                    normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-                );
+                return (current, normalization_trace());
             };
             candidate = reshaped;
         }
-    }
-
-    // Density is the primary authored invariant, including for plan-exempt
-    // families and inverted Euclid jumps. Count-preserving operators pass
-    // this check without changing their historical trajectory.
-    if let Some(clamp) = corridor.clamp_for(candidate.onsets.len()) {
-        return (current, Some(trace(1, 0, DirectiveSkip::None, Some(clamp))));
-    }
-
-    // Sustained notes can overlap after a displacement; the projector would
-    // silently swallow the overlapped onset, so skip instead.
-    if matches!(
-        op,
-        Op::Syncopate | Op::Desyncopate | Op::Fragment | Op::Consolidate | Op::Euclid
-    ) && !state_intervals_disjoint(&candidate, slots)
-    {
-        return (
-            current,
-            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-        );
     }
 
     // Drift leash: distance of the onset set from the seed, budgeted as a
@@ -1113,30 +1522,48 @@ fn step_scoped(
             | Op::Euclid
     ) {
         let candidate_slots: Vec<u32> = candidate.onsets.iter().map(|o| o.slot).collect();
-        if symmetric_difference(&candidate_slots, seed_slots) > budget {
-            return (
-                current,
-                normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
-            );
+        if symmetric_difference(&candidate_slots, &state_slots(leash_anchor)) > budget {
+            return (current, normalization_trace());
         }
     }
 
-    // Trial projection: an op that would make the pattern unplayable on the
-    // actual spans is skipped for this cycle.
-    if !state_is_projectable(seed, &candidate, inputs) {
+    // All present and future legacy families share the same projection,
+    // density, and complexity admission seam as authored directives.
+    if let Some(failure) = candidate_failure(
+        seed,
+        &candidate,
+        inputs,
+        slots,
+        corridor,
+        complexity_corridor,
+    ) {
         return (
             current,
-            normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp))),
+            Some(trace(
+                1,
+                0,
+                failure.skipped,
+                failure.corridor_clamp.or(normalization_clamp),
+                failure
+                    .complexity_corridor_clamp
+                    .or(normalization_complexity_clamp),
+            )),
         );
     }
 
     (
         candidate,
         successful_clamp
-            .map(|clamp| trace(1, 1, DirectiveSkip::None, Some(clamp)))
-            .or_else(|| {
-                normalization_clamp.map(|clamp| trace(0, 0, DirectiveSkip::None, Some(clamp)))
-            }),
+            .map(|clamp| {
+                trace(
+                    1,
+                    1,
+                    DirectiveSkip::None,
+                    Some(clamp),
+                    normalization_complexity_clamp,
+                )
+            })
+            .or_else(normalization_trace),
     )
 }
 
@@ -1180,7 +1607,12 @@ fn windowed_rotate(
                 RotateDirection::Earlier => (offset + window.len() - shift) % window.len(),
                 RotateDirection::Later => (offset + shift) % window.len(),
             };
-            onset.slot = window.start + rotated;
+            let rotated_start = window.start.checked_add(rotated)?;
+            let rotated_end = rotated_start.checked_add(onset.dur)?;
+            if !window.contains_interval(rotated_start, rotated_end) {
+                return None;
+            }
+            onset.slot = rotated_start;
             changed |= rotated != offset;
         } else if onset.slot < window.end && end > window.start {
             return None;
@@ -1191,6 +1623,456 @@ fn windowed_rotate(
     }
     next.onsets.sort_by_key(|onset| onset.slot);
     Some(next)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MorphPair {
+    current: Option<usize>,
+    target: Option<usize>,
+}
+
+fn morph_target_state(
+    directive: &EvolutionDirective,
+    seed: &CompiledSeed,
+) -> Option<EvolutionState> {
+    let text = directive.options.morph_target.as_deref()?;
+    let parsed = super::dsl::parse(text).ok()?;
+    let mut target = super::tree::compile(&parsed).ok()?;
+    if target.total_beats != seed.total_beats
+        || seed.required_subdivision % target.required_subdivision != 0
+    {
+        return None;
+    }
+    target.required_subdivision = seed.required_subdivision;
+    Some(seed_state(&target))
+}
+
+fn circular_slot_distance(left: u32, right: u32, slots: u32) -> u32 {
+    let direct = left.abs_diff(right);
+    direct.min(slots.saturating_sub(direct))
+}
+
+fn materialize_rotation(seed: &CompiledSeed, state: &EvolutionState) -> EvolutionState {
+    if state.rotation_beats == 0 {
+        return state.clone();
+    }
+    let slots = seed.total_beats.saturating_mul(seed.required_subdivision);
+    let shift = state
+        .rotation_beats
+        .saturating_mul(seed.required_subdivision);
+    let mut physical = state.clone();
+    for onset in &mut physical.onsets {
+        onset.slot = (onset.slot + shift) % slots;
+    }
+    physical.onsets.sort_by_key(|onset| onset.slot);
+    physical.rotation_beats = 0;
+    physical
+}
+
+fn morph_alignment_work(left: usize, right: usize) -> u64 {
+    let left = u64::try_from(left).unwrap_or(u64::MAX);
+    let right = u64::try_from(right).unwrap_or(u64::MAX);
+    if left == right {
+        return left.saturating_mul(right.max(1));
+    }
+    right
+        .max(1)
+        .saturating_mul(left.saturating_add(1))
+        .saturating_mul(right.saturating_add(1))
+}
+
+/// Integer edit/transport alignment on the cycle. Equal-cardinality rhythms
+/// reduce to exact best-cyclic circular OT. Unequal rhythms add a scale-free
+/// insertion/deletion penalty and solve every cyclic target rotation by DP.
+fn morph_alignment(
+    current: &EvolutionState,
+    target: &EvolutionState,
+    slots: u32,
+) -> Vec<MorphPair> {
+    let left = &current.onsets;
+    let right = &target.onsets;
+    if left.is_empty() && right.is_empty() {
+        return Vec::new();
+    }
+    if morph_alignment_work(left.len(), right.len()) > MAX_MORPH_ALIGNMENT_WORK {
+        return Vec::new();
+    }
+    if left.len() == right.len() {
+        let mut best: Option<(u64, usize)> = None;
+        for rotation in 0..right.len() {
+            let cost = left
+                .iter()
+                .enumerate()
+                .map(|(index, onset)| {
+                    let target_onset = &right[(rotation + index) % right.len()];
+                    u64::from(circular_slot_distance(onset.slot, target_onset.slot, slots))
+                })
+                .sum();
+            let candidate = (cost, rotation);
+            if best.map_or(true, |incumbent| candidate < incumbent) {
+                best = Some(candidate);
+            }
+        }
+        let rotation = best.map_or(0, |(_, rotation)| rotation);
+        return (0..left.len())
+            .map(|index| MorphPair {
+                current: Some(index),
+                target: Some((rotation + index) % right.len()),
+            })
+            .collect();
+    }
+    let reference_count = left.len().max(right.len()).max(1) as u64;
+    let denominator = 5_u64.saturating_mul(reference_count);
+    let edit_penalty =
+        u32::try_from((2_u64.saturating_mul(u64::from(slots)) + denominator / 2) / denominator)
+            .unwrap_or(u32::MAX)
+            .max(1);
+    // Preserve the normative transport/edit cost as the primary key, then
+    // prefer fewer insert/delete operations at an exact tie. This prevents a
+    // cheap delete+insert detour from consuming gradual quota when an equally
+    // priced one-to-one move exists. The scale is larger than the maximum
+    // possible edit-count difference across one alignment.
+    let cost_scale =
+        u64::try_from(left.len().saturating_add(right.len()).saturating_add(1)).unwrap_or(u64::MAX);
+    let rotations = right.len().max(1);
+    let mut best: Option<(u64, usize, Vec<MorphPair>)> = None;
+    for rotation in 0..rotations {
+        let rotated = if right.is_empty() {
+            Vec::new()
+        } else {
+            (0..right.len())
+                .map(|index| (rotation + index) % right.len())
+                .collect::<Vec<_>>()
+        };
+        let width = rotated.len() + 1;
+        let mut cost = vec![u64::MAX; (left.len() + 1) * width];
+        let mut choice = vec![0u8; cost.len()];
+        cost[0] = 0;
+        for i in 0..=left.len() {
+            for j in 0..=rotated.len() {
+                let index = i * width + j;
+                let base = cost[index];
+                if base == u64::MAX {
+                    continue;
+                }
+                let relax = |next: usize,
+                             candidate: u64,
+                             candidate_choice: u8,
+                             cost: &mut [u64],
+                             choice: &mut [u8]| {
+                    if candidate < cost[next]
+                        || (candidate == cost[next] && candidate_choice < choice[next])
+                    {
+                        cost[next] = candidate;
+                        choice[next] = candidate_choice;
+                    }
+                };
+                if i < left.len() && j < rotated.len() {
+                    let target_index = rotated[j];
+                    let delta =
+                        circular_slot_distance(left[i].slot, right[target_index].slot, slots);
+                    let attribute = u32::from(
+                        left[i].dur != right[target_index].dur
+                            || left[i].class != right[target_index].class,
+                    );
+                    let next = (i + 1) * width + j + 1;
+                    relax(
+                        next,
+                        base.saturating_add(
+                            u64::from(delta.saturating_add(attribute)).saturating_mul(cost_scale),
+                        ),
+                        1,
+                        &mut cost,
+                        &mut choice,
+                    );
+                }
+                if i < left.len() {
+                    let next = (i + 1) * width + j;
+                    relax(
+                        next,
+                        base.saturating_add(
+                            u64::from(edit_penalty)
+                                .saturating_mul(cost_scale)
+                                .saturating_add(1),
+                        ),
+                        2,
+                        &mut cost,
+                        &mut choice,
+                    );
+                }
+                if j < rotated.len() {
+                    let next = i * width + j + 1;
+                    relax(
+                        next,
+                        base.saturating_add(
+                            u64::from(edit_penalty)
+                                .saturating_mul(cost_scale)
+                                .saturating_add(1),
+                        ),
+                        3,
+                        &mut cost,
+                        &mut choice,
+                    );
+                }
+            }
+        }
+        let mut i = left.len();
+        let mut j = rotated.len();
+        let mut pairs = Vec::new();
+        while i > 0 || j > 0 {
+            match choice[i * width + j] {
+                1 => {
+                    i -= 1;
+                    j -= 1;
+                    pairs.push(MorphPair {
+                        current: Some(i),
+                        target: Some(rotated[j]),
+                    });
+                }
+                2 => {
+                    i -= 1;
+                    pairs.push(MorphPair {
+                        current: Some(i),
+                        target: None,
+                    });
+                }
+                3 => {
+                    j -= 1;
+                    pairs.push(MorphPair {
+                        current: None,
+                        target: Some(rotated[j]),
+                    });
+                }
+                _ => break,
+            }
+        }
+        pairs.reverse();
+        let candidate = (cost[left.len() * width + rotated.len()], rotation, pairs);
+        if best.as_ref().map_or(true, |incumbent| {
+            (candidate.0, candidate.1) < (incumbent.0, incumbent.1)
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, _, pairs)| pairs).unwrap_or_default()
+}
+
+fn morph_remaining_steps(
+    directive: &EvolutionDirective,
+    state: &EvolutionState,
+    seed: &CompiledSeed,
+    window: Option<SlotRange>,
+) -> usize {
+    let physical = materialize_rotation(seed, state);
+    let Some(target) = morph_target_state(directive, seed) else {
+        return 0;
+    };
+    let slots = seed.total_beats.saturating_mul(seed.required_subdivision);
+    morph_alignment(&physical, &target, slots)
+        .into_iter()
+        .filter(|pair| match (pair.current, pair.target) {
+            (Some(current), Some(target_index)) => {
+                let source = &physical.onsets[current];
+                let target = &target.onsets[target_index];
+                window.map_or(true, |range| {
+                    range.contains_interval(source.slot, source.slot.saturating_add(source.dur))
+                        && range
+                            .contains_interval(target.slot, target.slot.saturating_add(target.dur))
+                })
+            }
+            (Some(current), None) => window.map_or(true, |range| {
+                let onset = &physical.onsets[current];
+                range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
+            }),
+            (None, Some(target_index)) => window.map_or(true, |range| {
+                let onset = &target.onsets[target_index];
+                range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
+            }),
+            (None, None) => false,
+        })
+        .map(|pair| match (pair.current, pair.target) {
+            (Some(current), Some(target_index)) => {
+                let source = &physical.onsets[current];
+                let target = &target.onsets[target_index];
+                usize::try_from(circular_slot_distance(source.slot, target.slot, slots))
+                    .unwrap_or(usize::MAX)
+                    .saturating_add(usize::from(
+                        source.dur != target.dur || source.class != target.class,
+                    ))
+            }
+            _ => 1,
+        })
+        .sum()
+}
+
+fn morph_step_candidates(
+    directive: &EvolutionDirective,
+    state: &EvolutionState,
+    seed: &CompiledSeed,
+    window: Option<SlotRange>,
+) -> Vec<EvolutionState> {
+    let physical = materialize_rotation(seed, state);
+    let Some(target) = morph_target_state(directive, seed) else {
+        return Vec::new();
+    };
+    let Some(slots) = seed.total_beats.checked_mul(seed.required_subdivision) else {
+        return Vec::new();
+    };
+    let pairs = morph_alignment(&physical, &target, slots);
+    let mut candidates = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        match (pair.current, pair.target) {
+            (Some(current_index), Some(target_index)) => {
+                let source = &physical.onsets[current_index];
+                let target_onset = &target.onsets[target_index];
+                if !directive_slot_allowed(directive, target_onset.slot, seed.required_subdivision)
+                {
+                    continue;
+                }
+                if !window.map_or(true, |range| {
+                    range.contains_interval(source.slot, source.slot.saturating_add(source.dur))
+                        && range.contains_interval(
+                            target_onset.slot,
+                            target_onset.slot.saturating_add(target_onset.dur),
+                        )
+                }) {
+                    continue;
+                }
+                if source.slot == target_onset.slot {
+                    if source.dur == target_onset.dur && source.class == target_onset.class {
+                        continue;
+                    }
+                    let mut next = physical.clone();
+                    next.onsets[current_index].dur = target_onset.dur;
+                    next.onsets[current_index].class = target_onset.class.clone();
+                    candidates.push(next);
+                    continue;
+                }
+                let forward = (target_onset.slot + slots - source.slot) % slots;
+                let backward = (source.slot + slots - target_onset.slot) % slots;
+                let adjacent = if forward < backward {
+                    vec![(source.slot + 1) % slots]
+                } else if backward < forward {
+                    vec![(source.slot + slots - 1) % slots]
+                } else {
+                    vec![(source.slot + slots - 1) % slots, (source.slot + 1) % slots]
+                };
+                for slot in adjacent {
+                    if !directive_slot_allowed(directive, slot, seed.required_subdivision) {
+                        continue;
+                    }
+                    let mut next = physical.clone();
+                    next.onsets[current_index].slot = slot;
+                    next.onsets.sort_by_key(|onset| onset.slot);
+                    candidates.push(next);
+                }
+            }
+            (Some(current_index), None) if physical.onsets.len() > 1 => {
+                let onset = &physical.onsets[current_index];
+                if !directive_slot_allowed(directive, onset.slot, seed.required_subdivision) {
+                    continue;
+                }
+                if !window.map_or(true, |range| {
+                    range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
+                }) {
+                    continue;
+                }
+                let mut next = physical.clone();
+                next.onsets.remove(current_index);
+                candidates.push(next);
+            }
+            (None, Some(target_index)) => {
+                let onset = &target.onsets[target_index];
+                if !directive_slot_allowed(directive, onset.slot, seed.required_subdivision) {
+                    continue;
+                }
+                if !window.map_or(true, |range| {
+                    range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
+                }) {
+                    continue;
+                }
+                let mut next = physical.clone();
+                let at = next
+                    .onsets
+                    .partition_point(|current| current.slot < onset.slot);
+                next.onsets.insert(at, onset.clone());
+                candidates.push(next);
+            }
+            _ => {}
+        }
+    }
+    candidates
+}
+
+pub(crate) fn validate_morph_target_work(
+    directive_id: u64,
+    seed: &CompiledSeed,
+    target: &CompiledSeed,
+) -> Result<(), GeneratorError> {
+    let current = seed_state(seed);
+    let target = seed_state(target);
+    let alignment_work = morph_alignment_work(current.onsets.len(), target.onsets.len());
+    if alignment_work > MAX_MORPH_ALIGNMENT_WORK {
+        return Err(GeneratorError::DumkaPlanInvalid {
+            message: format!(
+                "directive {directive_id} morph alignment reserves {alignment_work} pair evaluations, exceeding the limit of {MAX_MORPH_ALIGNMENT_WORK}"
+            ),
+        });
+    }
+    let slots = seed.total_beats.saturating_mul(seed.required_subdivision);
+    let steps = morph_alignment(&current, &target, slots)
+        .into_iter()
+        .map(|pair| match (pair.current, pair.target) {
+            (Some(current_index), Some(target_index)) => {
+                let source = &current.onsets[current_index];
+                let target = &target.onsets[target_index];
+                u64::from(circular_slot_distance(source.slot, target.slot, slots)).saturating_add(
+                    u64::from(source.dur != target.dur || source.class != target.class),
+                )
+            }
+            _ => 1,
+        })
+        .fold(0_u64, u64::saturating_add);
+    if steps > u64::from(MAX_MORPH_MICROSTEPS) {
+        return Err(GeneratorError::DumkaPlanInvalid {
+            message: format!(
+                "directive {directive_id} morph requires {steps} microsteps, exceeding the limit of {MAX_MORPH_MICROSTEPS}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn directive_slot_allowed(directive: &EvolutionDirective, slot: u32, working: u32) -> bool {
+    directive.options.subdivision_level.map_or(true, |level| {
+        super::depth::slot_level_index(slot, working) == Some(level)
+    })
+}
+
+fn blended_candidate_order(
+    candidates: &[u32],
+    state: &EvolutionState,
+    ranks: &[u32],
+    working: u32,
+    placement_bias: u32,
+    add: bool,
+) -> Vec<u32> {
+    let mut barlow = candidates.to_vec();
+    if add {
+        barlow.sort_by_key(|&slot| (std::cmp::Reverse(ranks[slot as usize]), slot));
+    } else {
+        barlow.sort_by_key(|&slot| (ranks[slot as usize], slot));
+    }
+    if placement_bias == 0 {
+        return barlow;
+    }
+    let onset_slots = state_slots(state);
+    let geometric = if add {
+        super::spectrum::geometric_add_order(working, &onset_slots, candidates)
+    } else {
+        super::spectrum::geometric_remove_order(working, &onset_slots, candidates)
+    };
+    super::spectrum::blended_order(&barlow, &geometric, placement_bias)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1208,7 +2090,10 @@ fn directive_candidate_count(
         DirectiveFamily::BarlowRemove => state
             .onsets
             .iter()
-            .filter(|onset| window.map_or(true, |window| window.contains_slot(onset.slot)))
+            .filter(|onset| onset_fits_window(onset, window))
+            .filter(|onset| {
+                directive_slot_allowed(directive, onset.slot, seed.required_subdivision)
+            })
             .count()
             .saturating_sub(usize::from(state.onsets.len() <= 1)),
         DirectiveFamily::BarlowAdd => {
@@ -1216,6 +2101,7 @@ fn directive_candidate_count(
             (0..slots)
                 .filter(|slot| !occupied[*slot as usize])
                 .filter(|slot| window.map_or(true, |window| window.contains_slot(*slot)))
+                .filter(|slot| directive_slot_allowed(directive, *slot, seed.required_subdivision))
                 .count()
         }
         DirectiveFamily::Rotate => match window {
@@ -1223,16 +2109,57 @@ fn directive_candidate_count(
             None => usize::try_from(seed.total_beats).unwrap_or(0),
         },
         DirectiveFamily::Syncopate => {
-            legal_syncopations(&state_slots(state), template, beat_level, window).len()
+            scoped_legal_syncopations(state, template, beat_level, window)
+                .into_iter()
+                .filter(|vector| {
+                    syncopation_target(&state_slots(state), template, *vector, beat_level)
+                        .is_some_and(|landing| {
+                            directive_slot_allowed(directive, landing, seed.required_subdivision)
+                        })
+                })
+                .count()
         }
         DirectiveFamily::Desyncopate => {
-            legal_desyncopations(&state_slots(state), template, beat_level, window).len()
+            scoped_legal_desyncopations(state, template, beat_level, window)
+                .into_iter()
+                .filter(|pulse| {
+                    directive_slot_allowed(directive, *pulse, seed.required_subdivision)
+                })
+                .count()
         }
         DirectiveFamily::Fragment => {
-            super::figures::ranked_fragment_intervals(state, slots, ranks, window).len()
+            super::figures::ranked_fragment_intervals(state, slots, ranks, window)
+                .into_iter()
+                .filter(|interval| {
+                    super::figures::k_candidates(interval.len)
+                        .into_iter()
+                        .any(|k| {
+                            super::figures::fragment_positions(interval.len, k)
+                                .into_iter()
+                                .skip(1)
+                                .map(|offset| interval.start.saturating_add(offset))
+                                .all(|slot| {
+                                    directive_slot_allowed(
+                                        directive,
+                                        slot,
+                                        seed.required_subdivision,
+                                    )
+                                })
+                        })
+                })
+                .count()
         }
         DirectiveFamily::Consolidate => {
-            super::figures::ranked_consolidate_runs(state, ranks, window).len()
+            super::figures::ranked_consolidate_runs(state, ranks, window)
+                .into_iter()
+                .filter(|run| {
+                    state.onsets[run.first_index + 1..run.first_index + run.count]
+                        .iter()
+                        .all(|onset| {
+                            directive_slot_allowed(directive, onset.slot, seed.required_subdivision)
+                        })
+                })
+                .count()
         }
         DirectiveFamily::Euclid => super::reshape::ranked_reshape_windows(
             state,
@@ -1241,8 +2168,16 @@ fn directive_candidate_count(
             ranks,
             window,
         )
-        .len(),
+        .into_iter()
+        .filter(|reshape_window| {
+            (reshape_window.start..reshape_window.start + reshape_window.len)
+                .any(|slot| directive_slot_allowed(directive, slot, seed.required_subdivision))
+        })
+        .count(),
         DirectiveFamily::Stochastic => 1,
+        DirectiveFamily::Morph => {
+            morph_remaining_steps(directive, state, seed, window).min(MAX_MORPH_MICROSTEPS as usize)
+        }
     }
 }
 
@@ -1250,6 +2185,7 @@ fn directive_candidate_count(
 struct DirectiveApplyFailure {
     skipped: DirectiveSkip,
     corridor_clamp: Option<DensityCorridorClamp>,
+    complexity_corridor_clamp: Option<ComplexityCorridorClamp>,
 }
 
 impl DirectiveApplyFailure {
@@ -1257,6 +2193,7 @@ impl DirectiveApplyFailure {
         Self {
             skipped: DirectiveSkip::None,
             corridor_clamp: Some(clamp),
+            complexity_corridor_clamp: None,
         }
     }
 }
@@ -1266,6 +2203,7 @@ impl From<DirectiveSkip> for DirectiveApplyFailure {
         Self {
             skipped: skip,
             corridor_clamp: None,
+            complexity_corridor_clamp: None,
         }
     }
 }
@@ -1279,8 +2217,11 @@ fn candidate_failure(
     inputs: &EvolutionInputs<'_>,
     slots: u32,
     corridor: DensityCorridor,
+    complexity_corridor: ComplexityCorridor,
 ) -> Option<DirectiveApplyFailure> {
     let corridor_clamp = corridor.clamp_for(candidate.onsets.len());
+    let complexity_corridor_clamp =
+        complexity_corridor.clamp_for(candidate, seed.required_subdivision);
     let projection_failed = !state_intervals_disjoint(candidate, slots)
         || !state_is_projectable(seed, candidate, inputs);
     let skipped = if projection_failed {
@@ -1288,10 +2229,256 @@ fn candidate_failure(
     } else {
         DirectiveSkip::None
     };
-    (skipped != DirectiveSkip::None || corridor_clamp.is_some()).then_some(DirectiveApplyFailure {
+    (skipped != DirectiveSkip::None
+        || corridor_clamp.is_some()
+        || complexity_corridor_clamp.is_some())
+    .then_some(DirectiveApplyFailure {
         skipped,
         corridor_clamp,
+        complexity_corridor_clamp,
     })
+}
+
+type MorphStateKey = Vec<(u32, u32, String)>;
+
+fn morph_state_key(state: &EvolutionState) -> MorphStateKey {
+    state
+        .onsets
+        .iter()
+        .map(|onset| (onset.slot, onset.dur, onset.class.clone()))
+        .collect()
+}
+
+fn scoped_morph_target(
+    current: &EvolutionState,
+    target: &EvolutionState,
+    window: Option<SlotRange>,
+) -> EvolutionState {
+    let Some(window) = window else {
+        return target.clone();
+    };
+    let mut onsets = current
+        .onsets
+        .iter()
+        .filter(|onset| !onset_fits_window(onset, Some(window)))
+        .cloned()
+        .chain(
+            target
+                .onsets
+                .iter()
+                .filter(|onset| onset_fits_window(onset, Some(window)))
+                .cloned(),
+        )
+        .collect::<Vec<_>>();
+    onsets.sort_by_key(|onset| onset.slot);
+    EvolutionState {
+        onsets,
+        rotation_beats: 0,
+    }
+}
+
+fn morph_search_heuristic(state: &EvolutionState, target: &EvolutionState) -> u32 {
+    let missing = target
+        .onsets
+        .iter()
+        .filter(|onset| !state.onsets.contains(onset))
+        .count();
+    let extra = state
+        .onsets
+        .iter()
+        .filter(|onset| !target.onsets.contains(onset))
+        .count();
+    u32::try_from(missing.max(extra)).unwrap_or(u32::MAX)
+}
+
+fn morph_search_neighbors(
+    directive: &EvolutionDirective,
+    state: &EvolutionState,
+    target: &EvolutionState,
+    working: u32,
+    slots: u32,
+    window: Option<SlotRange>,
+) -> Vec<(EvolutionState, bool)> {
+    let mut neighbors = std::collections::BTreeMap::<MorphStateKey, (EvolutionState, bool)>::new();
+    let mut insert = |mut next: EvolutionState, is_edit: bool| {
+        next.onsets.sort_by_key(|onset| onset.slot);
+        let key = morph_state_key(&next);
+        match neighbors.get_mut(&key) {
+            Some((_, incumbent_is_edit)) if *incumbent_is_edit && !is_edit => {
+                *incumbent_is_edit = false;
+            }
+            Some(_) => {}
+            None => {
+                neighbors.insert(key, (next, is_edit));
+            }
+        }
+    };
+
+    for (index, onset) in state.onsets.iter().enumerate() {
+        for slot in [
+            (onset.slot + slots - 1) % slots,
+            (onset.slot + 1) % slots,
+        ] {
+            if slot == onset.slot
+                || !directive_slot_allowed(directive, slot, working)
+                || !onset_move_fits_window(state, onset.slot, slot, window)
+            {
+                continue;
+            }
+            let mut next = state.clone();
+            next.onsets[index].slot = slot;
+            insert(next, false);
+        }
+
+        if let Some(target_onset) = target
+            .onsets
+            .iter()
+            .find(|target_onset| target_onset.slot == onset.slot)
+        {
+            if (target_onset.dur != onset.dur || target_onset.class != onset.class)
+                && directive_slot_allowed(directive, target_onset.slot, working)
+                && onset_fits_window(onset, window)
+                && onset_fits_window(target_onset, window)
+            {
+                let mut next = state.clone();
+                next.onsets[index].dur = target_onset.dur;
+                next.onsets[index].class = target_onset.class.clone();
+                insert(next, false);
+            }
+        }
+
+        if state.onsets.len() > 1
+            && !target.onsets.contains(onset)
+            && directive_slot_allowed(directive, onset.slot, working)
+            && onset_fits_window(onset, window)
+        {
+            let mut next = state.clone();
+            next.onsets.remove(index);
+            insert(next, true);
+        }
+    }
+
+    for onset in &target.onsets {
+        if state.onsets.contains(onset)
+            || !directive_slot_allowed(directive, onset.slot, working)
+            || !onset_fits_window(onset, window)
+        {
+            continue;
+        }
+        let mut next = state.clone();
+        let at = next
+            .onsets
+            .partition_point(|current| current.slot < onset.slot);
+        next.onsets.insert(at, onset.clone());
+        insert(next, true);
+    }
+
+    neighbors.into_values().collect()
+}
+
+/// Precompute one complete, admissible Morph path before applying its first
+/// microstep. A recomputed local OT frontier is not complete in the presence
+/// of occupied slots: sometimes an onset must temporarily move away, or an
+/// edit must happen before transport can continue. This bounded deterministic
+/// A* search makes endpoint exactness a property of the chosen prefix rather
+/// than a hope attached to greedy re-alignment.
+#[allow(clippy::too_many_arguments)]
+fn morph_schedule(
+    directive: &EvolutionDirective,
+    state: &EvolutionState,
+    seed: &CompiledSeed,
+    inputs: &EvolutionInputs<'_>,
+    window: Option<SlotRange>,
+    corridor: DensityCorridor,
+    complexity_corridor: ComplexityCorridor,
+) -> Result<Vec<EvolutionState>, DirectiveApplyFailure> {
+    let start = materialize_rotation(seed, state);
+    let Some(authored_target) = morph_target_state(directive, seed) else {
+        return Err(DirectiveSkip::Exhausted.into());
+    };
+    let target = scoped_morph_target(&start, &authored_target, window);
+    if start == target {
+        return Ok(Vec::new());
+    }
+    let Some(slots) = seed.total_beats.checked_mul(seed.required_subdivision) else {
+        return Err(DirectiveSkip::Exhausted.into());
+    };
+    if candidate_failure(seed, &target, inputs, slots, corridor, complexity_corridor).is_some() {
+        return Err(candidate_failure(seed, &target, inputs, slots, corridor, complexity_corridor)
+            .expect("checked target failure"));
+    }
+
+    let start_key = morph_state_key(&start);
+    let target_key = morph_state_key(&target);
+    let mut open = std::collections::BinaryHeap::new();
+    let initial_h = morph_search_heuristic(&start, &target);
+    open.push(std::cmp::Reverse((initial_h, initial_h, 0_u32, 0_u32, start_key.clone())));
+    let mut best = std::collections::BTreeMap::from([(start_key.clone(), (0_u32, 0_u32))]);
+    let mut states = std::collections::BTreeMap::from([(start_key.clone(), start)]);
+    let mut parent = std::collections::BTreeMap::<MorphStateKey, MorphStateKey>::new();
+    let mut expanded = 0_u64;
+    let mut first_failure = None;
+
+    while let Some(std::cmp::Reverse((_, _, g, edits, key))) = open.pop() {
+        if best.get(&key).copied() != Some((g, edits)) {
+            continue;
+        }
+        if key == target_key {
+            let mut path = Vec::new();
+            let mut cursor = key;
+            while cursor != start_key {
+                path.push(states[&cursor].clone());
+                cursor = parent[&cursor].clone();
+            }
+            path.reverse();
+            return Ok(path);
+        }
+        if g >= MAX_MORPH_MICROSTEPS {
+            continue;
+        }
+        expanded = expanded.saturating_add(1);
+        if expanded > MAX_MORPH_ALIGNMENT_WORK {
+            break;
+        }
+        let current = states[&key].clone();
+        for (next, is_edit) in morph_search_neighbors(
+            directive,
+            &current,
+            &target,
+            seed.required_subdivision,
+            slots,
+            window,
+        ) {
+            if let Some(failure) =
+                candidate_failure(seed, &next, inputs, slots, corridor, complexity_corridor)
+            {
+                first_failure.get_or_insert(failure);
+                continue;
+            }
+            let next_key = morph_state_key(&next);
+            let next_g = g.saturating_add(1);
+            let next_edits = edits.saturating_add(u32::from(is_edit));
+            if best
+                .get(&next_key)
+                .is_some_and(|&(old_g, old_edits)| (old_g, old_edits) <= (next_g, next_edits))
+            {
+                continue;
+            }
+            let h = morph_search_heuristic(&next, &target);
+            best.insert(next_key.clone(), (next_g, next_edits));
+            parent.insert(next_key.clone(), key.clone());
+            states.insert(next_key.clone(), next);
+            open.push(std::cmp::Reverse((
+                next_g.saturating_add(h),
+                h,
+                next_g,
+                next_edits,
+                next_key,
+            )));
+        }
+    }
+
+    Err(first_failure.unwrap_or_else(|| DirectiveSkip::Exhausted.into()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1308,6 +2495,7 @@ fn apply_one_directive_operation(
     ordinal: u64,
     window: Option<SlotRange>,
     corridor: DensityCorridor,
+    complexity_corridor: ComplexityCorridor,
 ) -> Result<(EvolutionState, Option<DensityCorridorClamp>), DirectiveApplyFailure> {
     // Reserve a stable block for every application. Multi-draw families use
     // offsets inside the block, so application N's option draw can never
@@ -1322,6 +2510,14 @@ fn apply_one_directive_operation(
             authored_cycle,
         )
     });
+    let placement_bias = directive.options.placement_bias.unwrap_or_else(|| {
+        sampled_percent(
+            inputs,
+            super::DUMKA_PLACEMENT_BIAS_TARGET,
+            inputs.placement_bias,
+            authored_cycle,
+        )
+    });
     let mut candidate = state.clone();
     let mut successful_clamp = None;
     match directive.family {
@@ -1329,19 +2525,23 @@ fn apply_one_directive_operation(
             if state.onsets.len() <= 1 {
                 return Err(DirectiveSkip::Exhausted.into());
             }
-            let mut order = state
+            let candidates = state
                 .onsets
                 .iter()
-                .enumerate()
-                .filter(|(_, onset)| window.map_or(true, |window| window.contains_slot(onset.slot)))
-                .map(|(index, _)| index)
+                .filter(|onset| onset_fits_window(onset, window))
+                .filter(|onset| {
+                    directive_slot_allowed(directive, onset.slot, seed.required_subdivision)
+                })
+                .map(|onset| onset.slot)
                 .collect::<Vec<_>>();
-            order.sort_by_key(|&index| {
-                (
-                    ranks[state.onsets[index].slot as usize],
-                    state.onsets[index].slot,
-                )
-            });
+            let order = blended_candidate_order(
+                &candidates,
+                state,
+                ranks,
+                seed.required_subdivision,
+                placement_bias,
+                false,
+            );
             if order.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1353,15 +2553,23 @@ fn apply_one_directive_operation(
                 draw_cycle,
                 draw_base,
             );
-            candidate.onsets.remove(order[pick]);
+            candidate.onsets.retain(|onset| onset.slot != order[pick]);
         }
         DirectiveFamily::BarlowAdd => {
             let occupied = occupied_slots(state, slots);
             let mut silent = (0..slots)
                 .filter(|slot| !occupied[*slot as usize])
                 .filter(|slot| window.map_or(true, |window| window.contains_slot(*slot)))
+                .filter(|slot| directive_slot_allowed(directive, *slot, seed.required_subdivision))
                 .collect::<Vec<_>>();
-            silent.sort_by_key(|&slot| (std::cmp::Reverse(ranks[slot as usize]), slot));
+            silent = blended_candidate_order(
+                &silent,
+                state,
+                ranks,
+                seed.required_subdivision,
+                placement_bias,
+                true,
+            );
             if silent.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1409,7 +2617,16 @@ fn apply_one_directive_operation(
         }
         DirectiveFamily::Syncopate => {
             let onset_slots = state_slots(state);
-            let vectors = legal_syncopations(&onset_slots, template, beat_level, window);
+            let vectors = scoped_legal_syncopations(state, template, beat_level, window)
+                .into_iter()
+                .filter(|vector| {
+                    syncopation_target(&onset_slots, template, *vector, beat_level).is_some_and(
+                        |landing| {
+                            directive_slot_allowed(directive, landing, seed.required_subdivision)
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
             if vectors.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1427,7 +2644,12 @@ fn apply_one_directive_operation(
         }
         DirectiveFamily::Desyncopate => {
             let onset_slots = state_slots(state);
-            let pulses = legal_desyncopations(&onset_slots, template, beat_level, window);
+            let pulses = scoped_legal_desyncopations(state, template, beat_level, window)
+                .into_iter()
+                .filter(|pulse| {
+                    directive_slot_allowed(directive, *pulse, seed.required_subdivision)
+                })
+                .collect::<Vec<_>>();
             if pulses.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1444,7 +2666,26 @@ fn apply_one_directive_operation(
             move_onset(&mut candidate, source, pulse);
         }
         DirectiveFamily::Fragment => {
-            let intervals = super::figures::ranked_fragment_intervals(state, slots, ranks, window);
+            let intervals = super::figures::ranked_fragment_intervals(state, slots, ranks, window)
+                .into_iter()
+                .filter(|interval| {
+                    super::figures::k_candidates(interval.len)
+                        .into_iter()
+                        .any(|k| {
+                            super::figures::fragment_positions(interval.len, k)
+                                .into_iter()
+                                .skip(1)
+                                .map(|offset| interval.start.saturating_add(offset))
+                                .all(|slot| {
+                                    directive_slot_allowed(
+                                        directive,
+                                        slot,
+                                        seed.required_subdivision,
+                                    )
+                                })
+                        })
+                })
+                .collect::<Vec<_>>();
             if intervals.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1456,7 +2697,18 @@ fn apply_one_directive_operation(
                 draw_cycle,
                 draw_base,
             )];
-            let mut ks = super::figures::k_candidates(interval.len);
+            let mut ks = super::figures::k_candidates(interval.len)
+                .into_iter()
+                .filter(|k| {
+                    super::figures::fragment_positions(interval.len, *k)
+                        .into_iter()
+                        .skip(1)
+                        .map(|offset| interval.start.saturating_add(offset))
+                        .all(|slot| {
+                            directive_slot_allowed(directive, slot, seed.required_subdivision)
+                        })
+                })
+                .collect::<Vec<_>>();
             let unconstrained_k_count = ks.len();
             let headroom = corridor.ceiling_count.saturating_sub(state.onsets.len());
             ks.retain(|&k| {
@@ -1503,7 +2755,16 @@ fn apply_one_directive_operation(
             );
         }
         DirectiveFamily::Consolidate => {
-            let runs = super::figures::ranked_consolidate_runs(state, ranks, window);
+            let runs = super::figures::ranked_consolidate_runs(state, ranks, window)
+                .into_iter()
+                .filter(|run| {
+                    state.onsets[run.first_index + 1..run.first_index + run.count]
+                        .iter()
+                        .all(|onset| {
+                            directive_slot_allowed(directive, onset.slot, seed.required_subdivision)
+                        })
+                })
+                .collect::<Vec<_>>();
             if runs.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1539,7 +2800,13 @@ fn apply_one_directive_operation(
                 seed.required_subdivision,
                 ranks,
                 window,
-            );
+            )
+            .into_iter()
+            .filter(|reshape_window| {
+                (reshape_window.start..reshape_window.start + reshape_window.len)
+                    .any(|slot| directive_slot_allowed(directive, slot, seed.required_subdivision))
+            })
+            .collect::<Vec<_>>();
             if windows.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
@@ -1583,10 +2850,52 @@ fn apply_one_directive_operation(
             candidate = super::reshape::apply_reshape(state, &reshape_window, &options)
                 .ok_or(DirectiveSkip::Exhausted)
                 .map_err(DirectiveApplyFailure::from)?;
+            if candidate.onsets.iter().any(|onset| {
+                onset.slot >= reshape_window.start
+                    && onset.slot < reshape_window.start + reshape_window.len
+                    && !directive_slot_allowed(directive, onset.slot, seed.required_subdivision)
+            }) {
+                return Err(DirectiveSkip::Exhausted.into());
+            }
         }
         DirectiveFamily::Stochastic => return Err(DirectiveSkip::Exhausted.into()),
+        DirectiveFamily::Morph => {
+            let mut candidates = morph_step_candidates(directive, state, seed, window);
+            if !candidates.is_empty() {
+                let start = usize::try_from(ordinal).unwrap_or(usize::MAX) % candidates.len();
+                candidates.rotate_left(start);
+            }
+            let mut first_failure = None;
+            for morph_candidate in candidates {
+                if let Some(failure) = candidate_failure(
+                    seed,
+                    &morph_candidate,
+                    inputs,
+                    slots,
+                    corridor,
+                    complexity_corridor,
+                ) {
+                    first_failure.get_or_insert(failure);
+                    continue;
+                }
+                // Morph alignment may expose an insertion before moving the
+                // onset that currently occupies its target interval. Search
+                // the deterministic one-step frontier for the first legal
+                // microstep instead of letting that temporary overlap stall
+                // an otherwise reachable target.
+                return Ok((morph_candidate, None));
+            }
+            return Err(first_failure.unwrap_or_else(|| DirectiveSkip::Exhausted.into()));
+        }
     }
-    if let Some(failure) = candidate_failure(seed, &candidate, inputs, slots, corridor) {
+    if let Some(failure) = candidate_failure(
+        seed,
+        &candidate,
+        inputs,
+        slots,
+        corridor,
+        complexity_corridor,
+    ) {
         return Err(failure);
     }
     Ok((candidate, successful_clamp))
@@ -1610,7 +2919,8 @@ fn apply_stochastic_directive(
     directive: &EvolutionDirective,
     seed: &CompiledSeed,
     state: &EvolutionState,
-    seed_slots: &[u32],
+    leash_anchor: &EvolutionState,
+    seed_onset_count: usize,
     ranks: &[u32],
     template: &[u32],
     beat_level: u32,
@@ -1618,22 +2928,40 @@ fn apply_stochastic_directive(
     cycle: u64,
     window: Option<SlotRange>,
     corridor: DensityCorridor,
+    complexity_corridor: ComplexityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (
     EvolutionState,
     bool,
     Option<DirectiveApplyFailure>,
     Option<DensityCorridorClamp>,
+    Option<ComplexityCorridorClamp>,
 ) {
     let drift_leash = sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
-    let budget = (drift_leash * seed_slots.len() as u32).div_ceil(100);
-    let leashed = normalize_to_leash(seed, state, seed_slots, ranks, inputs, budget);
-    let current = normalize_to_density_corridor(seed, &leashed, ranks, inputs, corridor);
-    let normalized_clamp = normalization_clamp(&leashed, &current, corridor);
+    let budget = (drift_leash * seed_onset_count as u32).div_ceil(100);
+    let leashed = normalize_to_leash(seed, state, leash_anchor, ranks, inputs, budget);
+    let (current, normalized_clamp, normalized_complexity_clamp) = normalize_to_active_corridors(
+        seed,
+        &leashed,
+        ranks,
+        inputs,
+        cycle,
+        directive.options.placement_bias,
+        corridor,
+        complexity_corridor,
+        complexity_work_budget,
+    );
     if directive.intensity == 0
         || plan_draw(inputs.seed_value, directive.id, cycle, 0, 100)
             >= u64::from(directive.intensity)
     {
-        return (current, false, None, normalized_clamp);
+        return (
+            current,
+            false,
+            None,
+            normalized_clamp,
+            normalized_complexity_clamp,
+        );
     }
     let total = inputs.op_weights.total();
     if total == 0 {
@@ -1642,6 +2970,7 @@ fn apply_stochastic_directive(
             true,
             Some(DirectiveSkip::Exhausted.into()),
             normalized_clamp,
+            normalized_complexity_clamp,
         );
     }
     let op = op_for_roll(
@@ -1661,21 +2990,49 @@ fn apply_stochastic_directive(
     }
 
     let (candidate, successful_clamp) = match apply_one_directive_operation(
-        &selected, &current, seed, ranks, template, beat_level, inputs, cycle, cycle, 1, window,
+        &selected,
+        &current,
+        seed,
+        ranks,
+        template,
+        beat_level,
+        inputs,
+        cycle,
+        cycle,
+        1,
+        window,
         corridor,
+        complexity_corridor,
     ) {
         Ok(outcome) => outcome,
-        Err(error) => return (current, true, Some(error), normalized_clamp),
+        Err(error) => {
+            return (
+                current,
+                true,
+                Some(error),
+                normalized_clamp,
+                normalized_complexity_clamp,
+            )
+        }
     };
-    if op != Op::Rotate && symmetric_difference(&state_slots(&candidate), seed_slots) > budget {
+    if op != Op::Rotate
+        && symmetric_difference(&state_slots(&candidate), &state_slots(leash_anchor)) > budget
+    {
         return (
             current,
             true,
             Some(DirectiveSkip::Exhausted.into()),
             successful_clamp.or(normalized_clamp),
+            normalized_complexity_clamp,
         );
     }
-    (candidate, true, None, successful_clamp.or(normalized_clamp))
+    (
+        candidate,
+        true,
+        None,
+        successful_clamp.or(normalized_clamp),
+        normalized_complexity_clamp,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1696,6 +3053,7 @@ fn apply_evolution_curve(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     corridor: DensityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (EvolutionState, DirectiveTraceEntry) {
     let curve = inputs.curve;
     let mut trace = DirectiveTraceEntry {
@@ -1706,10 +3064,23 @@ fn apply_evolution_curve(
         applied: 0,
         skipped: DirectiveSkip::None,
         corridor_clamp: None,
+        complexity_corridor_clamp: None,
         perceptual: None,
     };
-    let normalized = normalize_to_density_corridor(seed, state, ranks, inputs, corridor);
-    trace.corridor_clamp = normalization_clamp(state, &normalized, corridor);
+    let complexity_corridor = sampled_complexity_corridor(inputs, cycle);
+    let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
+        seed,
+        state,
+        ranks,
+        inputs,
+        cycle,
+        None,
+        corridor,
+        complexity_corridor,
+        complexity_work_budget,
+    );
+    trace.corridor_clamp = density_clamp;
+    trace.complexity_corridor_clamp = complexity_clamp;
 
     let weights = &inputs.op_weights;
     let families = [
@@ -1777,8 +3148,19 @@ fn apply_evolution_curve(
                 options: super::plan::DirectiveOptions::default(),
             };
             match apply_one_directive_operation(
-                &synthetic, &current, seed, ranks, template, beat_level, inputs, cycle, cycle,
-                offset, None, corridor,
+                &synthetic,
+                &current,
+                seed,
+                ranks,
+                template,
+                beat_level,
+                inputs,
+                cycle,
+                cycle,
+                offset,
+                None,
+                corridor,
+                sampled_complexity_corridor(inputs, cycle),
             ) {
                 Ok((next, clamp)) => {
                     trace.requested = trace.requested.saturating_add(1);
@@ -1816,6 +3198,9 @@ fn apply_evolution_curve(
             if failure.corridor_clamp.is_some() {
                 trace.corridor_clamp = failure.corridor_clamp;
             }
+            if failure.complexity_corridor_clamp.is_some() {
+                trace.complexity_corridor_clamp = failure.complexity_corridor_clamp;
+            }
         }
     }
     trace.perceptual = Some(PerceptualPacingTrace {
@@ -1834,7 +3219,8 @@ fn apply_directive(
     directive: &EvolutionDirective,
     state: &EvolutionState,
     seed: &CompiledSeed,
-    seed_slots: &[u32],
+    leash_anchor: &EvolutionState,
+    seed_onset_count: usize,
     ranks: &[u32],
     template: &[u32],
     beat_level: u32,
@@ -1842,6 +3228,7 @@ fn apply_directive(
     cycle: u64,
     accumulator: &mut RangeAccumulator,
     corridor: DensityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (EvolutionState, DirectiveTraceEntry) {
     let mut trace = DirectiveTraceEntry {
         cycle,
@@ -1851,6 +3238,7 @@ fn apply_directive(
         applied: 0,
         skipped: DirectiveSkip::None,
         corridor_clamp: None,
+        complexity_corridor_clamp: None,
         perceptual: None,
     };
     let window = match slot_range(directive.scope, seed.total_beats, seed.required_subdivision) {
@@ -1881,24 +3269,58 @@ fn apply_directive(
     };
 
     if directive.family == DirectiveFamily::Stochastic {
-        let (next, attempted, error, successful_clamp) = apply_stochastic_directive(
-            directive, seed, state, seed_slots, ranks, template, beat_level, inputs, cycle, window,
-            corridor,
-        );
+        let complexity_corridor =
+            directive_complexity_corridor(directive, sampled_complexity_corridor(inputs, cycle));
+        let (next, attempted, error, successful_clamp, successful_complexity_clamp) =
+            apply_stochastic_directive(
+                directive,
+                seed,
+                state,
+                leash_anchor,
+                seed_onset_count,
+                ranks,
+                template,
+                beat_level,
+                inputs,
+                cycle,
+                window,
+                corridor,
+                complexity_corridor,
+                complexity_work_budget,
+            );
         trace.requested = u32::from(attempted);
         trace.applied = u32::from(attempted && error.is_none());
         trace.corridor_clamp = successful_clamp;
+        trace.complexity_corridor_clamp = successful_complexity_clamp;
         if let Some(failure) = error {
             trace.skipped = failure.skipped;
-            if failure.corridor_clamp.is_some() {
-                trace.corridor_clamp = failure.corridor_clamp;
-            }
+            trace.corridor_clamp = corridor
+                .clamp_for(next.onsets.len())
+                .or(failure.corridor_clamp)
+                .or(trace.corridor_clamp);
+            trace.complexity_corridor_clamp = complexity_corridor
+                .clamp_for(&next, seed.required_subdivision)
+                .or(failure.complexity_corridor_clamp)
+                .or(trace.complexity_corridor_clamp);
         }
         return (next, trace);
     }
 
-    let normalized = normalize_to_density_corridor(seed, state, ranks, inputs, corridor);
-    trace.corridor_clamp = normalization_clamp(state, &normalized, corridor);
+    let complexity_corridor =
+        directive_complexity_corridor(directive, sampled_complexity_corridor(inputs, cycle));
+    let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
+        seed,
+        state,
+        ranks,
+        inputs,
+        cycle,
+        directive.options.placement_bias,
+        corridor,
+        complexity_corridor,
+        complexity_work_budget,
+    );
+    trace.corridor_clamp = density_clamp;
+    trace.complexity_corridor_clamp = complexity_clamp;
 
     let initial_candidates = directive_candidate_count(
         directive,
@@ -1943,8 +3365,22 @@ fn apply_directive(
                 break;
             }
             match apply_one_directive_operation(
-                directive, &current, seed, ranks, template, beat_level, inputs, cycle, cycle,
-                offset, window, corridor,
+                directive,
+                &current,
+                seed,
+                ranks,
+                template,
+                beat_level,
+                inputs,
+                cycle,
+                cycle,
+                offset,
+                window,
+                corridor,
+                directive_complexity_corridor(
+                    directive,
+                    sampled_complexity_corridor(inputs, cycle),
+                ),
             ) {
                 Ok((next, clamp)) => {
                     trace.requested = trace.requested.saturating_add(1);
@@ -1982,6 +3418,9 @@ fn apply_directive(
                 }
                 if failure.corridor_clamp.is_some() {
                     trace.corridor_clamp = failure.corridor_clamp;
+                }
+                if failure.complexity_corridor_clamp.is_some() {
+                    trace.complexity_corridor_clamp = failure.complexity_corridor_clamp;
                 }
             }
         }
@@ -2037,8 +3476,19 @@ fn apply_directive(
     for offset in 0..u64::from(requested) {
         let ordinal = first_ordinal.saturating_add(offset);
         match apply_one_directive_operation(
-            directive, &current, seed, ranks, template, beat_level, inputs, cycle, draw_cycle,
-            ordinal, window, corridor,
+            directive,
+            &current,
+            seed,
+            ranks,
+            template,
+            beat_level,
+            inputs,
+            cycle,
+            draw_cycle,
+            ordinal,
+            window,
+            corridor,
+            directive_complexity_corridor(directive, sampled_complexity_corridor(inputs, cycle)),
         ) {
             Ok((next, clamp)) => {
                 current = next;
@@ -2049,9 +3499,17 @@ fn apply_directive(
             }
             Err(failure) => {
                 trace.skipped = failure.skipped;
-                if failure.corridor_clamp.is_some() {
-                    trace.corridor_clamp = failure.corridor_clamp;
-                }
+                trace.corridor_clamp = corridor
+                    .clamp_for(current.onsets.len())
+                    .or(failure.corridor_clamp)
+                    .or(trace.corridor_clamp);
+                trace.complexity_corridor_clamp = directive_complexity_corridor(
+                    directive,
+                    sampled_complexity_corridor(inputs, cycle),
+                )
+                .clamp_for(&current, seed.required_subdivision)
+                .or(failure.complexity_corridor_clamp)
+                .or(trace.complexity_corridor_clamp);
                 break;
             }
         }
@@ -2095,6 +3553,9 @@ pub struct EvolvedSeedResolution {
     /// by the same ordered fold that enforced it, so preview cannot drift
     /// from automation, scope, or directive precedence.
     pub density_corridor: DensityCorridorRange,
+    pub complexity_corridor: ComplexityCorridorRange,
+    pub state_complexity_milli: u32,
+    pub state_depth_diversity_milli: u32,
     /// Whole-cycle realized perceptual distance (requested cycle vs the
     /// state carried out of the previous cycle), from the same fold. `None`
     /// at cycle 0 and on grids without published Barlow tables.
@@ -2140,6 +3601,9 @@ fn unsupported_grid_corridor_resolution(
     let mut state = seed_state(seed);
     let mut requested_cycle_trace = Vec::new();
     let mut requested_density_corridor = requested_global_corridor.percent_range();
+    let mut requested_complexity_corridor =
+        sampled_complexity_corridor(inputs, inputs.cycle).range();
+    let mut complexity_work_budget = ComplexityNormalizationBudget::new();
 
     for cycle in 1..=inputs.cycle {
         let global_corridor = if cycle == inputs.cycle {
@@ -2147,6 +3611,7 @@ fn unsupported_grid_corridor_resolution(
         } else {
             sampled_density_corridor(inputs, cycle, slots)
         };
+        let global_complexity_corridor = sampled_complexity_corridor(inputs, cycle);
         let active = active_directives(inputs.plan, cycle);
         let all_orphaned = !active.is_empty()
             && active.iter().all(|directive| {
@@ -2157,9 +3622,19 @@ fn unsupported_grid_corridor_resolution(
             let corridor = global_corridor;
             if cycle == inputs.cycle {
                 requested_density_corridor = corridor.percent_range();
+                requested_complexity_corridor = global_complexity_corridor.range();
             }
-            let normalized = normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
-            let clamp = normalization_clamp(&state, &normalized, corridor);
+            let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
+                seed,
+                &state,
+                &ranks,
+                inputs,
+                cycle,
+                None,
+                corridor,
+                global_complexity_corridor,
+                &mut complexity_work_budget,
+            );
             state = normalized;
             if cycle == inputs.cycle {
                 // Match the supported-grid trace order: authored orphan rows
@@ -2175,19 +3650,15 @@ fn unsupported_grid_corridor_resolution(
                             applied: 0,
                             skipped,
                             corridor_clamp: None,
+                            complexity_corridor_clamp: None,
                             perceptual: None,
                         })
                 }));
-                requested_cycle_trace.extend(clamp.map(|corridor_clamp| DirectiveTraceEntry {
+                requested_cycle_trace.extend(legacy_corridor_trace(
                     cycle,
-                    directive_id: LEGACY_EVOLUTION_TRACE_ID,
-                    family: DirectiveFamily::Stochastic,
-                    requested: 0,
-                    applied: 0,
-                    skipped: DirectiveSkip::None,
-                    corridor_clamp: Some(corridor_clamp),
-                    perceptual: None,
-                }));
+                    density_clamp,
+                    complexity_clamp,
+                ));
             }
         } else {
             for directive in active {
@@ -2202,6 +3673,7 @@ fn unsupported_grid_corridor_resolution(
                                 applied: 0,
                                 skipped,
                                 corridor_clamp: None,
+                                complexity_corridor_clamp: None,
                                 perceptual: None,
                             });
                         }
@@ -2211,24 +3683,43 @@ fn unsupported_grid_corridor_resolution(
                             directive_density_corridor(directive, global_corridor, slots);
                         if cycle == inputs.cycle {
                             requested_density_corridor = corridor.percent_range();
+                            requested_complexity_corridor = directive_complexity_corridor(
+                                directive,
+                                global_complexity_corridor,
+                            )
+                            .range();
                         }
-                        let normalized =
-                            normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
-                        let clamp = normalization_clamp(&state, &normalized, corridor);
+                        let complexity_corridor =
+                            directive_complexity_corridor(directive, global_complexity_corridor);
+                        let (normalized, density_clamp, complexity_clamp) =
+                            normalize_to_active_corridors(
+                                seed,
+                                &state,
+                                &ranks,
+                                inputs,
+                                cycle,
+                                directive.options.placement_bias,
+                                corridor,
+                                complexity_corridor,
+                                &mut complexity_work_budget,
+                            );
                         state = normalized;
                         if cycle == inputs.cycle {
-                            requested_cycle_trace.extend(clamp.map(|corridor_clamp| {
-                                DirectiveTraceEntry {
-                                    cycle,
-                                    directive_id: directive.id,
-                                    family: directive.family,
-                                    requested: 0,
-                                    applied: 0,
-                                    skipped: DirectiveSkip::None,
-                                    corridor_clamp: Some(corridor_clamp),
-                                    perceptual: None,
-                                }
-                            }));
+                            requested_cycle_trace.extend(
+                                (density_clamp.is_some() || complexity_clamp.is_some()).then_some(
+                                    DirectiveTraceEntry {
+                                        cycle,
+                                        directive_id: directive.id,
+                                        family: directive.family,
+                                        requested: 0,
+                                        applied: 0,
+                                        skipped: DirectiveSkip::None,
+                                        corridor_clamp: density_clamp,
+                                        complexity_corridor_clamp: complexity_clamp,
+                                        perceptual: None,
+                                    },
+                                ),
+                            );
                         }
                     }
                 }
@@ -2240,8 +3731,113 @@ fn unsupported_grid_corridor_resolution(
         seed: state_to_compiled(seed, &state),
         trace: requested_cycle_trace,
         density_corridor: requested_density_corridor,
+        complexity_corridor: requested_complexity_corridor,
+        state_complexity_milli: super::depth::state_complexity_milli(
+            &state_slots(&state),
+            seed.required_subdivision,
+        ),
+        state_depth_diversity_milli: super::depth::depth_diversity_milli(
+            &state_slots(&state),
+            seed.required_subdivision,
+        ),
         cycle_distance: None,
     }
+}
+
+/// Fail before resolution when an unsupported metric grid would otherwise
+/// silently discard an active evolution request. Corridor-only holds remain
+/// eligible for the deterministic positional fallback, and disabled/future
+/// plan rows remain behavior-off.
+pub(crate) fn validate_evolution_grid(
+    seed: &CompiledSeed,
+    inputs: &EvolutionInputs<'_>,
+) -> Result<(), GeneratorError> {
+    if inputs.cycle == 0 || stratification(seed.total_beats, seed.required_subdivision).is_some() {
+        return Ok(());
+    }
+
+    // Preserve the unsupported-grid feature-off fast path. An enabled
+    // automation lane reports `Some` even when its requested-cycle value is
+    // zero, because an earlier folded cycle may still have evolved.
+    let evolution_is_automated = (inputs.automation)(
+        DUMKA_EVOLUTION_RATE_TARGET,
+        inputs.cycle,
+        f64::from(inputs.evolution_rate),
+    )
+    .is_some();
+    let plan_requests_work = inputs.plan.iter().any(|directive| {
+        directive.enabled
+            && directive.from_cycle <= inputs.cycle
+            && directive.to_cycle >= 1
+            && slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok()
+            && (directive.intensity > 0
+                || matches!(directive.magnitude, DirectiveMagnitude::Perceptual { .. }))
+    });
+    if inputs.evolution_rate == 0
+        && !evolution_is_automated
+        && !plan_requests_work
+        && inputs.curve.scoring_work_through(inputs.cycle) == 0
+    {
+        return Ok(());
+    }
+
+    for cycle in 1..=inputs.cycle {
+        let active = active_directives(inputs.plan, cycle);
+        let valid = active
+            .into_iter()
+            .filter(|directive| {
+                slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok()
+            })
+            .collect::<Vec<_>>();
+
+        if !valid.is_empty() {
+            for directive in valid {
+                match directive.magnitude {
+                    DirectiveMagnitude::Perceptual { .. } => {
+                        return Err(GeneratorError::DumkaPlanInvalid {
+                            message: format!(
+                                "directive {} perceptual magnitude requires a Barlow-supported beat/subdivision grid",
+                                directive.id
+                            ),
+                        });
+                    }
+                    DirectiveMagnitude::OperationQuota if directive.intensity > 0 => {
+                        return Err(GeneratorError::DumkaPlanInvalid {
+                            message: format!(
+                                "directive {} operation quota requires a Barlow-supported beat/subdivision grid",
+                                directive.id
+                            ),
+                        });
+                    }
+                    DirectiveMagnitude::OperationQuota => {}
+                }
+            }
+            continue;
+        }
+
+        // With no valid active directive, the curve owns the gap whenever it
+        // is enabled; otherwise the historical stochastic layer does.
+        if inputs.curve.enabled {
+            if inputs.curve.target_milli_at(cycle) > 0 {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message: "curve targets require a Barlow-supported beat/subdivision grid"
+                        .to_string(),
+                });
+            }
+        } else if sampled_percent(
+            inputs,
+            DUMKA_EVOLUTION_RATE_TARGET,
+            inputs.evolution_rate,
+            cycle,
+        ) > 0
+        {
+            return Err(GeneratorError::DumkaPlanInvalid {
+                message: "legacy evolution requires a Barlow-supported beat/subdivision grid"
+                    .to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub fn evolved_seed_with_trace(
@@ -2254,6 +3850,15 @@ pub fn evolved_seed_with_trace(
             seed: seed.clone(),
             trace: Vec::new(),
             density_corridor: sampled_density_corridor(inputs, 0, slots).percent_range(),
+            complexity_corridor: sampled_complexity_corridor(inputs, 0).range(),
+            state_complexity_milli: super::depth::state_complexity_milli(
+                &state_slots(&seed_state(seed)),
+                seed.required_subdivision,
+            ),
+            state_depth_diversity_milli: super::depth::depth_diversity_milli(
+                &state_slots(&seed_state(seed)),
+                seed.required_subdivision,
+            ),
             cycle_distance: None,
         });
     }
@@ -2268,6 +3873,8 @@ pub fn evolved_seed_with_trace(
     .is_some();
     let (requested_global_corridor, density_is_automated) =
         sampled_density_corridor_with_presence(inputs, inputs.cycle, slots);
+    let (_, complexity_is_automated) =
+        sampled_complexity_corridor_with_presence(inputs, inputs.cycle);
     // An override activates the unsupported-grid corridor fallback only once
     // an enabled row has entered the historical fold. Disabled and strictly
     // future rows must preserve the legacy no-corridor `None` contract.
@@ -2275,11 +3882,16 @@ pub fn evolved_seed_with_trace(
         directive.enabled
             && directive.from_cycle <= inputs.cycle
             && (directive.options.density_floor.is_some()
-                || directive.options.density_ceiling.is_some())
+                || directive.options.density_ceiling.is_some()
+                || directive.options.complexity_floor.is_some()
+                || directive.options.complexity_ceiling.is_some())
     });
     let corridor_is_active = inputs.density_floor > 0
         || inputs.density_ceiling < 100
         || density_is_automated
+        || inputs.complexity_floor > 0
+        || inputs.complexity_ceiling < 100_000
+        || complexity_is_automated
         || plan_corridor_is_active;
     if inputs.plan.is_empty()
         && inputs.evolution_rate == 0
@@ -2298,6 +3910,15 @@ pub fn evolved_seed_with_trace(
             seed: seed.clone(),
             trace: Vec::new(),
             density_corridor: requested_global_corridor.percent_range(),
+            complexity_corridor: sampled_complexity_corridor(inputs, inputs.cycle).range(),
+            state_complexity_milli: super::depth::state_complexity_milli(
+                &state_slots(&seed_state(seed)),
+                seed.required_subdivision,
+            ),
+            state_depth_diversity_milli: super::depth::depth_diversity_milli(
+                &state_slots(&seed_state(seed)),
+                seed.required_subdivision,
+            ),
             cycle_distance: verbatim_distance,
         });
     }
@@ -2309,12 +3930,20 @@ pub fn evolved_seed_with_trace(
     let ranks = indispensability(&strata);
     let template = metrical_levels(&strata);
     let beat_level = factor_descending(seed.total_beats).len() as u32;
-    let seed_slots: Vec<u32> = seed_state(seed).onsets.iter().map(|o| o.slot).collect();
-
-    let mut state = seed_state(seed);
+    let initial_state = seed_state(seed);
+    let seed_onset_count = initial_state.onsets.len();
+    let mut state = initial_state.clone();
+    // Authored directives and the composition curve establish persistent
+    // musical state. The stochastic leash measures later drift from this
+    // moving authored anchor instead of pulling every gap back to the
+    // original pattern.
+    let mut leash_anchor = initial_state;
     let mut accumulators = std::collections::BTreeMap::<u64, RangeAccumulator>::new();
     let mut requested_cycle_trace = Vec::new();
     let mut requested_density_corridor = requested_global_corridor.percent_range();
+    let mut requested_complexity_corridor =
+        sampled_complexity_corridor(inputs, inputs.cycle).range();
+    let mut complexity_work_budget = ComplexityNormalizationBudget::new();
     // The state entering the requested cycle IS the previous cycle's final
     // state; snapshot it for the whole-cycle calibration readout.
     let mut previous_cycle_state = state.clone();
@@ -2329,15 +3958,6 @@ pub fn evolved_seed_with_trace(
         };
         let active = active_directives(inputs.plan, cycle);
         if active.is_empty() {
-            let legacy_rate = sampled_percent(
-                inputs,
-                DUMKA_EVOLUTION_RATE_TARGET,
-                inputs.evolution_rate,
-                cycle,
-            );
-            // A planned pin is outside the leash. At an authored 0% legacy
-            // gap, literal repetition must therefore retain that pin instead
-            // of letting leash normalization silently undo it.
             if inputs.curve.enabled {
                 // The curve owns every directive-free cycle when enabled:
                 // the legacy stochastic layer never fires, and a zero
@@ -2346,65 +3966,61 @@ pub fn evolved_seed_with_trace(
                 let target = inputs.curve.target_milli_at(cycle);
                 if target > 0 {
                     let (next, curve_trace) = apply_evolution_curve(
-                        target, &state, seed, &ranks, &template, beat_level, inputs, cycle,
+                        target,
+                        &state,
+                        seed,
+                        &ranks,
+                        &template,
+                        beat_level,
+                        inputs,
+                        cycle,
                         corridor,
+                        &mut complexity_work_budget,
                     );
                     state = next;
                     if cycle == inputs.cycle {
                         requested_cycle_trace.push(curve_trace);
                     }
                 } else {
-                    let normalized =
-                        normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
-                    let clamp = normalization_clamp(&state, &normalized, corridor);
+                    let (normalized, density_clamp, complexity_clamp) =
+                        normalize_to_active_corridors(
+                            seed,
+                            &state,
+                            &ranks,
+                            inputs,
+                            cycle,
+                            None,
+                            corridor,
+                            sampled_complexity_corridor(inputs, cycle),
+                            &mut complexity_work_budget,
+                        );
                     state = normalized;
                     if cycle == inputs.cycle {
-                        requested_cycle_trace.extend(clamp.map(|corridor_clamp| {
-                            DirectiveTraceEntry {
-                                cycle,
-                                directive_id: LEGACY_EVOLUTION_TRACE_ID,
-                                family: DirectiveFamily::Stochastic,
-                                requested: 0,
-                                applied: 0,
-                                skipped: DirectiveSkip::None,
-                                corridor_clamp: Some(corridor_clamp),
-                                perceptual: None,
-                            }
-                        }));
+                        requested_cycle_trace.extend(legacy_corridor_trace(
+                            cycle,
+                            density_clamp,
+                            complexity_clamp,
+                        ));
                     }
                 }
-            } else if inputs.plan.is_empty() || legacy_rate > 0 {
+                leash_anchor = state.clone();
+            } else {
                 let (next, legacy_trace) = step_with_corridor(
                     seed,
                     &state,
-                    &seed_slots,
+                    &leash_anchor,
+                    seed_onset_count,
                     &ranks,
                     &template,
                     beat_level,
                     inputs,
                     cycle,
                     corridor,
+                    &mut complexity_work_budget,
                 );
                 state = next;
                 if cycle == inputs.cycle {
                     requested_cycle_trace.extend(legacy_trace);
-                }
-            } else {
-                let normalized =
-                    normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
-                let clamp = normalization_clamp(&state, &normalized, corridor);
-                state = normalized;
-                if cycle == inputs.cycle {
-                    requested_cycle_trace.extend(clamp.map(|corridor_clamp| DirectiveTraceEntry {
-                        cycle,
-                        directive_id: LEGACY_EVOLUTION_TRACE_ID,
-                        family: DirectiveFamily::Stochastic,
-                        requested: 0,
-                        applied: 0,
-                        skipped: DirectiveSkip::None,
-                        corridor_clamp: Some(corridor_clamp),
-                        perceptual: None,
-                    }));
                 }
             }
             continue;
@@ -2419,35 +4035,40 @@ pub fn evolved_seed_with_trace(
         });
         let mut orphaned_normalization_trace = None;
         if all_orphaned {
-            let normalized = normalize_to_density_corridor(seed, &state, &ranks, inputs, corridor);
+            let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
+                seed,
+                &state,
+                &ranks,
+                inputs,
+                cycle,
+                None,
+                corridor,
+                sampled_complexity_corridor(inputs, cycle),
+                &mut complexity_work_budget,
+            );
             orphaned_normalization_trace =
-                normalization_clamp(&state, &normalized, corridor).map(|corridor_clamp| {
-                    DirectiveTraceEntry {
-                        cycle,
-                        directive_id: LEGACY_EVOLUTION_TRACE_ID,
-                        family: DirectiveFamily::Stochastic,
-                        requested: 0,
-                        applied: 0,
-                        skipped: DirectiveSkip::None,
-                        corridor_clamp: Some(corridor_clamp),
-                        perceptual: None,
-                    }
-                });
+                legacy_corridor_trace(cycle, density_clamp, complexity_clamp);
             state = normalized;
         }
         for directive in active {
+            let scope_is_valid =
+                slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok();
             let directive_corridor = directive_density_corridor(directive, corridor, slots);
-            if cycle == inputs.cycle
-                && slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok()
-            {
+            if cycle == inputs.cycle && scope_is_valid {
                 requested_density_corridor = directive_corridor.percent_range();
+                requested_complexity_corridor = directive_complexity_corridor(
+                    directive,
+                    sampled_complexity_corridor(inputs, cycle),
+                )
+                .range();
             }
             let accumulator = accumulators.entry(directive.id).or_default();
             let (next, trace) = apply_directive(
                 directive,
                 &state,
                 seed,
-                &seed_slots,
+                &leash_anchor,
+                seed_onset_count,
                 &ranks,
                 &template,
                 beat_level,
@@ -2455,8 +4076,12 @@ pub fn evolved_seed_with_trace(
                 cycle,
                 accumulator,
                 directive_corridor,
+                &mut complexity_work_budget,
             );
             state = next;
+            if scope_is_valid && directive.family != DirectiveFamily::Stochastic {
+                leash_anchor = state.clone();
+            }
             if cycle == inputs.cycle {
                 requested_cycle_trace.push(trace);
             }
@@ -2469,37 +4094,40 @@ pub fn evolved_seed_with_trace(
                 let target = inputs.curve.target_milli_at(cycle);
                 if target > 0 {
                     let (next, curve_trace) = apply_evolution_curve(
-                        target, &state, seed, &ranks, &template, beat_level, inputs, cycle,
-                        corridor,
-                    );
-                    state = next;
-                    if cycle == inputs.cycle {
-                        requested_cycle_trace.push(curve_trace);
-                    }
-                }
-            } else {
-                let legacy_rate = sampled_percent(
-                    inputs,
-                    DUMKA_EVOLUTION_RATE_TARGET,
-                    inputs.evolution_rate,
-                    cycle,
-                );
-                if legacy_rate > 0 {
-                    let (next, legacy_trace) = step_with_corridor(
-                        seed,
+                        target,
                         &state,
-                        &seed_slots,
+                        seed,
                         &ranks,
                         &template,
                         beat_level,
                         inputs,
                         cycle,
                         corridor,
+                        &mut complexity_work_budget,
                     );
                     state = next;
                     if cycle == inputs.cycle {
-                        requested_cycle_trace.extend(legacy_trace);
+                        requested_cycle_trace.push(curve_trace);
                     }
+                }
+                leash_anchor = state.clone();
+            } else {
+                let (next, legacy_trace) = step_with_corridor(
+                    seed,
+                    &state,
+                    &leash_anchor,
+                    seed_onset_count,
+                    &ranks,
+                    &template,
+                    beat_level,
+                    inputs,
+                    cycle,
+                    corridor,
+                    &mut complexity_work_budget,
+                );
+                state = next;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.extend(legacy_trace);
                 }
             }
         }
@@ -2510,6 +4138,15 @@ pub fn evolved_seed_with_trace(
         seed: state_to_compiled(seed, &state),
         trace: requested_cycle_trace,
         density_corridor: requested_density_corridor,
+        complexity_corridor: requested_complexity_corridor,
+        state_complexity_milli: super::depth::state_complexity_milli(
+            &state_slots(&state),
+            seed.required_subdivision,
+        ),
+        state_depth_diversity_milli: super::depth::depth_diversity_milli(
+            &state_slots(&state),
+            seed.required_subdivision,
+        ),
         cycle_distance,
     })
 }
@@ -2567,7 +4204,10 @@ mod tests {
             drift_leash: leash,
             density_floor: 0,
             density_ceiling: 100,
+            complexity_floor: 0,
+            complexity_ceiling: 100_000,
             barlow_temperature: 0,
+            placement_bias: 0,
             fill_complexity: 0,
             euclid_max_run: 1,
             euclid_invert: 0,
@@ -2596,7 +4236,10 @@ mod tests {
             drift_leash: leash,
             density_floor: 0,
             density_ceiling: 100,
+            complexity_floor: 0,
+            complexity_ceiling: 100_000,
             barlow_temperature: 0,
+            placement_bias: 0,
             fill_complexity: 0,
             euclid_max_run: 1,
             euclid_invert: 0,
@@ -3031,6 +4674,120 @@ mod tests {
     }
 
     #[test]
+    fn equal_count_morph_alignment_is_cyclic_transport_without_edits() {
+        let state = |slots: &[u32]| EvolutionState {
+            onsets: slots
+                .iter()
+                .copied()
+                .map(|slot| EvolvedOnset {
+                    slot,
+                    dur: 1,
+                    class: "x".to_string(),
+                })
+                .collect(),
+            rotation_beats: 0,
+        };
+        let pairs = morph_alignment(&state(&[0, 1, 2, 3]), &state(&[0, 1, 2, 7]), 8);
+        assert_eq!(
+            pairs,
+            vec![
+                MorphPair {
+                    current: Some(0),
+                    target: Some(0),
+                },
+                MorphPair {
+                    current: Some(1),
+                    target: Some(1),
+                },
+                MorphPair {
+                    current: Some(2),
+                    target: Some(2),
+                },
+                MorphPair {
+                    current: Some(3),
+                    target: Some(3),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn morph_materializes_prior_rotation_before_comparing_with_its_target() {
+        let seed = compiled("x . . .");
+        let mut rotated = seed_state(&seed);
+        rotated.rotation_beats = 1;
+        let mut row = directive(90, 0, DirectiveFamily::Morph, 1, 1, 100);
+        row.options.morph_target = Some(". x . .".to_string());
+
+        assert_eq!(morph_remaining_steps(&row, &rotated, &seed, None), 0);
+        assert_eq!(state_to_compiled(&seed, &rotated), compiled(". x . ."));
+    }
+
+    #[test]
+    fn morph_validation_caps_alignment_and_microstep_work() {
+        let dense = |count: u32| CompiledSeed {
+            total_beats: count,
+            required_subdivision: 1,
+            events: (0..count)
+                .map(|slot| SeedEvent {
+                    start: Rational::from_integer(i64::from(slot)),
+                    dur: Rational::ONE,
+                    class: "x".to_string(),
+                })
+                .collect(),
+        };
+        let too_many = 257;
+        assert!(matches!(
+            validate_morph_target_work(91, &dense(too_many), &dense(too_many)),
+            Err(GeneratorError::DumkaPlanInvalid { message })
+                if message == format!(
+                    "directive 91 morph alignment reserves {} pair evaluations, exceeding the limit of {MAX_MORPH_ALIGNMENT_WORK}",
+                    u64::from(too_many).pow(2)
+                )
+        ));
+
+        let seed = CompiledSeed {
+            total_beats: 512,
+            required_subdivision: 1,
+            events: vec![
+                SeedEvent {
+                    start: Rational::ZERO,
+                    dur: Rational::ONE,
+                    class: "x".to_string(),
+                },
+                SeedEvent {
+                    start: Rational::from_integer(256),
+                    dur: Rational::ONE,
+                    class: "x".to_string(),
+                },
+            ],
+        };
+        let target = CompiledSeed {
+            total_beats: 512,
+            required_subdivision: 1,
+            events: vec![
+                SeedEvent {
+                    start: Rational::from_integer(128),
+                    dur: Rational::ONE,
+                    class: "ka".to_string(),
+                },
+                SeedEvent {
+                    start: Rational::from_integer(384),
+                    dur: Rational::ONE,
+                    class: "ka".to_string(),
+                },
+            ],
+        };
+        assert!(matches!(
+            validate_morph_target_work(92, &seed, &target),
+            Err(GeneratorError::DumkaPlanInvalid { message })
+                if message == format!(
+                    "directive 92 morph requires 258 microsteps, exceeding the limit of {MAX_MORPH_MICROSTEPS}"
+                )
+        ));
+    }
+
+    #[test]
     fn gentle_remove_transition_paces_one_fixed_target_and_matches_the_pin_endpoint() {
         let seed = compiled("x x x x x x x x");
         let s = spans(8, 1);
@@ -3093,6 +4850,209 @@ mod tests {
             hot_gentle.seed, hot_pin.seed,
             "temperature-widened identity draws use range-global ordinals"
         );
+    }
+
+    #[test]
+    fn gentle_morph_reaches_the_target_through_small_repeatable_steps() {
+        let seed = compiled("[x . . .]");
+        let s = spans(1, 4);
+        let mut row = directive(81, 0, DirectiveFamily::Morph, 1, 4, 100);
+        row.pacing = DirectivePacing::EaseInOut;
+        row.options.morph_target = Some("[. . x .]".to_string());
+        let plan = vec![row];
+
+        let resolve = |cycle| {
+            let mut plan_inputs = inputs(41, cycle, 0, 0, &s);
+            plan_inputs.cycle_beats = 1;
+            plan_inputs.plan = &plan;
+            evolved_seed_with_trace(&seed, &plan_inputs).unwrap()
+        };
+        let cycles = (0..=4).map(resolve).collect::<Vec<_>>();
+        assert_eq!(
+            cycles
+                .iter()
+                .map(|resolution| seed_state(&resolution.seed).onsets[0].slot)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 3, 3, 2],
+            "the gentle shoulders hold while each requested step moves only one slot"
+        );
+        assert_eq!(
+            cycles[1..]
+                .iter()
+                .map(|resolution| {
+                    let trace = &resolution.trace[0];
+                    (trace.requested, trace.applied, trace.skipped)
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0, DirectiveSkip::None),
+                (1, 1, DirectiveSkip::None),
+                (0, 0, DirectiveSkip::None),
+                (1, 1, DirectiveSkip::None),
+            ]
+        );
+        assert_eq!(cycles[4].seed, compiled("[. . x .]"));
+        let replay = resolve(4);
+        assert_eq!(replay.seed, cycles[4].seed, "Morph must byte-replay");
+        assert_eq!(
+            replay.trace, cycles[4].trace,
+            "Morph trace must byte-replay"
+        );
+    }
+
+    #[test]
+    fn perceptual_morph_selects_the_nearest_legal_microstep() {
+        let seed = compiled("[x . . .]");
+        let s = spans(1, 4);
+        let mut oracle_row = directive(82, 0, DirectiveFamily::Morph, 1, 1, 50);
+        oracle_row.options.morph_target = Some("[. . x .]".to_string());
+        let oracle_plan = vec![oracle_row.clone()];
+        let mut oracle_inputs = inputs(43, 1, 0, 0, &s);
+        oracle_inputs.cycle_beats = 1;
+        oracle_inputs.plan = &oracle_plan;
+        let oracle = evolved_seed_with_trace(&seed, &oracle_inputs).unwrap();
+        assert_eq!(seed_state(&oracle.seed).onsets[0].slot, 3);
+        assert_eq!(oracle.trace[0].applied, 1);
+        let target = transition_distance(&seed, &oracle.seed);
+        assert!(target > 0);
+
+        let plan = vec![perceptually_paced(oracle_row, target, 0, 2)];
+        let mut plan_inputs = inputs(43, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 1;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed, oracle.seed);
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (1, 1)
+        );
+        assert!(resolution.trace[0]
+            .perceptual
+            .is_some_and(|trace| trace.reached && trace.actual_milli == target));
+    }
+
+    #[test]
+    fn morph_insertion_is_one_legal_endpoint_step() {
+        let seed = compiled("[x . . .]");
+        let s = spans(1, 4);
+        let mut row = directive(83, 0, DirectiveFamily::Morph, 1, 1, 100);
+        row.options.morph_target = Some("[x . x .]".to_string());
+        let plan = vec![row];
+        let mut plan_inputs = inputs(47, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 1;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed, compiled("[x . x .]"));
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (1, 1)
+        );
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
+    }
+
+    #[test]
+    fn morph_antipode_retries_the_equally_short_legal_arc() {
+        let seed = compiled("[x x . .]");
+        let s = spans(1, 4);
+        let mut row = directive(86, 0, DirectiveFamily::Morph, 1, 1, 100);
+        row.options.morph_target = Some("[x . . x]".to_string());
+        let plan = vec![row];
+        let mut plan_inputs = inputs(61, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 1;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+
+        assert_eq!(resolution.seed, compiled("[x . . x]"));
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
+        assert_eq!(resolution.trace[0].applied, 2);
+    }
+
+    #[test]
+    fn unequal_morph_uses_its_fixed_quota_to_reach_the_exact_endpoint() {
+        let seed = compiled("[x . . . . .]");
+        let s = spans(1, 6);
+        let mut row = directive(87, 0, DirectiveFamily::Morph, 1, 1, 100);
+        row.options.morph_target = Some("[. . x x . .]".to_string());
+        let plan = vec![row];
+        let mut plan_inputs = inputs(67, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 1;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+
+        assert_eq!(resolution.seed, compiled("[. . x x . .]"));
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (3, 3)
+        );
+    }
+
+    #[test]
+    fn morph_microsteps_obey_the_shared_complexity_corridor() {
+        let seed = compiled("[x . . .]");
+        let s = spans(1, 4);
+        let mut row = directive(85, 0, DirectiveFamily::Morph, 1, 1, 100);
+        row.options.morph_target = Some("[. x . .]".to_string());
+        let plan = vec![row];
+        let mut plan_inputs = inputs(59, 1, 0, 0, &s);
+        plan_inputs.cycle_beats = 1;
+        plan_inputs.complexity_ceiling = 0;
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed, seed);
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (1, 0)
+        );
+        assert_eq!(resolution.trace[0].skipped, DirectiveSkip::Exhausted);
+        assert_eq!(
+            resolution.trace[0].complexity_corridor_clamp,
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Ceiling,
+                complexity_milli: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn palette_morph_reaches_a_spanning_five_in_two_target_at_the_range_endpoint() {
+        let mut seed = compiled(SEED_TEXT);
+        seed.required_subdivision = 20;
+        let target_text = "[x x x x x]@2 [dum . ka .] [x x . x]";
+        let mut target = compiled(target_text);
+        target.required_subdivision = 20;
+        let s = spans(4, 20);
+        let mut row = directive(84, 0, DirectiveFamily::Morph, 5, 20, 100);
+        row.pacing = DirectivePacing::EaseInOut;
+        row.options.morph_target = Some(target_text.to_string());
+        let plan = vec![row.clone()];
+
+        let resolve = |cycle| {
+            let mut plan_inputs = inputs(53, cycle, 0, 0, &s);
+            plan_inputs.plan = &plan;
+            evolved_seed_with_trace(&seed, &plan_inputs).unwrap()
+        };
+        let cycles = (4..=20).map(resolve).collect::<Vec<_>>();
+        assert_eq!(cycles[0].seed, seed, "the pre-range cycle is unchanged");
+        assert_eq!(
+            cycles[16].seed, target,
+            "the inclusive range reaches its target"
+        );
+
+        let remaining = cycles
+            .iter()
+            .map(|resolution| {
+                morph_remaining_steps(&row, &seed_state(&resolution.seed), &seed, None)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            remaining.windows(2).all(|pair| pair[1] <= pair[0]),
+            "Morph must make monotone progress: {remaining:?}"
+        );
+        assert_eq!(remaining.last(), Some(&0));
+        let replay = resolve(20);
+        assert_eq!(replay.seed, cycles[16].seed);
+        assert_eq!(replay.trace, cycles[16].trace);
     }
 
     #[test]
@@ -3243,6 +5203,10 @@ mod tests {
                 ordinal,
                 window,
                 corridor,
+                ComplexityCorridor {
+                    floor_milli: 0,
+                    ceiling_milli: 100_000,
+                },
             )
             .expect("fragmentation creates another legal prefix")
             .0;
@@ -3804,6 +5768,239 @@ mod tests {
     }
 
     #[test]
+    fn complexity_normalization_visits_each_original_onset_at_most_once() {
+        let seed = CompiledSeed {
+            total_beats: 2,
+            required_subdivision: 12,
+            events: vec![SeedEvent {
+                start: Rational::new(1, 2),
+                dur: Rational::new(1, 12),
+                class: "x".to_string(),
+            }],
+        };
+        let s = spans(2, 12);
+        let mut rail_inputs = inputs(7, 1, 0, 100, &s);
+        rail_inputs.cycle_beats = 2;
+        let (ranks, _, _) = fold_env(2, 12);
+        let mut work_budget = ComplexityNormalizationBudget::new();
+
+        let (normalized, clamp) = normalize_to_complexity_corridor(
+            &seed,
+            &seed_state(&seed),
+            &ranks,
+            &rail_inputs,
+            1,
+            None,
+            ComplexityCorridor {
+                floor_milli: 100_000,
+                ceiling_milli: 100_000,
+            },
+            &mut work_budget,
+        );
+
+        assert_eq!(normalized.onsets.len(), 1);
+        assert_eq!(
+            super::super::depth::onset_depth(normalized.onsets[0].slot, 12),
+            420
+        );
+        assert_eq!(
+            super::super::depth::state_complexity_milli(&state_slots(&normalized), 12),
+            42_857,
+            "one pass may take the first strict W=12 depth step, but must not revisit the moved onset"
+        );
+        assert_eq!(
+            clamp,
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Floor,
+                complexity_milli: 100_000,
+            })
+        );
+    }
+
+    #[test]
+    fn complexity_normalization_does_not_overshoot_the_opposite_rail() {
+        let seed = CompiledSeed {
+            total_beats: 1,
+            required_subdivision: 12,
+            events: vec![SeedEvent {
+                start: Rational::ZERO,
+                dur: Rational::new(1, 12),
+                class: "x".to_string(),
+            }],
+        };
+        let s = spans(1, 12);
+        let mut rail_inputs = inputs(7, 1, 0, 100, &s);
+        rail_inputs.cycle_beats = 1;
+        let (ranks, _, _) = fold_env(1, 12);
+        let original = seed_state(&seed);
+        let mut work_budget = ComplexityNormalizationBudget::new();
+
+        let (normalized, clamp) = normalize_to_complexity_corridor(
+            &seed,
+            &original,
+            &ranks,
+            &rail_inputs,
+            1,
+            None,
+            ComplexityCorridor {
+                floor_milli: 10_000,
+                ceiling_milli: 11_000,
+            },
+            &mut work_budget,
+        );
+
+        assert_eq!(
+            normalized, original,
+            "the cheapest promotion crosses the ceiling"
+        );
+        assert_eq!(
+            clamp,
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Floor,
+                complexity_milli: 10_000,
+            }),
+            "an unreachable narrow band stalls with truthful floor pressure"
+        );
+    }
+
+    #[test]
+    fn complexity_normalization_exits_after_one_scan_when_the_grid_is_fully_covered() {
+        let seed = CompiledSeed {
+            total_beats: 1,
+            required_subdivision: 64,
+            events: (0..64)
+                .map(|slot| SeedEvent {
+                    start: Rational::new(slot, 64),
+                    dur: Rational::new(1, 64),
+                    class: "x".to_string(),
+                })
+                .collect(),
+        };
+        let s = spans(1, 64);
+        let mut rail_inputs = inputs(7, 1, 0, 100, &s);
+        rail_inputs.cycle_beats = 1;
+        let (ranks, _, _) = fold_env(1, 64);
+        let original = seed_state(&seed);
+        let mut work_budget = ComplexityNormalizationBudget { remaining: 129 };
+
+        let (normalized, clamp) = normalize_to_complexity_corridor(
+            &seed,
+            &original,
+            &ranks,
+            &rail_inputs,
+            1,
+            None,
+            ComplexityCorridor {
+                floor_milli: 0,
+                ceiling_milli: 0,
+            },
+            &mut work_budget,
+        );
+
+        assert_eq!(normalized, original);
+        assert_eq!(
+            work_budget.remaining, 1,
+            "no silent target stops before candidate ordering or projection"
+        );
+        assert_eq!(
+            clamp,
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Ceiling,
+                complexity_milli: 0,
+            }),
+            "the early exit must still expose the unsatisfied ceiling"
+        );
+    }
+
+    #[test]
+    fn complexity_normalization_budget_bounds_a_stalled_w64_search() {
+        let seed = CompiledSeed {
+            total_beats: 1,
+            required_subdivision: 64,
+            events: (0..32)
+                .map(|slot| SeedEvent {
+                    start: Rational::new(slot * 2, 64),
+                    dur: Rational::new(1, 64),
+                    class: "x".to_string(),
+                })
+                .collect(),
+        };
+        let s = spans(1, 64);
+        let mut rail_inputs = inputs(7, 1, 0, 100, &s);
+        rail_inputs.cycle_beats = 1;
+        rail_inputs.placement_bias = 100;
+        let (ranks, _, _) = fold_env(1, 64);
+        let original = seed_state(&seed);
+        let mut work_budget = ComplexityNormalizationBudget { remaining: 31 };
+
+        let (normalized, clamp) = normalize_to_complexity_corridor(
+            &seed,
+            &original,
+            &ranks,
+            &rail_inputs,
+            1,
+            None,
+            ComplexityCorridor {
+                floor_milli: 100_000,
+                ceiling_milli: 100_000,
+            },
+            &mut work_budget,
+        );
+
+        assert_eq!(normalized, original);
+        assert_eq!(
+            work_budget.remaining, 31,
+            "an unaffordable source scan is not partial"
+        );
+        assert_eq!(
+            clamp,
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Floor,
+                complexity_milli: 100_000,
+            }),
+            "budget exhaustion is a deterministic, truthful rail stall"
+        );
+    }
+
+    #[test]
+    fn cycle_10000_fully_covered_w64_complexity_stall_is_fold_bounded_and_truthful() {
+        let seed = CompiledSeed {
+            total_beats: 1,
+            required_subdivision: 64,
+            events: (0..64)
+                .map(|slot| SeedEvent {
+                    start: Rational::new(slot, 64),
+                    dur: Rational::new(1, 64),
+                    class: "x".to_string(),
+                })
+                .collect(),
+        };
+        let s = spans(1, 64);
+        let mut rail_inputs = inputs(7, 10_000, 0, 100, &s);
+        rail_inputs.cycle_beats = 1;
+        rail_inputs.density_floor = 100;
+        rail_inputs.density_ceiling = 100;
+        rail_inputs.complexity_floor = 0;
+        rail_inputs.complexity_ceiling = 0;
+
+        let resolution = evolved_seed_with_trace(&seed, &rail_inputs).unwrap();
+
+        assert_eq!(resolution.seed.events.len(), 64);
+        assert!(resolution.state_complexity_milli > 0);
+        assert_eq!(
+            resolution
+                .trace
+                .last()
+                .and_then(|entry| entry.complexity_corridor_clamp),
+            Some(ComplexityCorridorClamp {
+                limit: ComplexityCorridorLimit::Ceiling,
+                complexity_milli: 0,
+            }),
+            "the requested-cycle trace keeps the unsatisfied rail visible"
+        );
+    }
+
+    #[test]
     fn directive_corridor_overrides_globals_and_corridor_beats_plan_and_leash() {
         let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
         let s = spans(4, 4);
@@ -3870,6 +6067,10 @@ mod tests {
             &guard_inputs,
             16,
             DensityCorridor::new(0, 25, 16),
+            ComplexityCorridor {
+                floor_milli: 0,
+                ceiling_milli: 100_000,
+            },
         )
         .expect("overlapping five-onset candidate violates both guards");
         assert_eq!(failure.skipped, DirectiveSkip::Projection);
@@ -3953,16 +6154,21 @@ mod tests {
         fn every_family_stays_inside_random_corridors_across_cycles(
             floor in 0_u32..=100,
             ceiling_hint in 0_u32..=100,
+            complexity_floor in 0_u32..=100_000,
+            complexity_ceiling_hint in 0_u32..=100_000,
             cycle in 1_u64..=12,
             seed_value in any::<u64>(),
         ) {
             let ceiling = ceiling_hint.max(floor);
+            let complexity_ceiling = complexity_ceiling_hint.max(complexity_floor);
             let seed = compiled(SEED_TEXT);
             let s = spans(4, 4);
             for (index, family) in PLAN_FAMILIES.into_iter().enumerate() {
                 let mut row = directive(index as u64 + 1, 0, family, 1, cycle, 100);
                 row.options.density_floor = Some(floor);
                 row.options.density_ceiling = Some(ceiling);
+                row.options.complexity_floor = Some(complexity_floor);
+                row.options.complexity_ceiling = Some(complexity_ceiling);
                 let plan = vec![row];
                 let mut plan_inputs = inputs(seed_value, cycle, 0, 100, &s);
                 plan_inputs.plan = &plan;
@@ -3987,9 +6193,29 @@ mod tests {
                 );
                 prop_assert_eq!(
                     evolved_seed_with_trace(&seed, &plan_inputs).unwrap().seed,
-                    resolution.seed,
+                    resolution.seed.clone(),
                     "{:?} replay diverged",
                     family,
+                );
+                let realized_complexity = super::super::depth::state_complexity_milli(
+                    &state_slots(&seed_state(&resolution.seed)),
+                    seed.required_subdivision,
+                );
+                let complexity_inside = realized_complexity >= complexity_floor
+                    && realized_complexity <= complexity_ceiling;
+                let truthful_stall = resolution.trace.iter().any(|entry| {
+                    entry.complexity_corridor_clamp.as_ref().is_some_and(|clamp| {
+                        (realized_complexity < complexity_floor
+                            && clamp.limit == ComplexityCorridorLimit::Floor
+                            && clamp.complexity_milli == complexity_floor)
+                            || (realized_complexity > complexity_ceiling
+                                && clamp.limit == ComplexityCorridorLimit::Ceiling
+                                && clamp.complexity_milli == complexity_ceiling)
+                    })
+                });
+                prop_assert!(
+                    complexity_inside || truthful_stall,
+                    "{family:?} emitted complexity {realized_complexity} outside {complexity_floor}..={complexity_ceiling} without a truthful stall clamp",
                 );
             }
         }
@@ -4908,6 +7134,240 @@ mod tests {
             .expect("cycle zero is always the exact authored seed");
         assert_eq!(cycle_zero.seed, seed);
         assert!(cycle_zero.trace.is_empty());
+    }
+
+    #[test]
+    fn authored_pin_rebases_the_leash_for_later_stochastic_gaps() {
+        let seed = compiled(&"[x x x x] ".repeat(4));
+        let s = spans(4, 4);
+        let plan = vec![directive(401, 0, DirectiveFamily::BarlowRemove, 1, 1, 25)];
+        let resolve = |cycle| {
+            let mut plan_inputs = inputs(17, cycle, 100, 0, &s);
+            plan_inputs.plan = &plan;
+            // Cycle two still runs leash normalization, but no stochastic
+            // family obscures which state the leash considers authored.
+            plan_inputs.op_weights = OpWeights {
+                barlow_remove: 0,
+                barlow_add: 0,
+                rotate: 0,
+                syncopate: 0,
+                desyncopate: 0,
+                fragment: 0,
+                consolidate: 0,
+                euclid: 0,
+            };
+            evolved_seed_with_trace(&seed, &plan_inputs).unwrap().seed
+        };
+        let pinned = resolve(1);
+        assert_ne!(pinned, seed, "the authored pin changes the pattern");
+        assert_eq!(
+            resolve(2),
+            pinned,
+            "zero leash measures stochastic drift from persistent authored state"
+        );
+    }
+
+    #[test]
+    fn disabled_and_future_rows_do_not_change_legacy_gap_semantics() {
+        let seed = compiled(&"[x x x x] ".repeat(4));
+        let s = spans(4, 4);
+        let automation: &GeneratorAutomationSampler<'_> = &|target, cycle, fallback| match target {
+            DUMKA_EVOLUTION_RATE_TARGET => Some(if cycle == 1 { 100.0 } else { 0.0 }),
+            DUMKA_DRIFT_LEASH_TARGET => Some(if cycle == 1 { 100.0 } else { 0.0 }),
+            _ => Some(fallback),
+        };
+        let mut disabled = directive(402, 0, DirectiveFamily::Rotate, 1, 1, 100);
+        disabled.enabled = false;
+        let future = directive(403, 1, DirectiveFamily::Rotate, 10, 10, 100);
+        let irrelevant = vec![disabled, future];
+
+        let resolve = |plan: &[EvolutionDirective]| {
+            let mut gap_inputs = inputs_with_automation(7, 2, 0, 100, &s, automation);
+            gap_inputs.plan = plan;
+            gap_inputs.op_weights = OpWeights {
+                barlow_remove: 1,
+                barlow_add: 0,
+                rotate: 0,
+                syncopate: 0,
+                desyncopate: 0,
+                fragment: 0,
+                consolidate: 0,
+                euclid: 0,
+            };
+            evolved_seed_with_trace(&seed, &gap_inputs).unwrap().seed
+        };
+        let empty = resolve(&[]);
+        assert_eq!(empty, seed, "cycle-two leash contracts the cycle-one drift");
+        assert_eq!(resolve(&irrelevant), empty);
+    }
+
+    #[test]
+    fn scoped_remove_and_sioros_candidates_own_the_full_sounding_interval() {
+        let seed = compiled("[x . . .] [x . . .]");
+        let (ranks, template, beat_level) = fold_env(2, 4);
+        let crossing = EvolutionState {
+            onsets: vec![
+                EvolvedOnset {
+                    slot: 3,
+                    dur: 2,
+                    class: "x".to_string(),
+                },
+                EvolvedOnset {
+                    slot: 6,
+                    dur: 1,
+                    class: "x".to_string(),
+                },
+            ],
+            rotation_beats: 0,
+        };
+        let first_beat = Some(SlotRange { start: 0, end: 4 });
+        let remove = directive(404, 0, DirectiveFamily::BarlowRemove, 1, 1, 100);
+        assert_eq!(
+            directive_candidate_count(
+                &remove, &crossing, &seed, &ranks, &template, beat_level, first_beat,
+            ),
+            0,
+            "an onset inside the beat cannot remove a sustain that exits it"
+        );
+
+        let sioros_template = metrical_levels(&[2, 2, 2]);
+        let sustained = EvolutionState {
+            onsets: vec![EvolvedOnset {
+                slot: 3,
+                dur: 5,
+                class: "x".to_string(),
+            }],
+            rotation_beats: 0,
+        };
+        assert!(legal_desyncopations(&[3], &sioros_template, 1, None).contains(&4));
+        assert!(
+            !scoped_legal_desyncopations(
+                &sustained,
+                &sioros_template,
+                1,
+                Some(SlotRange { start: 0, end: 8 }),
+            )
+            .contains(&4),
+            "the landing attack is inside, but its preserved duration exits the scope"
+        );
+    }
+
+    #[test]
+    fn scoped_rotate_rejects_a_post_rotation_interval_escape() {
+        let state = EvolutionState {
+            onsets: vec![EvolvedOnset {
+                slot: 2,
+                dur: 6,
+                class: "x".to_string(),
+            }],
+            rotation_beats: 0,
+        };
+        assert!(windowed_rotate(
+            &state,
+            SlotRange { start: 0, end: 8 },
+            4,
+            RotateDirection::Later,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn stalled_density_normalization_still_reports_the_active_rail() {
+        let unchanged = EvolutionState {
+            onsets: (0..5)
+                .map(|slot| EvolvedOnset {
+                    slot,
+                    dur: 1,
+                    class: "x".to_string(),
+                })
+                .collect(),
+            rotation_beats: 0,
+        };
+        assert_eq!(
+            normalization_clamp(&unchanged, &unchanged, DensityCorridor::new(0, 50, 8),),
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn zero_intensity_directive_still_applies_its_density_corridor() {
+        let seed = compiled(&"[x x x x] ".repeat(4));
+        let s = spans(4, 4);
+        let mut hold = directive(405, 0, DirectiveFamily::BarlowRemove, 1, 1, 0);
+        hold.options.density_floor = Some(50);
+        hold.options.density_ceiling = Some(50);
+        let plan = vec![hold];
+        let mut plan_inputs = inputs(7, 1, 0, 0, &s);
+        plan_inputs.plan = &plan;
+        let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+        assert_eq!(resolution.seed.events.len(), 8);
+        assert_eq!(
+            (resolution.trace[0].requested, resolution.trace[0].applied),
+            (0, 0)
+        );
+        assert_eq!(
+            resolution.trace[0].corridor_clamp,
+            Some(DensityCorridorClamp {
+                limit: DensityCorridorLimit::Ceiling,
+                density_percent: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_grid_preflight_distinguishes_active_evolution_from_feature_off() {
+        let seed = compiled(&"x ".repeat(11));
+        let s = spans(11, 1);
+        let mut off = inputs(7, 1, 0, 100, &s);
+        off.cycle_beats = 11;
+        assert_eq!(validate_evolution_grid(&seed, &off), Ok(()));
+
+        let mut legacy = inputs(7, 1, 100, 100, &s);
+        legacy.cycle_beats = 11;
+        assert!(matches!(
+            validate_evolution_grid(&seed, &legacy),
+            Err(GeneratorError::DumkaPlanInvalid { message })
+                if message.starts_with("legacy evolution")
+        ));
+
+        let quota_plan = vec![directive(406, 0, DirectiveFamily::Rotate, 1, 1, 100)];
+        let mut quota = inputs(7, 1, 0, 100, &s);
+        quota.cycle_beats = 11;
+        quota.plan = &quota_plan;
+        assert!(matches!(
+            validate_evolution_grid(&seed, &quota),
+            Err(GeneratorError::DumkaPlanInvalid { message })
+                if message.starts_with("directive 406 operation quota")
+        ));
+
+        let curve = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 4,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 1_000,
+            }],
+        };
+        let mut curved = inputs(7, 1, 0, 100, &s);
+        curved.cycle_beats = 11;
+        curved.curve = &curve;
+        assert!(matches!(
+            validate_evolution_grid(&seed, &curved),
+            Err(GeneratorError::DumkaPlanInvalid { message })
+                if message.starts_with("curve targets")
+        ));
+
+        let mut disabled = directive(407, 0, DirectiveFamily::Rotate, 1, 1, 100);
+        disabled.enabled = false;
+        let future = directive(408, 1, DirectiveFamily::Rotate, 2, 2, 100);
+        let inactive = vec![disabled, future];
+        off.plan = &inactive;
+        assert_eq!(validate_evolution_grid(&seed, &off), Ok(()));
     }
 
     #[test]

@@ -914,6 +914,10 @@ export default function App() {
   const [dumkaDriftLeash, setDumkaDriftLeash] = useState(25);
   const [dumkaDensityFloor, setDumkaDensityFloor] = useState(0);
   const [dumkaDensityCeiling, setDumkaDensityCeiling] = useState(100);
+  const [dumkaSubdivisionPalette, setDumkaSubdivisionPalette] = useState<number[]>([]);
+  const [dumkaComplexityFloor, setDumkaComplexityFloor] = useState(0);
+  const [dumkaComplexityCeiling, setDumkaComplexityCeiling] = useState(100_000);
+  const [dumkaPlacementBias, setDumkaPlacementBias] = useState(0);
   const [dumkaBarlowTemperature, setDumkaBarlowTemperature] = useState(0);
   const [dumkaFillComplexity, setDumkaFillComplexity] = useState(0);
   const [dumkaEuclidMaxRun, setDumkaEuclidMaxRun] = useState(1);
@@ -953,6 +957,9 @@ export default function App() {
     dumkaDriftLeash,
     dumkaDensityFloor,
     dumkaDensityCeiling,
+    dumkaComplexityFloor,
+    dumkaComplexityCeiling,
+    dumkaPlacementBias,
     dumkaBarlowTemperature,
     dumkaFillComplexity,
     blendCycles,
@@ -1107,6 +1114,10 @@ export default function App() {
           driftLeash: dumkaDriftLeash,
           densityFloor: dumkaDensityFloor,
           densityCeiling: dumkaDensityCeiling,
+          subdivisionPalette: dumkaSubdivisionPalette,
+          complexityFloor: dumkaComplexityFloor,
+          complexityCeiling: dumkaComplexityCeiling,
+          placementBias: dumkaPlacementBias,
           barlowTemperature: dumkaBarlowTemperature,
           weightBarlowRemove: dumkaOpWeights.barlowRemove,
           weightBarlowAdd: dumkaOpWeights.barlowAdd,
@@ -1138,6 +1149,10 @@ export default function App() {
     dumkaDriftLeash,
     dumkaDensityFloor,
     dumkaDensityCeiling,
+    dumkaSubdivisionPalette,
+    dumkaComplexityFloor,
+    dumkaComplexityCeiling,
+    dumkaPlacementBias,
     dumkaEuclidInvert,
     dumkaEuclidMaxRun,
     dumkaEuclidRestPolicy,
@@ -1162,8 +1177,8 @@ export default function App() {
     [dumkaPlanLengthCycles, generatorRuntimeConfig]
   );
   const dumkaAnalysis = useMemo(
-    () => analyzeDumkaPattern(dumkaPattern),
-    [dumkaPattern]
+    () => analyzeDumkaPattern(dumkaPattern, dumkaSubdivisionPalette),
+    [dumkaPattern, dumkaSubdivisionPalette]
   );
   const dumkaRequired = dumkaAnalysis.ok ? dumkaAnalysis.required : null;
   const dumkaStructureReady = useMemo(
@@ -1194,7 +1209,7 @@ export default function App() {
       return;
     }
     setCycleBeats(dumkaRequired.cycleBeats);
-    setInitialWeights([{ subdivision: dumkaRequired.subdivision, weight: 1 }]);
+    setInitialWeights([{ subdivision: dumkaRequired.workingSubdivision, weight: 1 }]);
     setInitialJathiWeights([]);
     setInitialCustomSubdivision(null);
     setBoundaries([]);
@@ -4355,6 +4370,10 @@ export default function App() {
       setDumkaDriftLeash(patch.generator.driftLeash);
       setDumkaDensityFloor(patch.generator.densityFloor);
       setDumkaDensityCeiling(patch.generator.densityCeiling);
+      setDumkaSubdivisionPalette([...patch.generator.subdivisionPalette]);
+      setDumkaComplexityFloor(patch.generator.complexityFloor);
+      setDumkaComplexityCeiling(patch.generator.complexityCeiling);
+      setDumkaPlacementBias(patch.generator.placementBias);
       setDumkaPlan(patch.generator.plan.map((directive) => ({
         ...directive,
         scope: directive.scope ? { ...directive.scope } : null,
@@ -8750,6 +8769,9 @@ export default function App() {
               : null
           }
           dumkaRequired={dumkaRequired}
+          dumkaStateDepthDiversityMilli={
+            timelineRhythmResult?.stateDepthDiversityMilli ?? null
+          }
           dumkaStructureReady={dumkaStructureReady}
           dumkaAuthoredSubdivision={dumkaAuthoredSubdivision}
           dumkaProjectionSpans={dumkaProjectionSpans}
@@ -8768,6 +8790,14 @@ export default function App() {
           setDumkaDriftLeash={setDumkaDriftLeash}
           setDumkaDensityFloor={setDumkaDensityFloor}
           setDumkaDensityCeiling={setDumkaDensityCeiling}
+          dumkaSubdivisionPalette={dumkaSubdivisionPalette}
+          setDumkaSubdivisionPalette={setDumkaSubdivisionPalette}
+          dumkaComplexityFloor={dumkaComplexityFloor}
+          setDumkaComplexityFloor={setDumkaComplexityFloor}
+          dumkaComplexityCeiling={dumkaComplexityCeiling}
+          setDumkaComplexityCeiling={setDumkaComplexityCeiling}
+          dumkaPlacementBias={dumkaPlacementBias}
+          setDumkaPlacementBias={setDumkaPlacementBias}
           dumkaBarlowTemperature={dumkaBarlowTemperature}
           dumkaFillComplexity={dumkaFillComplexity}
           setDumkaFillComplexity={setDumkaFillComplexity}
@@ -8804,6 +8834,9 @@ export default function App() {
             fillComplexity: dumkaFillComplexity,
             densityFloor: dumkaDensityFloor,
             densityCeiling: dumkaDensityCeiling,
+            complexityFloor: dumkaComplexityFloor,
+            complexityCeiling: dumkaComplexityCeiling,
+            placementBias: dumkaPlacementBias,
             euclidMaxRun: dumkaEuclidMaxRun,
             euclidInvert: dumkaEuclidInvert,
             euclidRestPolicy: dumkaEuclidRestPolicy,
@@ -8821,6 +8854,10 @@ export default function App() {
           }
           densityFloor={dumkaDensityFloor}
           densityCeiling={dumkaDensityCeiling}
+          complexityFloor={dumkaComplexityFloor}
+          complexityCeiling={dumkaComplexityCeiling}
+          workingSubdivision={dumkaRequired?.workingSubdivision ?? 1}
+          seedTotalBeats={dumkaRequired?.cycleBeats ?? cycleBeats}
         />
       </section>
 

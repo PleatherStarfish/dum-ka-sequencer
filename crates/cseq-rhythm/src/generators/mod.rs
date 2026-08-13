@@ -14,15 +14,16 @@ use thiserror::Error;
 use crate::{mix_seed, ResolvedRhythmCell, ResolvedRhythmSpan, SplitMix64};
 
 pub use dumka::{
-    evolution_state, perceptual_distance, BeatRange, CurvePoint, DirectiveFamily,
-    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
-    DumkaGeneratorParams, EvolutionCurve, EvolutionDirective, EvolutionState, EvolvedOnset,
-    PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance, PerceptualDistance,
-    PerceptualError, PerceptualModel, PerceptualModelVersion, PerceptualPacingTrace,
-    PerceptualWeights, RotateDirection, DEFAULT_DUMKA_PATTERN, EVOLUTION_CURVE_TRACE_ID,
-    LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES,
-    MAX_EVOLUTION_DIRECTIVES, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
-    MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
+    evolution_state, perceptual_distance, BeatRange, ComplexityCorridorClamp,
+    ComplexityCorridorLimit, CurvePoint, DirectiveFamily, DirectiveMagnitude, DirectiveOptions,
+    DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams, EvolutionCurve,
+    EvolutionDirective, EvolutionState, EvolvedOnset, PerceptualBreakdown, PerceptualContext,
+    PerceptualCycleDistance, PerceptualDistance, PerceptualError, PerceptualModel,
+    PerceptualModelVersion, PerceptualPacingTrace, PerceptualWeights, RequiredStructure,
+    RotateDirection, DEFAULT_DUMKA_PATTERN, EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID,
+    MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES,
+    MAX_MORPH_ALIGNMENT_WORK, MAX_MORPH_MICROSTEPS, MAX_PERCEPTUAL_DISTANCE_MILLI,
+    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use example::ExampleGeneratorParams;
 
@@ -284,6 +285,13 @@ pub struct DensityCorridorRange {
     pub ceiling: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComplexityCorridorRange {
+    pub floor: u32,
+    pub ceiling: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratorCycleResolution {
     pub spans: Vec<GeneratedSpan>,
@@ -294,6 +302,13 @@ pub struct GeneratorCycleResolution {
     /// Whole-cycle realized perceptual distance for Dum-Ka previews
     /// (`None` for other generators, cycle 0, and unsupported grids).
     pub cycle_distance: Option<PerceptualCycleDistance>,
+    /// Dum-Ka's effective lattice after the authored depth palette.
+    pub working_subdivision: Option<u32>,
+    /// Cycle-effective attack-depth corridor and realized state complexity.
+    pub complexity_corridor: Option<ComplexityCorridorRange>,
+    pub state_complexity_milli: Option<u32>,
+    /// Insight-only normalized entropy of attack-point denominator classes.
+    pub state_depth_diversity_milli: Option<u32>,
 }
 
 pub fn resolve_generator_cycle_with_trace(
@@ -301,12 +316,47 @@ pub fn resolve_generator_cycle_with_trace(
     context: &GeneratorCycleContext<'_>,
 ) -> Result<GeneratorCycleResolution, GeneratorError> {
     config.validate()?;
-    let (spans, trace, density_corridor, cycle_distance) = match config {
-        GeneratorConfig::Example(params) => (params.generate(context)?, Vec::new(), None, None),
+    let (
+        spans,
+        trace,
+        density_corridor,
+        cycle_distance,
+        working_subdivision,
+        complexity_corridor,
+        state_complexity_milli,
+        state_depth_diversity_milli,
+    ) = match config {
+        GeneratorConfig::Example(params) => (
+            params.generate(context)?,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
         GeneratorConfig::Dumka(params) => {
-            let (spans, trace, density_corridor, cycle_distance) =
-                params.generate_with_trace(context)?;
-            (spans, trace, Some(density_corridor), cycle_distance)
+            let (
+                spans,
+                trace,
+                density_corridor,
+                cycle_distance,
+                working_subdivision,
+                complexity_corridor,
+                state_complexity_milli,
+                state_depth_diversity_milli,
+            ) = params.generate_with_trace(context)?;
+            (
+                spans,
+                trace,
+                Some(density_corridor),
+                cycle_distance,
+                Some(working_subdivision),
+                Some(complexity_corridor),
+                Some(state_complexity_milli),
+                Some(state_depth_diversity_milli),
+            )
         }
     };
     validate_generated_spans(context.spans, &spans)?;
@@ -315,6 +365,10 @@ pub fn resolve_generator_cycle_with_trace(
         trace,
         density_corridor,
         cycle_distance,
+        working_subdivision,
+        complexity_corridor,
+        state_complexity_milli,
+        state_depth_diversity_milli,
     })
 }
 
@@ -407,6 +461,8 @@ pub enum GeneratorError {
     DumkaStructure { message: String },
     #[error("dumka {name} must be 0-100, got {value}")]
     DumkaRange { name: &'static str, value: u32 },
+    #[error("{message}")]
+    DumkaDepth { message: String },
     #[error("dumka euclidMaxRun must be 1-8, got {value}")]
     DumkaMaxRun { value: u32 },
     #[error("dumka plan invalid: {message}")]

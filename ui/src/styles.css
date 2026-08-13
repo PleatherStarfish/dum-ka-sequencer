@@ -6273,6 +6273,32 @@ input:disabled {
   font-size: 0.72rem;
 }
 
+.evolve-plan-depth-insight {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 0 7px;
+  min-width: 112px;
+  padding: 5px 7px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--violet) 8%, var(--surface-0));
+  border: 1px solid color-mix(in srgb, var(--violet) 34%, var(--line));
+  border-radius: var(--radius-control);
+  font-size: 0.66rem;
+}
+
+.evolve-plan-depth-insight b {
+  color: var(--violet);
+  font-variant-numeric: tabular-nums;
+}
+
+.evolve-plan-depth-insight em {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  font-size: 0.6rem;
+  font-style: normal;
+}
+
 .evolve-plan-window-note {
   margin: -4px 0 0;
   padding: 5px 8px;
@@ -6350,6 +6376,46 @@ input:disabled {
   align-items: end;
   height: 44px;
   border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.evolve-plan-complexity-lane {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--evolve-label-width) repeat(var(--evolve-cycle-count), var(--evolve-cycle-width));
+  width: max-content;
+  min-width: 100%;
+  align-items: end;
+  height: 30px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.evolve-plan-complexity-cell {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
+}
+
+.evolve-plan-complexity-band {
+  position: absolute;
+  right: 2px;
+  left: 2px;
+  min-height: 1px;
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--violet) 48%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--violet) 48%, transparent);
+}
+
+.evolve-plan-complexity-mark {
+  position: absolute;
+  right: 5px;
+  left: 5px;
+  height: 2px;
+  background: var(--muted);
+}
+
+.evolve-plan-complexity-cell.is-within-corridor .evolve-plan-complexity-mark {
+  background: var(--violet);
 }
 
 .evolve-plan-step-cell {
@@ -6533,6 +6599,7 @@ input:disabled {
 .evolve-plan-lane.is-desyncopate { --lane-accent: var(--data-blue); }
 .evolve-plan-lane.is-fragment { --lane-accent: var(--curve-orange); }
 .evolve-plan-lane.is-consolidate { --lane-accent: var(--yellow); }
+.evolve-plan-lane.is-morph { --lane-accent: var(--magenta); }
 .evolve-plan-lane.is-euclid { --lane-accent: var(--magenta); }
 .evolve-plan-lane.is-stochastic { --lane-accent: var(--theme-rail); }
 
@@ -6725,6 +6792,11 @@ input:disabled {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--curve-orange) 42%, transparent);
 }
 
+.evolve-plan-trace.is-complexity-clamped {
+  border-color: var(--violet);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet) 46%, transparent);
+}
+
 .evolve-plan-inspector {
   display: grid;
   align-content: start;
@@ -6914,6 +6986,46 @@ input:disabled {
   background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
+}
+
+.evolve-plan-morph-target {
+  display: grid;
+  gap: 5px;
+}
+
+.evolve-plan-morph-target label {
+  display: grid;
+  gap: 5px;
+}
+
+.evolve-plan-morph-target textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 6px 7px;
+  resize: vertical;
+  color: var(--text);
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.evolve-plan-morph-target p,
+.evolve-plan-morph-target small {
+  margin: 0;
+  color: color-mix(in srgb, var(--red) 72%, var(--text));
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.evolve-plan-morph-target p.is-valid {
+  color: color-mix(in srgb, var(--green) 70%, var(--text));
+}
+
+.evolve-plan-morph-target small {
+  color: var(--faint);
 }
 
 .evolve-plan-scope-picker > div {
@@ -9030,6 +9142,228 @@ input:disabled {
 
 .dumka-structure-row button {
   flex: 0 0 auto;
+}
+
+.dumka-depth-palette {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.dumka-depth-palette > span {
+  display: grid;
+  gap: 1px;
+}
+
+.dumka-depth-palette > span b,
+.dumka-depth-controls legend,
+.dumka-depth-control-head b,
+.dumka-placement-bias b {
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.dumka-depth-palette > span em,
+.dumka-depth-control-head em,
+.dumka-placement-bias em {
+  color: var(--faint);
+  font-size: 0.64rem;
+  font-style: normal;
+}
+
+.dumka-depth-palette > div {
+  display: flex;
+  gap: 3px;
+}
+
+.dumka-depth-palette button {
+  min-width: 34px;
+  min-height: 24px;
+  padding: 2px 6px;
+  font-size: 0.68rem;
+}
+
+.dumka-depth-palette button.is-active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.dumka-depth-palette output {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dumka-depth-palette p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: color-mix(in srgb, var(--red) 72%, var(--text));
+  font-size: 0.68rem;
+}
+
+.dumka-depth-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 9px;
+  background: var(--surface-1);
+  border: 1px solid color-mix(in srgb, var(--violet) 32%, var(--line));
+  border-radius: var(--radius-control);
+}
+
+.dumka-depth-control-head,
+.dumka-placement-bias > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.dumka-depth-insight {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 1px 8px;
+  padding: 5px 7px;
+  background: color-mix(in srgb, var(--violet) 8%, var(--surface-0));
+  border-left: 2px solid color-mix(in srgb, var(--violet) 65%, var(--line));
+}
+
+.dumka-depth-insight span,
+.dumka-depth-insight output {
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.dumka-depth-insight output {
+  color: var(--violet);
+  font-variant-numeric: tabular-nums;
+}
+
+.dumka-depth-insight em {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.rhythm-builder-mini {
+  min-width: 0;
+  padding: 5px;
+  overflow: hidden;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.rhythm-builder-mini .rb-row {
+  min-height: 26px;
+}
+
+.rhythm-builder-mini .rb-cell,
+.rhythm-builder-mini .rb-group-handle {
+  min-height: 24px;
+  padding: 2px 3px;
+  pointer-events: none;
+}
+
+.dumka-depth-control-head > span {
+  display: grid;
+}
+
+.dumka-depth-control-head output,
+.dumka-placement-bias output {
+  color: var(--violet);
+  font-size: 0.7rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.dumka-depth-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.dumka-depth-field-grid label,
+.dumka-placement-bias {
+  display: grid;
+  gap: 4px;
+}
+
+.dumka-depth-field-grid label > span {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.dumka-geometric-field {
+  --dumka-placement-bias: 0%;
+  --dumka-field-slots: 1;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--dumka-field-slots), minmax(1px, 1fr));
+  align-items: end;
+  height: 24px;
+  padding: 3px 5px;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--blue) 15%, transparent),
+      color-mix(in srgb, var(--violet) 16%, transparent)
+        var(--dumka-placement-bias),
+      color-mix(in srgb, var(--surface-0) 88%, transparent)
+        var(--dumka-placement-bias)
+    ),
+    var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.dumka-geometric-field i {
+  height: var(--dumka-field-height, 8%);
+  min-height: 2px;
+  margin-inline: 1px;
+  opacity: 0.45;
+  background: var(--muted);
+}
+
+.dumka-geometric-field b {
+  position: absolute;
+  inset-block: 2px;
+  left: var(--dumka-placement-bias);
+  width: 1px;
+  background: var(--violet);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--violet) 55%, transparent);
+  transform: translateX(-1px);
+}
+
+.dumka-depth-controls > p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .dumka-depth-palette {
+    grid-template-columns: 1fr;
+  }
+
+  .dumka-depth-palette p {
+    grid-column: auto;
+  }
 }
 
 .dumka-roll-row {

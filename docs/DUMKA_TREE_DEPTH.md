@@ -1,7 +1,8 @@
 # Design note — M3.95 "Depth": subdivision palettes, geometric placement, transport morphing
 
-Status: **architecture for implementation.** This is the implementing
-agent's specification. Read `AGENTS.md`, `DUMKA_EVOLUTION.md`,
+Status: **implemented in the M3.95 engine and editor; release verification is
+tracked in §8.** This is the normative implementation reference. Read
+`AGENTS.md`, `DUMKA_EVOLUTION.md`,
 `DUMKA_EVOLVE_PLAN.md`, `DUMKA_PERCEPTUAL_DISTANCE.md`, and
 `DUMKA_SPAN_TIES_AND_DENSITY.md` first; every contract there stays in
 force. The source ideas in `rhythm-evolution-models.md` (torus transport /
@@ -52,13 +53,19 @@ directed, provably gradual movement toward a target pattern. The
 perceptual prefix search and evolution curve remain the sole pacing
 authority; the v1 model already prices tuplet/ratio complexity and
 syncopation, so refined-lattice edits cost honest perceptual distance.
+Mean depth is not mistaken for variety: a separate, insight-only
+**depth-diversity** statistic reports the normalized entropy of the same
+reduced-denominator inventory. A uniformly ternary pattern may therefore
+have high mean depth and zero diversity, while a mixture of beat, binary,
+and ternary positions reports a positive spread.
 
 Model C (spectral-invariance wander) is **deferred**: its musical value
 ("keeps sounding like itself while changing") is substantially covered by
 perceptual pacing, exact homometry classes are small (source doc's own
 caveat), and it would add a third ranking system before the first two are
-calibrated. Its metrics (|F(1)| balance, low-m magnitudes) DO land now as
-insight-panel readouts so a future milestone can promote them to rails.
+calibrated. The fixed-point spectrum currently lands as the candidate
+placement field; a separate authored spectral-invariance rail or wander
+operator does not.
 
 ## 2. Phase 0 — precondition: clear the open audit findings
 
@@ -89,15 +96,14 @@ pinned trajectory and golden with palette []).
 ### Working lattice
 
 ```
-R = product of palette levels not already dividing requiredSubdivision^∞
-    (i.e., primes p in palette with p ∤ requiredSubdivision contribute p;
-     a palette prime already present in the factorization contributes one
-     MORE power of p — palette {2} on subdivision 4 means 8ths-of-beat
-     positions: R = 2)
+P = sort(deduplicate(subdivisionPalette))
+R = Π p, for p in P
 W = requiredSubdivision × R
 ```
 
-Exact rule: for each palette entry `p`, multiply `R` by `p` once.
+Exact rule: for each unique palette entry `p`, multiply `R` by `p` once. A
+prime already present in the seed factorization contributes one **additional**
+power: palette `{2}` on required Subdivision 4 produces working Subdivision 8.
 Validation (pinned `GeneratorError::DumkaPlanInvalid`-style messages on a
 new `DumkaRange`-family variant):
 - entries ∈ {2,3,5,7}: `dumka subdivisionPalette entries must be 2, 3, 5, or 7, got {v}`
@@ -165,8 +171,9 @@ verbatim: the metric, the Promote/Demote micro-operators, the
 normalization flows with their termination arguments, and the
 density-before-complexity ordering rule.
 
-**Rails**, cloned from the density corridor wholesale (same shapes, same
-precedence *corridor > plan > leash*, same trace vocabulary):
+**Rails**, cloned from the density corridor wholesale (same shapes, precedence
+*density corridor > complexity corridor > plan > leash*, same trace
+vocabulary):
 - Params `complexityFloor` / `complexityCeiling` (0..=100000 milli,
   serde defaults 0/100000 ⇒ off ⇒ byte-compat), validation floor ≤
   ceiling, cycle-start automation targets
@@ -177,10 +184,12 @@ precedence *corridor > plan > leash*, same trace vocabulary):
   candidate whose resulting state complexity exceeds the ceiling is
   clamped/skipped with `ComplexityCorridorClamp` trace detail); floor
   symmetric for Remove/Consolidate of the last refined material;
-  `normalize_to_complexity_corridor` when the rail moves under an
-  inherited state (weakest-first level demotions: move offending onsets
-  to the nearest coarser-level silent slot, deterministic, trial-
-  projected; if none, remove — mirrored from density normalization).
+  `normalize_to_complexity_corridor` when the rail moves under an inherited
+  state. It visits shallowest-first for a floor and deepest-first for a
+  ceiling; each onset moves to the smallest-price-step admissible silent slot,
+  deterministically and trial-projected. Complexity normalization does not
+  change onset count—if no move is possible, it reports the clamp/stall rather
+  than borrowing density normalization's add/remove operations.
 - Preview DTO: `complexityCorridor` + per-cycle realized
   `stateComplexityMilli` beside `cycleDistance` (the Evolve editor draws
   it as a second thin band lane under Step size — same cell machinery).
@@ -257,8 +266,8 @@ Depth needs a force, not just permission. Define two deterministic
 micro-operators used by corridor normalization (and only there — they
 are constraint flows, not part of the stochastic/curve draw):
 
-**Promote(i)**: onset `i` at slot `s` moves to the admissible slot `s′`
-maximizing nothing and minimizing displacement, subject to:
+**Promote(i)**: onset `i` at slot `s` moves to an admissible slot `s′`,
+subject to:
 
 ```
 ξ̂(den(s′)) > ξ̂(den(s))                    (strictly deeper price)
@@ -270,13 +279,29 @@ maximizing nothing and minimizing displacement, subject to:
 s′ silent and uncovered; result disjoint; trial projection passes.
 ```
 
-Tie-break: smallest displacement, then the blended placement rank
-(§Phase 3), then smallest slot. **Demote(i)** is the mirror
-(`ξ̂` strictly smaller, same displacement bound computed from the
-TARGET's period). Both preserve onset count, duration, and stroke class;
-both are their own inverse's witness (a promotion's reverse demotion is
-admissible by construction unless material moved into the vacated slot —
-no exactness claim is made, unlike figures).
+Candidate order is the musical ladder, not the nearest raw grid point:
+
+```
+Promote: (smallest positive Δξ̂, displacement, placement rank, slot)
+Demote:  (smallest positive −Δξ̂, displacement, placement rank, slot)
+```
+
+The depth-price change is therefore the primary key. Displacement decides
+only between targets on the cheapest strictly deeper (or shallower) level;
+the blended placement rank (§Phase 3) and slot are final deterministic
+ties. This correction is load-bearing. On `W = 12`, a proximity-first
+Promote from a beat start could choose adjacent slot 1, whose denominator 12
+costs `ξ̂(12) = 980`, and jump immediately to the most exotic available
+position. Price-first ordering instead exposes the intended ladder
+beat (`0`) → eighth (`210`) → sixteenth (`420`) → triplet (`560`),
+with composite levels following their exact price. **Demote(i)** mirrors the
+same smallest-price-step rule (`ξ̂` strictly smaller, displacement bound
+computed from the target's period).
+
+Both operators preserve onset count, duration, and stroke class; both are
+their own inverse's witness (a promotion's reverse demotion is admissible by
+construction unless material moved into the vacated slot — no exactness claim
+is made, unlike figures).
 
 **Floor flow** (the push): while `C(x) < complexityFloor` and progress
 is possible: promote the onset with the smallest `δ(sᵢ)` whose Promote
@@ -343,14 +368,21 @@ the whole figure. Per cycle, applications are bounded by `maxOperations`
 (curve/perceptual directives, ≤ 8) or the per-cycle quota (legacy/quota
 directives) ⇒ `|ΔC|` per cycle ≤ `100000·maxOps/k` in the loose worst
 case. Two binding constraints make practice far tighter and are the real
-control story: (i) the corridor clamps every candidate, so `C` can never
-leave `[floor, ceiling]` between normalizations — pinned as a proptest
-invariant ("complexity never observed outside the rail after cycle's
-end, over random palettes/plans/curves"); (ii) the v1 perceptual model's
-tuplet/ratio component prices refined placements, so a curve target of
-`T` milli per cycle bounds depth flux through the distance budget. The
-acceptance scenario pins an empirical per-cycle `ΔC` trace against the
-analytic bound.
+control story: (i) every operator candidate is rejected before it would leave
+an already-satisfied corridor or move a violated state farther past its active
+limit; (ii) the v1 perceptual model's tuplet/ratio component prices refined
+placements, so a curve target of `T` milli per cycle bounds depth flux through
+the distance budget.
+
+A moving or newly enabled rail is not always reachable in one cycle. The
+normalizer touches each original onset at most once so the constraint flow
+itself stays gradual; projection, occupied targets, and the discrete set of
+depth prices can also make an exact boundary unattainable. In that case the
+resolved `C` may remain outside the band, but an independent
+`ComplexityCorridorClamp { limit, complexityMilli }` is mandatory. This is the
+same honesty rule as a stalled density normalization: never silently claim
+that an unreachable rail was met. Acceptance therefore asserts "inside or
+truthfully clamped," not unconditional inside-band output.
 
 ### 4e. Spanning tuplets: expressibility and price (theorem + tests)
 
@@ -380,7 +412,44 @@ element `ξ̂(k / gcd(k, b))`. Consequences, stated and pinned:
   ternary-landing syncopation is clamped while the binary-landing one
   passes.
 
-### What §4a–e buys, mapped to the complaint
+### 4f. Depth diversity (spread, not another mean)
+
+`C(x)` is deliberately context-free and first-order: it answers "how deep is
+the average attack?" It cannot answer "how many different depth classes are
+coexisting?" Uniform triplets can satisfy a high complexity floor while being
+as depth-monotone as uniform sixteenths. Retuning Barlow's `ξ̂` table cannot
+repair that missing statistic because every onset is still priced
+independently.
+
+Let `n_q` be the number of attacks whose reduced within-beat denominator is
+`q`, let `k = Σ_q n_q`, and let `τ(W)` be the number of divisors of the working
+Subdivision. With `p_q = n_q/k`, the insight readout is normalized Shannon
+entropy (Shannon 1948, applied here to the denominator-class distribution):
+
+```
+H(x) = − Σ_q p_q log2(p_q)
+D(x) = round(100000 · H(x) / log2(min(k, τ(W))))
+```
+
+For fewer than two attacks, one occupied denominator class, or a zero
+normalizer, `D(x) = 0`. The engine evaluates `log2` with a pinned 16-step Q16
+integer recurrence; no floating point enters replay or ranking. Counts are
+order-free and beat-class rotation leaves the denominator multiset unchanged.
+Pinned anchors on `W = 12` are:
+
+- uniformly triplet attacks: `D = 0`;
+- `{denominator 1 × 2, denominator 2 × 1, denominator 3 × 1}`:
+  `D = 75000`; and
+- one attack at every available denominator class: `D = 100000`.
+
+`D` ships as `stateDepthDiversityMilli` in preview and as an insight readout,
+not as an admissibility rail. The only enforced depth rail remains the mean
+complexity corridor `[complexityFloor, complexityCeiling]`. Promoting diversity
+to an authored corridor would require separate musical calibration and a
+normalization flow that can change the denominator histogram without fighting
+the mean rail.
+
+### What §4a–f buys, mapped to the complaint
 
 - "Evolution stays in the prevailing tuplet" → Promote flow + palette:
   depth has a *force* (floor), not just permission.
@@ -393,6 +462,9 @@ element `ξ̂(k / gcd(k, b))`. Consequences, stated and pinned:
   prices the result; the complexity corridor prices the depth — four
   independent, individually-testable mathematical answers instead of one
   heuristic.
+- "A uniformly deep result is still monotonous" → `D(x)` exposes the
+  denominator spread independently of `C(x)`; it is visible evidence, not an
+  uncalibrated constraint.
 
 ## 5. Phase 3 — geometric placement (the syncopation-aware chooser)
 
@@ -413,7 +485,7 @@ Adapted from source Model B (§4.2–4.3), determinism-first.
   with `w_m = ⌊2^16/m⌋` (the doc's `m^{-α}, α=1`), harmonics `m ≡ 0
   (mod k)` skipped per the doc's evenness note.
 - `geometric_add_order(state) -> Vec<u32>`: silent-uncovered slots sorted
-  ascending by ΔE_ins (largest void first), ties by slot.
+  ascending by ΔE_ins (lowest-energy insertion first), ties by slot.
   `geometric_remove_order`: sounding onsets descending by redundancy
   (ΔE_del), ties by slot. Both pure, integer, exact.
 
@@ -439,11 +511,15 @@ chooser asked for**: bias decides metric-reinforcing vs gap-seeking
 placement; the working lattice decides which levels exist to seek into;
 the complexity corridor bounds how deep; the curve bounds how fast.
 
-Verification adapted from source §7.1–7.2 (exact, not stochastic): with
-bias 100, corridor off, greedy insertion from the empty state for k =
-1..=W must agree with `bjorklund(k, W)` up to rotation for the pinned
-divisor cases, and the divergent cases are snapshot-pinned (they are the
-harmonic-weighting fingerprint, per the doc's "Test it" note).
+Verification adapted from source §7.1–7.2 is exact, not stochastic.
+`placementBias = 100` optimizes this pinned low-harmonic energy; it is **not**
+specified as another spelling of Bjorklund. Greedy spectral insertion agrees
+with a maximally even necklace for some divisor cases and diverges for others
+(for example, the `W = 8`, `k = 4` spectral prefix is `[0, 4, 1, 6]` under the
+pinned harmonic weights). Agreement cases and divergence fingerprints must be
+snapshot-pinned separately. Treating every divergence as a bug would silently
+replace the authored geometric objective with the Euclidean operator's
+different objective.
 
 ## 6. Phase 4 — transport morph (directed gradualism)
 
@@ -459,20 +535,22 @@ Adapted from source Model A; everything integer on the working lattice.
   rotation). Unequal: the λ_e edit DP from the doc, exact integers,
   `λ_e = round(0.4 × meanIOIslots)` per its scale-free caveat, rotations
   enumerated, ties by rotation then lexicographic backtrack (pinned).
-- Pacing: the directive's existing pacing modes drive cumulative
-  progress `τ ∈ [0, target]`; per-cycle, each matched onset advances
-  along its shortest arc by its Bresenham share of `τ`-delta (per-onset
-  accumulators keyed (directive.id, onset match index) in fold state —
-  same RangeAccumulator discipline). Unmatched deletions/insertions fire
-  at the τ-threshold order defined by cost (pinned). Endpoint exactness:
-  at pacing completion the state's onset set equals the target's exactly
-  (source §7.4 as a hard test). Monotonicity: perceptual distance to the
-  target is non-increasing per cycle along the morph (test over pinned
-  cases; if the v1 metric refuses monotonicity on some case, pin the
-  actual curve and document — the OT geodesic guarantees monotone
-  transport cost, not monotone v1 distance).
-- Guards: corridor(s), projection, tie fence all apply per cycle; a
-  vetoed sub-step retries next cycle via the accumulator (never a burst).
+- One Morph operation recomputes the deterministic alignment, then performs
+  the first remaining micro-step: move one matched attack by one slot on its
+  shortest circular arc; once co-located, adopt its target duration/class; or
+  insert/delete one unmatched attack. It never emits an interpolated or
+  phantom onset.
+- Pacing reuses the directive's ordinary quota machinery. Per-cycle ranges
+  recompute the remaining micro-step count; Linear and Ease-in/out freeze one
+  finite target at the range start and distribute it through the existing
+  integer `RangeAccumulator`. The endpoint tests pin exact target equality,
+  including a palette-enabled spanning 5:2 target. Perceptual magnitude uses
+  the same one-step path and chooses its nearest admissible prefix. Remaining
+  transport/edit work is monotone; model-`v1` perceptual distance itself is
+  not claimed to be a monotone geodesic.
+- Guards: density/complexity corridors, scope, projection, and the tie fence
+  apply to every micro-step. A veto ends the current legal frontier and is
+  traced; gradual pacing never repays failed work as a later catch-up burst.
 - Roadmap note: this delivers the M6+ "morphing toward a second target
   pattern" item early, scoped to directives.
 
@@ -480,34 +558,43 @@ Adapted from source Model A; everything integer on the working lattice.
 
 - **Generator editor**: palette chips (2/3/5/7 toggles) beside the
   structure row with the live working-grid readout and cap warnings;
-  placementBias slider in the Density (Barlow) card with an insight-lane
-  overlay of the geometric field (dumkaMetrics mirrors ΔE_ins via the
-  same fixed-point tables; metrics contract fixture extended — TS never
-  re-derives trig independently).
+  placementBias slider in the Depth card, with metric and void endpoints.
+  The browser's display-only geometric mirror uses the Rust-emitted root
+  vectors and the same integer recurrence to render the dynamic slot-field
+  profile beneath the slider; it never evaluates independent trigonometry or
+  participates in playback. The mean-complexity corridor and independent Depth
+  diversity readout are labelled separately; realized State complexity is
+  plotted in Evolve.
 - **Evolve editor**: complexity band lane under Step size (realized
   `stateComplexityMilli` + corridor band, same cell code); Morph
   directive inspector (target pattern textarea with mirror validation +
   compiled-target mini block view reusing rhythm-builder blocks);
   directive options gain complexity overrides + placementBias +
   subdivisionLevel filter (`options.subdivisionLevel: Option<u32>` —
-  restrict a directive's candidate slots to positions whose level index
-  matches; validation: level must exist on W).
+  restrict a directive's candidate slots to positions whose reduced
+  denominator is divisible by that enabled palette prime; validation: level
+  must be 2/3/5/7 and present in the palette).
 - Inventory rows, UI_AND_INTERACTION, DUMKA_EVOLUTION operator-table
   updates; DUMKA_FIGURES note that fragment sizes now reach palette
   levels.
 
 ## 8. Parity, fixtures, invariants, bench (non-negotiable checklist)
 
-- TS mirrors: required/working structure, complexity metric, geometric
-  orders (fixed-point tables via contract fixture — no independent trig),
-  morph validation messages. All byte-exact with Rust-emitted fixtures.
+- TS mirrors: required/working structure, Morph validation messages, and the
+  display-only fixed-point geometric tables/orders. Rust emits the root
+  vectors, order cases, blend endpoints, and the `W = 8`, `k = 4`
+  `[0, 4, 1, 6]` fingerprint into the metrics contract; TypeScript advances
+  the same recurrence rather than evaluating trigonometry. Complexity and
+  diversity remain backend-owned preview values. Two-way DTO fixtures pin the
+  exposed fields.
 - Mock: refuses any folded cycle (already does); validates every new
   param with pinned messages at cycle 0 (close the audit's plan-
   validation gap as part of Phase 0).
 - DTO/patch fixtures both directions + no-op proofs; STRIPPED_PATCH_KEYS
   screen for every new key (`subdivisionPalette`, `placementBias`,
   `complexityFloor/Ceiling`, `morphTarget`, `subdivisionLevel`,
-  `workingSubdivision`, `stateComplexityMilli`, `complexityCorridor`);
+  `workingSubdivision`, `stateComplexityMilli`,
+  `stateDepthDiversityMilli`, `complexityCorridor`);
   v1 shape-validator allowlists extended.
 - Invariants strategies draw palettes/bias/corridors/morph targets from
   the fuzz pattern set; `parallel_transport_queue` arm extended;
@@ -516,7 +603,12 @@ Adapted from source Model A; everything integer on the working lattice.
   ternary emergence), `dumka_morph` (pinned morph trajectory).
 - Bench: fold-to-10k with palette {2,3} + bias 50 + curve; budget note.
   Spectrum incremental updates keep per-candidate cost O(M); document
-  measured numbers next to the existing ~17 ms baseline.
+  measured numbers next to the existing corridor baseline. The implemented
+  `generator/dumka-depth-fold-cycle-10000` case uses working Subdivision 24
+  and a nonzero curve tail that stays inside the 4,096-score lifetime budget;
+  one local release iteration measured 57.170 ms (checksum 57). The separate
+  density-corridor plan's documented median is ~10.66 ms; both are report-only
+  machine measurements rather than CI thresholds.
 - PROPTEST_CASES=2048 sweep on invariants before calling it done (the
   rotation-wrap bug was found at 2048, not 256 — treat that as the
   minimum bar for lattice-affecting changes).
@@ -528,6 +620,8 @@ Adapted from source Model A; everything integer on the working lattice.
   extension; the palette covers the musically demanded cases within
   Subdivision ≤ 64.
 - No Model C wander family yet (metrics land, operator deferred).
+- No diversity corridor. `stateDepthDiversityMilli` is observability only;
+  mean depth remains the one enforced complexity rail.
 - No changes to perceptual model v1 weights (immutable; findings feed v2
   calibration per DUMKA_PERCEPTUAL_DISTANCE.md's MLDS protocol).
 - No relaxation of: one seam, tie handshake, corridor/plan/leash
@@ -538,8 +632,9 @@ Adapted from source Model A; everything integer on the working lattice.
 1. Seed `dum . ka .` (subdivision 1), palette {2,3}, complexity ceiling
    ramped 0→60% over 24 cycles by directives, curve 2.0→6.0: by ~cycle
    12 the piece audibly contains 8th-note and triplet material it could
-   never have reached before, arriving gradually, never exceeding the
-   complexity band, with every cycle's step size tracking the curve.
+   never have reached before, arriving gradually, with every cycle inside the
+   reachable complexity band or carrying explicit clamp truth, and with step
+   size tracking the curve.
 2. Same seed, bias 0 vs bias 100 at fixed density: bias 0 adds land on
    strong beats; bias 100 adds land in gaps and the Sioros syncopation
    readout (perceptual breakdown) visibly rises. Both replay
@@ -548,6 +643,11 @@ Adapted from source Model A; everything integer on the working lattice.
    5–20 reaches the target exactly at 20, monotonically, with cardinality
    honest at every intermediate cycle (no phantom onsets).
 4. Scenario 1's per-cycle complexity trace `ΔC(c)` never exceeds the
-   §4d analytic bound and never exits the corridor; disabling the floor
-   reproduces today's grid-locked behavior byte-for-byte on an empty
-   palette (the negative control).
+   §4d analytic bound; every out-of-band state names the active clamp and
+   cannot be driven farther outside by operator work. Disabling the floor
+   reproduces today's grid-locked behavior byte-for-byte on an empty palette
+   (the negative control).
+5. Two states can have comparable `C` but visibly different `D`: a uniform
+   denominator inventory reads `D = 0`, while a mixed beat/binary/ternary
+   inventory reads positive. Changing `D` alone never admits, rejects, or
+   reorders an evolution candidate.

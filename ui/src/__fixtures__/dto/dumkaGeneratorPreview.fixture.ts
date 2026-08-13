@@ -26,7 +26,7 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 1,
           "start": 8,
-          "len": 7,
+          "len": 1,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false,
@@ -34,6 +34,15 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         },
         {
           "index": 2,
+          "start": 9,
+          "len": 6,
+          "rest": true,
+          "tiedFromPrevious": false,
+          "tiedToNext": false,
+          "velocity": 96
+        },
+        {
+          "index": 3,
           "start": 15,
           "len": 1,
           "rest": false,
@@ -42,10 +51,19 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
           "velocity": 96
         },
         {
-          "index": 3,
+          "index": 4,
           "start": 16,
-          "len": 4,
+          "len": 1,
           "rest": false,
+          "tiedFromPrevious": false,
+          "tiedToNext": false,
+          "velocity": 96
+        },
+        {
+          "index": 5,
+          "start": 17,
+          "len": 3,
+          "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 96
@@ -104,8 +122,17 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
         {
           "index": 5,
           "start": 16,
-          "len": 4,
+          "len": 1,
           "rest": false,
+          "tiedFromPrevious": false,
+          "tiedToNext": false,
+          "velocity": 96
+        },
+        {
+          "index": 6,
+          "start": 17,
+          "len": 3,
+          "rest": true,
           "tiedFromPrevious": false,
           "tiedToNext": false,
           "velocity": 96
@@ -281,5 +308,12 @@ export const dumkaGeneratorPreviewFixture: GeneratorPreview = {
   "cycleDistance": {
     "modelVersion": "v1",
     "distanceMilli": 0
-  }
+  },
+  "workingSubdivision": 20,
+  "complexityCorridor": {
+    "floor": 12000,
+    "ceiling": 60000
+  },
+  "stateComplexityMilli": 43304,
+  "stateDepthDiversityMilli": 78214
 };

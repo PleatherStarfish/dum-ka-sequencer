@@ -11,6 +11,12 @@ import type {
   DirectiveTraceEntry,
   EvolutionDirective,
 } from "./bridge";
+import {
+  compileDumkaPattern,
+  MAX_DUMKA_PATTERN_LENGTH,
+  normalizeDumkaSubdivisionPalette,
+} from "./dumkaPattern";
+import { dumkaSubdivisionLevelExists } from "./dumkaMetrics";
 
 export type {
   DirectiveEuclidRestPolicy as EuclidRestPolicy,
@@ -33,6 +39,7 @@ export const DIRECTIVE_FAMILIES = [
   "fragment",
   "consolidate",
   "euclid",
+  "morph",
   "stochastic",
 ] as const;
 
@@ -42,6 +49,14 @@ export const MAX_PERCEPTUAL_DISTANCE_MILLI = 100_000;
 export const MAX_PERCEPTUAL_OPERATIONS = 256;
 /** Mirrors the engine's cumulative, lifetime prefix-scoring admission bound. */
 export const MAX_PERCEPTUAL_SCORING_WORK = 4_096;
+export const MAX_COMPLEXITY_MILLI = 100_000;
+export const MAX_SUBDIVISION_LEVEL_INDEX = 0xffff_ffff;
+
+export const DEFAULT_SUBDIVISION_PALETTE: readonly number[] = [];
+
+export function normalizeSubdivisionPalette(value: unknown): number[] {
+  return normalizeDumkaSubdivisionPalette(value);
+}
 
 /** Mirrors plan.rs curve caps. */
 export const MAX_CURVE_POINTS = 64;
@@ -280,6 +295,7 @@ export const DIRECTIVE_FAMILY_LABELS: Record<DirectiveFamily, string> = {
   fragment: "Fragment",
   consolidate: "Consolidate",
   euclid: "Euclid",
+  morph: "Morph",
   stochastic: "Stochastic",
 };
 
@@ -288,6 +304,11 @@ export const DEFAULT_DIRECTIVE_OPTIONS: Readonly<DirectiveOptions> = {
   fillComplexity: null,
   densityFloor: null,
   densityCeiling: null,
+  complexityFloor: null,
+  complexityCeiling: null,
+  placementBias: null,
+  subdivisionLevel: null,
+  morphTarget: null,
   euclidMaxRun: null,
   euclidInvert: null,
   euclidRestPolicy: null,
@@ -393,6 +414,16 @@ function normalizeOverride(
     : clamp(value, min, max, min);
 }
 
+function normalizeMorphTarget(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length > MAX_DUMKA_PATTERN_LENGTH) return null;
+  }
+  return value;
+}
+
 export function normalizeDirectiveOptions(
   value: Partial<DirectiveOptions> | null | undefined
 ): DirectiveOptions {
@@ -400,11 +431,39 @@ export function normalizeDirectiveOptions(
   const densityFloor = normalizeOverride(source.densityFloor, 0, 100);
   const densityCeiling = normalizeOverride(source.densityCeiling, 0, 100);
   const corridorPaired = densityFloor !== null && densityCeiling !== null;
+  const complexityFloor = normalizeOverride(
+    source.complexityFloor,
+    0,
+    MAX_COMPLEXITY_MILLI
+  );
+  const complexityCeiling = normalizeOverride(
+    source.complexityCeiling,
+    0,
+    MAX_COMPLEXITY_MILLI
+  );
+  const complexityPaired =
+    complexityFloor !== null && complexityCeiling !== null;
+  const subdivisionLevel =
+    typeof source.subdivisionLevel === "number" &&
+    Number.isInteger(source.subdivisionLevel) &&
+    source.subdivisionLevel >= 0 &&
+    source.subdivisionLevel <= MAX_SUBDIVISION_LEVEL_INDEX
+      ? source.subdivisionLevel
+      : null;
   return {
     barlowTemperature: normalizeOverride(source.barlowTemperature, 0, 100),
     fillComplexity: normalizeOverride(source.fillComplexity, 0, 100),
     densityFloor: corridorPaired ? Math.min(densityFloor, densityCeiling) : null,
     densityCeiling: corridorPaired ? Math.max(densityFloor, densityCeiling) : null,
+    complexityFloor: complexityPaired
+      ? Math.min(complexityFloor, complexityCeiling)
+      : null,
+    complexityCeiling: complexityPaired
+      ? Math.max(complexityFloor, complexityCeiling)
+      : null,
+    placementBias: normalizeOverride(source.placementBias, 0, 100),
+    subdivisionLevel,
+    morphTarget: normalizeMorphTarget(source.morphTarget),
     euclidMaxRun: normalizeOverride(source.euclidMaxRun, 1, 8),
     euclidInvert: normalizeOverride(source.euclidInvert, 0, 100),
     euclidRestPolicy:
@@ -523,6 +582,7 @@ export function normalizeEvolutionPlan(
         }
       : null;
     const magnitude = normalizeDirectiveMagnitude(row.magnitude, row.family);
+    const options = normalizeDirectiveOptions(row.options);
     return withMagnitude({
       ...row,
       id,
@@ -536,7 +596,10 @@ export function normalizeEvolutionPlan(
           ? DEFAULT_DIRECTIVE_PACING
           : normalizeDirectivePacing(row.pacing, row.family),
       scope,
-      options: normalizeDirectiveOptions(row.options),
+      options: {
+        ...options,
+        morphTarget: row.family === "morph" ? options.morphTarget : null,
+      },
       sourceIndex,
     }, magnitude);
   });
@@ -554,7 +617,27 @@ function overlapCycle(
   return cycle <= Math.min(a.toCycle, b.toCycle) ? cycle : null;
 }
 
-export function validateEvolutionPlan(plan: readonly EvolutionDirective[]): PlanEditResult {
+export function subdivisionLevelValidationError(
+  plan: readonly EvolutionDirective[],
+  workingSubdivision: number
+): string | null {
+  const invalid = plan.find(
+    (row) =>
+      row.options.subdivisionLevel !== null &&
+      !dumkaSubdivisionLevelExists(
+        row.options.subdivisionLevel,
+        workingSubdivision
+      )
+  );
+  return invalid
+    ? `dumka plan invalid: directive ${invalid.id} subdivisionLevel ${invalid.options.subdivisionLevel} does not exist on working Subdivision ${workingSubdivision}`
+    : null;
+}
+
+export function validateEvolutionPlan(
+  plan: readonly EvolutionDirective[],
+  workingSubdivision?: number
+): PlanEditResult {
   if (plan.length > MAX_EVOLUTION_DIRECTIVES) {
     return {
       ok: false,
@@ -562,9 +645,36 @@ export function validateEvolutionPlan(plan: readonly EvolutionDirective[]): Plan
     };
   }
   const normalized = normalizeEvolutionPlan(plan);
+  const morphWithoutTarget = normalized.find(
+    (row) => row.family === "morph" && row.options.morphTarget === null
+  );
+  if (morphWithoutTarget) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${morphWithoutTarget.id} morph requires options.morphTarget`,
+    };
+  }
+  const silentMorph = normalized.find((row) => {
+    if (row.family !== "morph" || row.options.morphTarget === null) return false;
+    const compiled = compileDumkaPattern(row.options.morphTarget);
+    return compiled.ok && compiled.compiled.events.length === 0;
+  });
+  if (silentMorph) {
+    return {
+      ok: false,
+      message: `dumka plan invalid: directive ${silentMorph.id} morph target must contain at least one sounding onset`,
+    };
+  }
   const workError = perceptualScoringWorkError(normalized);
   if (workError !== null) {
     return { ok: false, message: workError };
+  }
+  if (workingSubdivision !== undefined) {
+    const levelError = subdivisionLevelValidationError(
+      normalized,
+      workingSubdivision
+    );
+    if (levelError !== null) return { ok: false, message: levelError };
   }
   for (let left = 0; left < normalized.length; left += 1) {
     for (let right = left + 1; right < normalized.length; right += 1) {
@@ -612,7 +722,8 @@ function replace(
 export function addPin(
   plan: readonly EvolutionDirective[],
   family: DirectiveFamily,
-  cycle: number
+  cycle: number,
+  morphTarget = "x"
 ): PlanEditResult {
   if (!familySet.has(family)) return { ok: false, message: "Unknown directive family" };
   if (plan.length >= MAX_EVOLUTION_DIRECTIVES) {
@@ -636,7 +747,10 @@ export function addPin(
       intensity: 25,
       pacing: DEFAULT_DIRECTIVE_PACING,
       scope: null,
-      options: { ...DEFAULT_DIRECTIVE_OPTIONS },
+      options: {
+        ...DEFAULT_DIRECTIVE_OPTIONS,
+        morphTarget: family === "morph" ? morphTarget : null,
+      },
     },
   ]);
 }
@@ -783,6 +897,22 @@ export function setDensityCorridor(
       ...row.options,
       densityFloor: corridor?.floor ?? null,
       densityCeiling: corridor?.ceiling ?? null,
+    }),
+  }));
+}
+
+/** Set or clear one paired per-directive attack-depth corridor override. */
+export function setComplexityCorridor(
+  plan: readonly EvolutionDirective[],
+  id: number,
+  corridor: { floor: number; ceiling: number } | null
+): PlanEditResult {
+  return replace(plan, id, (row) => ({
+    ...row,
+    options: normalizeDirectiveOptions({
+      ...row.options,
+      complexityFloor: corridor?.floor ?? null,
+      complexityCeiling: corridor?.ceiling ?? null,
     }),
   }));
 }

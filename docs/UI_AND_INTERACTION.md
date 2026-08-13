@@ -123,7 +123,7 @@ Roll stays unavailable until the committed notation parses, because no local
 beat grid exists to preserve otherwise.
 The required-structure readout's
 "Apply structure" button authors the per-beat recipe (pattern beats, the
-required Subdivision, no boundaries/Grouping/custom division) through the
+working Subdivision, no boundaries/Grouping/custom division) through the
 ordinary structure state. Below it, the evolution fold documented in
 [DUMKA_EVOLUTION.md](DUMKA_EVOLUTION.md) gets one insight panel per
 algorithm family, each holding its controls, a live sentence computed with
@@ -140,6 +140,20 @@ the engine's exact integer formulas, and an ⓘ-disclosed reference:
   the actual Remove/Add candidate pools at the current temperature
   outlined (pool = 1 + ⌊t·(candidates−1)/100⌋). Grids with a prime factor
   beyond 7 show the seed-verbatim notice instead of guessing.
+- **Depth** — prime palette chips 2/3/5/7 (at most two) and the live seed →
+  working-Subdivision readout; paired mean-complexity floor/ceiling controls;
+  and separate State complexity and Depth diversity values. Complexity is
+  scaled mean Barlow indigestibility and is the enforced rail. Diversity is
+  normalized entropy of the attack denominator classes and is insight only:
+  uniform triplets can be deep but have zero variety. Promote/Demote corridor
+  flow takes the smallest positive depth-price step before displacement, so
+  the controls produce a gradual depth ladder rather than nearest-slot jumps.
+- **Geometric placement** — the Placement bias slider blends Barlow strength
+  with a pinned low-harmonic gap field. Bias 0 is legacy metric placement;
+  bias 100 is spectral void-seeking. A dynamic slot-field profile under the
+  slider visualizes that blend and has an accessible metric/void percentage
+  label. The geometric field can intentionally diverge from a Bjorklund rhythm
+  and is not the Euclid family in disguise.
 - **Displacement (Sioros–Guedes)** — Syncopate/Desyncopate weights and the
   metrical-template lane (taller mark = stronger pulse, beat-level pulses
   shaded), with the reversibility and ternary type-0 rules in its
@@ -158,12 +172,14 @@ the engine's exact integer formulas, and an ⓘ-disclosed reference:
   budget spelled out in real units (⌈leash% × seed onsets⌉ = N slots), and the
   trial-projection guarantee.
 
-The lanes come from `ui/src/dumkaMetrics.ts`, a TS mirror of barlow.rs and
-sioros.rs pinned byte-for-byte by the Rust-generated
-`dumka_metrics_contract.json` fixture (same scheme as the parser
-contract); they are display-only — playback never runs through them. The
-six sliders keep their `generator.dumka.*` cycle-start automation
-targets, weights stay authored-only with serde defaults 3/3/2/0/0, and at
+The Barlow/Sioros lanes come from `ui/src/dumkaMetrics.ts`, a TS mirror pinned
+byte-for-byte by the Rust-generated `dumka_metrics_contract.json` fixture
+(same scheme as the parser contract); they are display-only — playback never
+runs through them. The same module mirrors the spectral candidate order from
+Rust-emitted Q16 root vectors and pinned cases by advancing the integer
+recurrence; it never evaluates browser trigonometry. Scalar controls keep their
+`generator.dumka.*` cycle-start automation targets, weights stay authored-only
+with serde defaults 3/3/2/0/0, and at
 rate 0 or all-zero weights the seed repeats verbatim. The rhythm builder's
 toolbar also carries an E(k,n) Euclidean fill that expands the same
 Bjorklund necklace as the notation sugar over the selected block's span.
@@ -186,6 +202,15 @@ layer in authored order. Stable directive IDs survive reorder and persistence
 because they salt the deterministic draw stream. One score supports up to 256
 directives; the editor and persistence boundary enforce the same limit before
 the engine performs overlap checks or folds a cycle.
+
+The **Morph** lane is directive-only. Its inspector supplies a target Dum-Ka
+pattern, validates that target's beat count and exact fit on the working
+Subdivision, and previews the compiled target with the rhythm-builder block
+idiom. Morph uses the same Repeat/Linear/Gentle operation pacing and the same
+perceptual legal-prefix option as other deterministic families; it is gradual
+onset transport, not an audio crossfade. Complexity overrides, Placement-bias
+overrides, and palette-level filters stay ordinary directive options and
+remain subordinate to projection and both corridors.
 
 Pins render as diamonds, ranges as bars, gradual quota pacing appears as
 Linear/Ease range treatment, disabled rows as hollow marks, and a beat-strip
@@ -246,6 +271,12 @@ fractions remain this-cycle work, not a cumulative percentage inferred from a
 partial cache. This cache never
 supplies timeline rows or playback. Generator retains the legacy stochastic knobs, annotated as
 applying only where no plan directive is active, and links directly to Evolve.
+
+Under Step size, the **Complexity** lane plots each cached cycle's backend
+state complexity inside the effective complexity band and labels an independent
+complexity clamp, including a normalization stall. The adjacent **Depth
+diversity** value is an insight readout only; the UI never draws an authored
+diversity band or describes it as an admissibility limit.
 
 Gradual quota evolution is operation pacing, not an audio crossfade. It spreads
 a fixed number of engine operations across cycle boundaries. One Rotate,

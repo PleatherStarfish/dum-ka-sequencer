@@ -625,6 +625,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rayon",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
 ]

@@ -23,6 +23,409 @@ const PRIME_PSI: Record<number, readonly number[]> = {
 
 /** Largest prime factor with a published Ψ table (barlow.rs MAX_STRATUM_PRIME). */
 export const DUMKA_MAX_STRATUM_PRIME = 7;
+export const DUMKA_SPECTRUM_Q16_ONE = 65_536;
+export const DUMKA_SPECTRUM_MAX_HARMONICS = 16;
+export const DUMKA_MAX_COMPLEXITY_MILLI = 100_000;
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(left);
+  let b = Math.abs(right);
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a;
+}
+
+function reducedDepthDenominator(slot: number, workingSubdivision: number): number {
+  const withinBeat =
+    ((slot % workingSubdivision) + workingSubdivision) % workingSubdivision;
+  return workingSubdivision / greatestCommonDivisor(withinBeat, workingSubdivision);
+}
+
+function indigestibilityScaled(value: number): number {
+  if (value <= 1) return 0;
+  let remaining = Math.trunc(value);
+  let prime = 2;
+  let price = 0;
+  while (prime * prime <= remaining) {
+    while (remaining % prime === 0) {
+      price += primeIndigestibilityScaled(prime);
+      remaining /= prime;
+    }
+    prime += 1;
+  }
+  if (remaining > 1) price += primeIndigestibilityScaled(remaining);
+  return price;
+}
+
+function primeIndigestibilityScaled(prime: number): number {
+  const numerator = 2 * 210 * (prime - 1) * (prime - 1);
+  return Math.trunc((numerator + Math.trunc(prime / 2)) / prime);
+}
+
+export interface DumkaSubdivisionLevelDescriptor {
+  /** Canonical level index carried by DirectiveOptions.subdivisionLevel. */
+  index: number;
+  /** Reduced within-beat denominator shared by every slot at this level. */
+  denominator: number;
+  /** Barlow indigestibility on the engine's common scale of 210. */
+  indigestibility: number;
+}
+
+/**
+ * Exact mirror of depth::slot_level_index's level inventory.
+ *
+ * Palette primes refine the working lattice, but they are not themselves
+ * directive level identifiers. Every divisor q of W is a level, ordered by
+ * increasing Barlow indigestibility and then q; the array index is the wire
+ * value used by subdivisionLevel.
+ */
+export function dumkaSubdivisionLevels(
+  workingSubdivision: number
+): DumkaSubdivisionLevelDescriptor[] {
+  if (
+    !Number.isInteger(workingSubdivision) ||
+    workingSubdivision < 1 ||
+    workingSubdivision > 64
+  ) {
+    return [];
+  }
+  return Array.from(
+    { length: workingSubdivision },
+    (_, index) => index + 1
+  )
+    .filter((denominator) => workingSubdivision % denominator === 0)
+    .map((denominator) => ({
+      denominator,
+      indigestibility: indigestibilityScaled(denominator),
+    }))
+    .sort(
+      (left, right) =>
+        left.indigestibility - right.indigestibility ||
+        left.denominator - right.denominator
+    )
+    .map((level, index) => ({ index, ...level }));
+}
+
+export function dumkaSubdivisionLevelExists(
+  levelIndex: number,
+  workingSubdivision: number
+): boolean {
+  return (
+    Number.isInteger(levelIndex) &&
+    levelIndex >= 0 &&
+    levelIndex < dumkaSubdivisionLevels(workingSubdivision).length
+  );
+}
+
+/** Exact mirror of Rust's attack-point complexity readout. */
+export function stateComplexityMilli(
+  onsetSlots: readonly number[],
+  workingSubdivision: number
+): number {
+  if (onsetSlots.length === 0 || workingSubdivision <= 0) return 0;
+  const maximum = indigestibilityScaled(workingSubdivision);
+  if (maximum === 0) return 0;
+  const total = onsetSlots.reduce(
+    (sum, slot) =>
+      sum +
+      indigestibilityScaled(
+        reducedDepthDenominator(slot, workingSubdivision)
+      ),
+    0
+  );
+  const denominator = BigInt(onsetSlots.length * maximum);
+  const rounded =
+    (BigInt(DUMKA_MAX_COMPLEXITY_MILLI) * BigInt(total) + denominator / 2n) /
+    denominator;
+  return Number(
+    rounded > BigInt(DUMKA_MAX_COMPLEXITY_MILLI)
+      ? BigInt(DUMKA_MAX_COMPLEXITY_MILLI)
+      : rounded
+  );
+}
+
+function log2Q16(value: number): bigint {
+  if (value <= 1) return 0n;
+  const integer = 31 - Math.clz32(value);
+  let normalized = BigInt(value) << BigInt(63 - integer);
+  let fraction = 0n;
+  for (let bit = 15; bit >= 0; bit -= 1) {
+    normalized = (normalized * normalized) >> 63n;
+    if (normalized >= 1n << 64n) {
+      normalized >>= 1n;
+      fraction |= 1n << BigInt(bit);
+    }
+  }
+  return BigInt(integer * DUMKA_SPECTRUM_Q16_ONE) + fraction;
+}
+
+/**
+ * Exact normalized Shannon entropy of the denominator inventory. This is an
+ * observational insight only: it is never consulted by evolution ordering.
+ */
+export function stateDepthDiversityMilli(
+  onsetSlots: readonly number[],
+  workingSubdivision: number
+): number {
+  if (onsetSlots.length <= 1 || workingSubdivision <= 0) return 0;
+  const counts = new Map<number, number>();
+  for (const slot of onsetSlots) {
+    const denominator = reducedDepthDenominator(slot, workingSubdivision);
+    counts.set(denominator, (counts.get(denominator) ?? 0) + 1);
+  }
+  if (counts.size <= 1) return 0;
+  const count = onsetSlots.length;
+  const weightedLogSum = [...counts.values()].reduce(
+    (sum, frequency) => sum + BigInt(frequency) * log2Q16(frequency),
+    0n
+  );
+  const meanLog = (weightedLogSum + BigInt(count) / 2n) / BigInt(count);
+  const entropy = log2Q16(count) - meanLog;
+  let possibleLevels = 0;
+  for (let divisor = 1; divisor <= workingSubdivision; divisor += 1) {
+    if (workingSubdivision % divisor === 0) possibleLevels += 1;
+  }
+  const maximumEntropy = log2Q16(Math.min(count, possibleLevels));
+  if (maximumEntropy === 0n) return 0;
+  const normalized =
+    (entropy * BigInt(DUMKA_MAX_COMPLEXITY_MILLI) + maximumEntropy / 2n) /
+    maximumEntropy;
+  return Number(
+    normalized > BigInt(DUMKA_MAX_COMPLEXITY_MILLI)
+      ? BigInt(DUMKA_MAX_COMPLEXITY_MILLI)
+      : normalized
+  );
+}
+
+/** Pinned Rust `UNIT_ROOTS_Q16`, indexed by `period - 1`. */
+const DUMKA_SPECTRUM_UNIT_ROOTS_Q16: ReadonlyArray<readonly [number, number]> = [
+  [65_536, 0], [-65_536, 0], [-32_768, 56_756], [0, 65_536],
+  [20_252, 62_328], [32_768, 56_756], [40_861, 51_238], [46_341, 46_341],
+  [50_203, 42_126], [53_020, 38_521], [55_132, 35_431], [56_756, 32_768],
+  [58_029, 30_456], [59_046, 28_435], [59_870, 26_656], [60_547, 25_080],
+  [61_111, 23_674], [61_584, 22_415], [61_985, 21_280], [62_328, 20_252],
+  [62_624, 19_317], [62_881, 18_464], [63_106, 17_681], [63_303, 16_962],
+  [63_477, 16_298], [63_632, 15_684], [63_769, 15_114], [63_893, 14_583],
+  [64_004, 14_088], [64_104, 13_626], [64_194, 13_192], [64_277, 12_785],
+  [64_352, 12_403], [64_420, 12_042], [64_483, 11_702], [64_540, 11_380],
+  [64_593, 11_076], [64_642, 10_787], [64_687, 10_513], [64_729, 10_252],
+  [64_768, 10_004], [64_804, 9_768], [64_838, 9_542], [64_869, 9_327],
+  [64_898, 9_121], [64_926, 8_924], [64_951, 8_735], [64_975, 8_554],
+  [64_998, 8_381], [65_019, 8_214], [65_039, 8_054], [65_058, 7_899],
+  [65_076, 7_751], [65_093, 7_608], [65_109, 7_471], [65_124, 7_338],
+  [65_138, 7_209], [65_152, 7_086], [65_165, 6_966], [65_177, 6_850],
+  [65_189, 6_738], [65_200, 6_630], [65_210, 6_525], [65_220, 6_424],
+];
+
+/** Rust-emitted Q16 harmonic rows used for display-only placement insight. */
+export interface DumkaSpectrumRow {
+  harmonic: number;
+  cosine: readonly number[];
+  sine: readonly number[];
+}
+
+function q16Multiply(left: number, right: number): number {
+  const product = left * right;
+  const rounded =
+    product >= 0
+      ? product + DUMKA_SPECTRUM_Q16_ONE / 2
+      : product - DUMKA_SPECTRUM_Q16_ONE / 2;
+  return Math.trunc(rounded / DUMKA_SPECTRUM_Q16_ONE);
+}
+
+/** Build the complete pinned table from its Rust-emitted unit root. */
+export function fixedPointSpectrumTable(
+  periodSlots: number,
+  root: readonly [number, number]
+): DumkaSpectrumRow[] {
+  if (periodSlots <= 0 || periodSlots > 64) return [];
+  const fundamental: Array<[number, number]> = [];
+  let current: [number, number] = [DUMKA_SPECTRUM_Q16_ONE, 0];
+  for (let slot = 0; slot < periodSlots; slot += 1) {
+    fundamental.push(current);
+    current = [
+      q16Multiply(current[0], root[0]) - q16Multiply(current[1], root[1]),
+      q16Multiply(current[1], root[0]) + q16Multiply(current[0], root[1]),
+    ];
+    const nextSlot = slot + 1;
+    if (periodSlots % 4 === 0 && nextSlot === periodSlots / 4) {
+      current = [0, DUMKA_SPECTRUM_Q16_ONE];
+    } else if (periodSlots % 2 === 0 && nextSlot === periodSlots / 2) {
+      current = [-DUMKA_SPECTRUM_Q16_ONE, 0];
+    }
+    if (nextSlot > periodSlots / 2 && nextSlot < periodSlots) {
+      const mirror = fundamental[periodSlots - nextSlot]!;
+      current = [mirror[0], -mirror[1]];
+    }
+  }
+  const maximum = Math.min(DUMKA_SPECTRUM_MAX_HARMONICS, Math.floor(periodSlots / 2));
+  return Array.from({ length: maximum }, (_, index) => {
+    const harmonic = index + 1;
+    const samples = Array.from({ length: periodSlots }, (_, slot) =>
+      fundamental[(harmonic * slot) % periodSlots]!
+    );
+    return {
+      harmonic,
+      cosine: samples.map((sample) => sample[0]),
+      sine: samples.map((sample) => sample[1]),
+    };
+  });
+}
+
+export function fixedPointSpectrumTableForPeriod(
+  periodSlots: number
+): DumkaSpectrumRow[] {
+  const root = DUMKA_SPECTRUM_UNIT_ROOTS_Q16[periodSlots - 1];
+  return root ? fixedPointSpectrumTable(periodSlots, root) : [];
+}
+
+function canonicalSpectrumCandidates(candidates: readonly number[]): number[] {
+  return [...new Set(candidates)].sort((left, right) => left - right);
+}
+
+/** Exact integer insertion-energy order mirrored from spectrum.rs. */
+export function geometricAddOrder(
+  periodSlots: number,
+  onsetSlots: readonly number[],
+  candidateSlots: readonly number[],
+  table: readonly DumkaSpectrumRow[]
+): number[] {
+  if (periodSlots <= 0) return [];
+  const resultingCount = onsetSlots.length + 1;
+  const bins = table.map((row) =>
+    onsetSlots.reduce(
+      (sum, slot) => {
+        const index = ((slot % periodSlots) + periodSlots) % periodSlots;
+        return {
+          real: sum.real + BigInt(row.cosine[index]!),
+          imaginary: sum.imaginary + BigInt(row.sine[index]!),
+        };
+      },
+      { real: 0n, imaginary: 0n }
+    )
+  );
+  const q16 = BigInt(DUMKA_SPECTRUM_Q16_ONE);
+  const unit = q16 * q16;
+  return canonicalSpectrumCandidates(candidateSlots)
+    .map((slot) => {
+      const index = ((slot % periodSlots) + periodSlots) % periodSlots;
+      const score = table.reduce((total, row, rowIndex) => {
+        if (resultingCount !== 0 && row.harmonic % resultingCount === 0) {
+          return total;
+        }
+        const bin = bins[rowIndex]!;
+        const projection =
+          bin.real * BigInt(row.cosine[index]!) +
+          bin.imaginary * BigInt(row.sine[index]!);
+        const weight = q16 / BigInt(row.harmonic);
+        return total + weight * (2n * projection + unit);
+      }, 0n);
+      return { slot, score };
+    })
+    .sort((left, right) =>
+      left.score < right.score
+        ? -1
+        : left.score > right.score
+          ? 1
+          : left.slot - right.slot
+    )
+    .map(({ slot }) => slot);
+}
+
+/** Exact inverse-insertion order mirrored from spectrum.rs. */
+export function geometricRemoveOrder(
+  periodSlots: number,
+  onsetSlots: readonly number[],
+  candidateSlots: readonly number[],
+  table: readonly DumkaSpectrumRow[]
+): number[] {
+  const onsetSet = new Set(onsetSlots);
+  return canonicalSpectrumCandidates(candidateSlots)
+    .map((slot) => {
+      if (!onsetSet.has(slot)) return { slot, score: 0n };
+      const remaining = onsetSlots.filter((onset) => onset !== slot);
+      const inverse = geometricInsertionScore(periodSlots, remaining, slot, table);
+      return { slot, score: inverse };
+    })
+    .sort((left, right) =>
+      left.score > right.score
+        ? -1
+        : left.score < right.score
+          ? 1
+          : left.slot - right.slot
+    )
+    .map(({ slot }) => slot);
+}
+
+function geometricInsertionScore(
+  periodSlots: number,
+  onsetSlots: readonly number[],
+  candidateSlot: number,
+  table: readonly DumkaSpectrumRow[]
+): bigint {
+  if (periodSlots <= 0) return 0n;
+  const resultingCount = onsetSlots.length + 1;
+  const index = ((candidateSlot % periodSlots) + periodSlots) % periodSlots;
+  const q16 = BigInt(DUMKA_SPECTRUM_Q16_ONE);
+  const unit = q16 * q16;
+  return table.reduce((total, row) => {
+    if (resultingCount !== 0 && row.harmonic % resultingCount === 0) {
+      return total;
+    }
+    const bin = onsetSlots.reduce(
+      (sum, slot) => {
+        const onsetIndex = ((slot % periodSlots) + periodSlots) % periodSlots;
+        return {
+          real: sum.real + BigInt(row.cosine[onsetIndex]!),
+          imaginary: sum.imaginary + BigInt(row.sine[onsetIndex]!),
+        };
+      },
+      { real: 0n, imaginary: 0n }
+    );
+    const projection =
+      bin.real * BigInt(row.cosine[index]!) +
+      bin.imaginary * BigInt(row.sine[index]!);
+    return (
+      total +
+      (q16 / BigInt(row.harmonic)) * (2n * projection + unit)
+    );
+  }, 0n);
+}
+
+export function normalizedPlacementRanks(
+  order: readonly number[]
+): Array<[number, number]> {
+  const denominator = Math.max(0, order.length - 1);
+  return order.map((slot, index) => [
+    slot,
+    denominator === 0 ? 0 : Math.floor((index * 1000 + denominator / 2) / denominator),
+  ]);
+}
+
+export function blendedPlacementOrder(
+  barlowOrder: readonly number[],
+  geometricOrder: readonly number[],
+  bias: number
+): number[] {
+  if (bias <= 0) return [...new Set(barlowOrder)];
+  if (bias >= 100) return [...new Set(geometricOrder)];
+  const barlow = new Map(normalizedPlacementRanks([...new Set(barlowOrder)]));
+  const geometric = new Map(
+    normalizedPlacementRanks([...new Set(geometricOrder)])
+  );
+  return [...new Set([...barlow.keys(), ...geometric.keys()])].sort((left, right) => {
+    const leftScore =
+      (100 - bias) * (barlow.get(left) ?? 1001) +
+      bias * (geometric.get(left) ?? 1001);
+    const rightScore =
+      (100 - bias) * (barlow.get(right) ?? 1001) +
+      bias * (geometric.get(right) ?? 1001);
+    return leftScore - rightScore || left - right;
+  });
+}
 
 /** Prime factors, largest first (Barlow's stratification order). */
 export function factorDescending(value: number): number[] {
@@ -175,6 +578,37 @@ export interface DumkaGridInsight {
   removeOrder: number[];
   /** Rank-descending free slots: Add's candidate order. */
   addOrder: number[];
+}
+
+/** One-beat geometric void field, normalized to `0..=1000` (higher means
+ * a more strongly preferred low-energy insertion). Display-only. */
+export function geometricPlacementProfile(
+  compiled: DumkaCompiled,
+  workingSubdivision: number
+): number[] {
+  if (
+    workingSubdivision < 1 ||
+    workingSubdivision > 64 ||
+    !Number.isInteger(workingSubdivision) ||
+    workingSubdivision % compiled.requiredSubdivision !== 0
+  ) {
+    return [];
+  }
+  const table = fixedPointSpectrumTableForPeriod(workingSubdivision);
+  if (table.length === 0 && workingSubdivision > 1) return [];
+  const onsetSlots = compiled.events.map(
+    (event) => (event.start.num * workingSubdivision) / event.start.den
+  );
+  if (onsetSlots.some((slot) => !Number.isSafeInteger(slot))) return [];
+  const phases = Array.from({ length: workingSubdivision }, (_, slot) => slot);
+  const order = geometricAddOrder(
+    workingSubdivision,
+    onsetSlots,
+    phases,
+    table
+  );
+  const ranks = new Map(normalizedPlacementRanks(order));
+  return phases.map((slot) => 1000 - (ranks.get(slot) ?? 1000));
 }
 
 /**

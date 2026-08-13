@@ -405,6 +405,305 @@ fn golden_dumka_smoothed() {
     );
 }
 
+fn omit_depth_fields_from_legacy_wire(
+    mut rhythm: cseq_transport::RhythmPlaybackConfig,
+) -> cseq_transport::RhythmPlaybackConfig {
+    let cseq_rhythm::GeneratorConfig::Dumka(params) = &rhythm.generator else {
+        panic!("legacy depth identity fixture must use Dum-Ka");
+    };
+    assert!(params.subdivision_palette.is_empty());
+    assert_eq!(
+        (params.complexity_floor, params.complexity_ceiling),
+        (0, 100_000)
+    );
+    assert_eq!(params.placement_bias, 0);
+    assert!(params.plan.iter().all(|directive| {
+        directive.options.complexity_floor.is_none()
+            && directive.options.complexity_ceiling.is_none()
+            && directive.options.placement_bias.is_none()
+            && directive.options.subdivision_level.is_none()
+            && directive.options.morph_target.is_none()
+    }));
+
+    let mut wire = serde_json::to_value(params).expect("Dum-Ka params serialize");
+    let object = wire.as_object_mut().expect("Dum-Ka params are an object");
+    for key in [
+        "subdivisionPalette",
+        "complexityFloor",
+        "complexityCeiling",
+        "placementBias",
+    ] {
+        object.remove(key);
+    }
+    if let Some(plan) = object
+        .get_mut("plan")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for directive in plan {
+            if let Some(options) = directive
+                .get_mut("options")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for key in [
+                    "complexityFloor",
+                    "complexityCeiling",
+                    "placementBias",
+                    "subdivisionLevel",
+                    "morphTarget",
+                ] {
+                    options.remove(key);
+                }
+            }
+        }
+    }
+    rhythm.generator = cseq_rhythm::GeneratorConfig::Dumka(
+        serde_json::from_value(wire).expect("legacy Dum-Ka wire defaults decode"),
+    );
+    rhythm
+}
+
+#[test]
+fn empty_depth_palette_is_byte_identical_across_legacy_golden_trajectories() {
+    let cases = [
+        ("default", dumka_rhythm(), 0, 8),
+        ("planned", dumka_planned_rhythm(), 0, 16),
+        ("smoothed", dumka_smoothed_rhythm(), 0, 5),
+        ("figures", dumka_figures_rhythm(), 0, 8),
+        ("euclid", dumka_euclid_rhythm(), 0, 8),
+    ];
+    for (name, explicit, start_cycle, cycle_count) in cases {
+        let omitted = omit_depth_fields_from_legacy_wire(explicit.clone());
+        let explicit_ledger = render_ledger_window_for_score(
+            name,
+            dumka_section_score(),
+            Some(explicit),
+            start_cycle,
+            cycle_count,
+        );
+        let omitted_ledger = render_ledger_window_for_score(
+            name,
+            dumka_section_score(),
+            Some(omitted),
+            start_cycle,
+            cycle_count,
+        );
+        assert_eq!(
+            omitted_ledger.as_bytes(),
+            explicit_ledger.as_bytes(),
+            "omitted M3.95 fields changed the {name} legacy trajectory"
+        );
+    }
+}
+
+/// M3.95 working-lattice golden: the seed owns only beat-level positions,
+/// while palette {3} supplies ternary slots. A curve-driven Barlow-Add path
+/// must therefore produce audible attacks between integer beats without a
+/// second generator or transport path.
+fn dumka_palette_triplets_score() -> cseq_model::Score {
+    cseq_model::Score::subdivision_switch(
+        "golden-dumka-palette-triplets",
+        cseq_model::SubdivisionSwitchSpec {
+            cycle_beats: 4,
+            initial_weights: vec![cseq_model::WeightedSubdivisionChoice {
+                subdivision: 3,
+                weight: 1.0,
+            }],
+            initial_jathi_weights: vec![],
+            initial_custom_subdivision: None,
+            automation: None,
+            inflections: vec![],
+            switch_count_weights: vec![cseq_model::WeightedSwitchCount {
+                count: 0,
+                weight: 1.0,
+            }],
+            seed_mode: cseq_model::SwitchSeedMode::Locked { seed: 20260813 },
+            accent: cseq_model::GatiAccentSpec::default(),
+            pitch: 45,
+            velocity: 96,
+        },
+    )
+}
+
+fn dumka_palette_triplets_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "x . x .".to_string(),
+            subdivision_palette: vec![3],
+            evolution_rate: 0,
+            drift_leash: 100,
+            weight_barlow_remove: 0,
+            weight_barlow_add: 100,
+            weight_rotate: 0,
+            evolution_curve: rhythm::EvolutionCurve {
+                enabled: true,
+                model_version: rhythm::PerceptualModelVersion::V1,
+                tolerance_milli: 0,
+                max_operations: 4,
+                points: vec![
+                    rhythm::CurvePoint {
+                        cycle: 1,
+                        target_milli: 100_000,
+                    },
+                    rhythm::CurvePoint {
+                        cycle: 2,
+                        target_milli: 100_000,
+                    },
+                ],
+            },
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 20260813 },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+#[test]
+fn golden_dumka_palette_triplets() {
+    let rendered = render_ledger_for_score(
+        "dumka_palette_triplets",
+        dumka_palette_triplets_score(),
+        Some(dumka_palette_triplets_rhythm()),
+    );
+    let has_ternary_attack = rendered.lines().any(|line| {
+        let mut columns = line.split('\t');
+        let tick = columns.next().and_then(|value| value.parse::<u64>().ok());
+        let _channel = columns.next();
+        let bytes = columns.next().unwrap_or_default();
+        tick.is_some_and(|tick| tick % u64::from(cseq_transport::PPQN) != 0)
+            && bytes.starts_with("90 ")
+    });
+    assert!(
+        has_ternary_attack,
+        "palette {{3}} plus the curve must audibly leave the seed's beat grid"
+    );
+    assert_golden_rendered("dumka_palette_triplets", rendered);
+}
+
+/// M3.95 directed-transport golden: two beat-level attacks move to the
+/// complementary beats over a four-cycle eased Morph range. Palette {2}
+/// makes the intermediate half-beat steps audible; the final cycle must equal
+/// the authored target exactly.
+fn dumka_morph_score() -> cseq_model::Score {
+    cseq_model::Score::subdivision_switch(
+        "golden-dumka-morph",
+        cseq_model::SubdivisionSwitchSpec {
+            cycle_beats: 4,
+            initial_weights: vec![cseq_model::WeightedSubdivisionChoice {
+                subdivision: 2,
+                weight: 1.0,
+            }],
+            initial_jathi_weights: vec![],
+            initial_custom_subdivision: None,
+            automation: None,
+            inflections: vec![],
+            switch_count_weights: vec![cseq_model::WeightedSwitchCount {
+                count: 0,
+                weight: 1.0,
+            }],
+            seed_mode: cseq_model::SwitchSeedMode::Locked { seed: 20260814 },
+            accent: cseq_model::GatiAccentSpec::default(),
+            pitch: 45,
+            velocity: 96,
+        },
+    )
+}
+
+fn dumka_morph_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "x . x .".to_string(),
+            subdivision_palette: vec![2],
+            evolution_rate: 0,
+            drift_leash: 0,
+            plan: vec![rhythm::EvolutionDirective {
+                id: 1,
+                order: 0,
+                enabled: true,
+                from_cycle: 1,
+                to_cycle: 4,
+                family: rhythm::DirectiveFamily::Morph,
+                pacing: rhythm::DirectivePacing::EaseInOut,
+                magnitude: rhythm::DirectiveMagnitude::OperationQuota,
+                intensity: 100,
+                scope: None,
+                options: rhythm::DirectiveOptions {
+                    morph_target: Some(". x . x".to_string()),
+                    ..Default::default()
+                },
+            }],
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 20260814 },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+#[test]
+fn golden_dumka_morph() {
+    use cseq_rhythm as rhythm;
+
+    let rendered = render_ledger_window_for_score(
+        "dumka_morph",
+        dumka_morph_score(),
+        Some(dumka_morph_rhythm()),
+        0,
+        5,
+    );
+    assert_golden_rendered("dumka_morph", rendered);
+
+    let spans = (0..4)
+        .map(|index| rhythm::GeneratorSpanInput {
+            span_id: index + 1,
+            span_len: 2,
+            label: None,
+            section_index: Some(0),
+            subdivision: Some(2),
+        })
+        .collect::<Vec<_>>();
+    let rhythm::GeneratorConfig::Dumka(params) = dumka_morph_rhythm().generator else {
+        unreachable!("fixture is Dum-Ka")
+    };
+    let resolved = rhythm::resolve_generator_cycle(
+        &rhythm::GeneratorConfig::Dumka(params),
+        &rhythm::GeneratorCycleContext {
+            track_id: None,
+            cycle: 4,
+            cycle_beats: 4,
+            spans: &spans,
+            seed: 20260814,
+            automation: &|_, _, _| None,
+        },
+    )
+    .expect("Morph endpoint resolves");
+    let final_onsets = resolved
+        .iter()
+        .enumerate()
+        .flat_map(|(span_index, span)| {
+            span.cells
+                .iter()
+                .filter(|cell| !cell.rest && !cell.tied_from_previous)
+                .map(move |cell| span_index as u32 * 2 + cell.start)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        final_onsets,
+        vec![2, 6],
+        "Morph endpoint must equal its target"
+    );
+}
+
 /// M3.5 figures golden: the same four-beat section score, but a seed with
 /// in-beat sustains and the figure pair switched on (fragment 3 /
 /// consolidate 2 over remove 1 / add 1 / rotate 1, fillComplexity 50,

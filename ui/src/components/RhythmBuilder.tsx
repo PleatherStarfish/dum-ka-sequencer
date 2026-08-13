@@ -157,6 +157,30 @@ function BlockRow({
   );
 }
 
+/** Read-only miniature of the same proportional block tree used by the main
+ * rhythm builder. Morph uses this to make its exact target inspectable without
+ * introducing a second notation renderer. */
+export function RhythmBuilderMiniBlock({
+  pattern,
+  label = "Pattern blocks",
+}: {
+  pattern: string;
+  label?: string;
+}) {
+  const built = useMemo(() => builderFromPattern(pattern), [pattern]);
+  if (!built.ok) return null;
+  return (
+    <div className="rhythm-builder-mini" role="img" aria-label={label}>
+      <BlockRow
+        nodes={built.nodes}
+        disabled
+        selectedIds={new Set<number>()}
+        onPick={() => undefined}
+      />
+    </div>
+  );
+}
+
 /**
  * Visual editor over the Dum-Ka notation: a proportional block tree with a
  * selection toolbar. Every edit prints the tree back to pattern text and

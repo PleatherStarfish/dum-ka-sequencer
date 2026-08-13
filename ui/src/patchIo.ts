@@ -1,13 +1,22 @@
 // Pure patch save/load normalization helpers extracted from App.tsx.
 // Keep this module free of React and Tauri runtime imports.
 
-import { normalizeDumkaPattern } from "./dumkaPattern";
+import {
+  analyzeDumkaPattern,
+  compileDumkaPattern,
+  MAX_DUMKA_PATTERN_LENGTH,
+  normalizeDumkaPattern,
+  normalizeDumkaSubdivisionPalette,
+} from "./dumkaPattern";
+import { dumkaSubdivisionLevelExists } from "./dumkaMetrics";
 import {
   normalizeEvolutionCurve,
   MAX_EVOLUTION_DIRECTIVES,
   MAX_PERCEPTUAL_DISTANCE_MILLI,
   MAX_PERCEPTUAL_OPERATIONS,
   MAX_PERCEPTUAL_SCORING_WORK,
+  MAX_COMPLEXITY_MILLI,
+  MAX_SUBDIVISION_LEVEL_INDEX,
   perceptualDirectiveScoringWork,
 } from "./dumkaEvolvePlan";
 import {
@@ -1189,6 +1198,10 @@ export type PatchGeneratorConfig =
       driftLeash: number;
       densityFloor: number;
       densityCeiling: number;
+      subdivisionPalette: number[];
+      complexityFloor: number;
+      complexityCeiling: number;
+      placementBias: number;
       barlowTemperature: number;
       weightBarlowRemove: number;
       weightBarlowAdd: number;
@@ -1542,6 +1555,7 @@ export const DIRECTIVE_FAMILIES = [
   "fragment",
   "consolidate",
   "euclid",
+  "morph",
   "stochastic",
 ] as const;
 
@@ -1619,17 +1633,48 @@ function nullablePercent(value: unknown): number | null {
     : clamp(Math.round(numberValue(value, 0)), 0, 100);
 }
 
+function nullableComplexity(value: unknown): number | null {
+  return value === null || value === undefined
+    ? null
+    : clamp(Math.round(numberValue(value, 0)), 0, MAX_COMPLEXITY_MILLI);
+}
+
+function validMorphTarget(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  let length = 0;
+  for (const _codePoint of value) {
+    length += 1;
+    if (length > MAX_DUMKA_PATTERN_LENGTH) return false;
+  }
+  return true;
+}
+
 function normalizeDirectiveOptions(value: unknown): EvolutionDirective["options"] {
   const options = isRecord(value) ? value : {};
   const hasDensityFloor = options.densityFloor !== null && options.densityFloor !== undefined;
   const hasDensityCeiling = options.densityCeiling !== null && options.densityCeiling !== undefined;
   const densityFloor = hasDensityFloor ? nullablePercent(options.densityFloor) : null;
   const densityCeiling = hasDensityCeiling ? nullablePercent(options.densityCeiling) : null;
+  const complexityFloor = nullableComplexity(options.complexityFloor);
+  const complexityCeiling = nullableComplexity(options.complexityCeiling);
   return {
     barlowTemperature: nullablePercent(options.barlowTemperature),
     fillComplexity: nullablePercent(options.fillComplexity),
     densityFloor,
     densityCeiling,
+    complexityFloor,
+    complexityCeiling,
+    placementBias: nullablePercent(options.placementBias),
+    subdivisionLevel:
+      typeof options.subdivisionLevel === "number" &&
+      Number.isInteger(options.subdivisionLevel) &&
+      options.subdivisionLevel >= 0 &&
+      options.subdivisionLevel <= MAX_SUBDIVISION_LEVEL_INDEX
+        ? options.subdivisionLevel
+        : null,
+    morphTarget: validMorphTarget(options.morphTarget)
+      ? options.morphTarget
+      : null,
     euclidMaxRun:
       options.euclidMaxRun === null || options.euclidMaxRun === undefined
         ? null
@@ -1652,6 +1697,11 @@ export interface NormalizeEvolutionPlanResult {
   disabledOverBudget: number;
 }
 
+export interface PatchEvolutionPlanContext {
+  pattern: string;
+  subdivisionPalette: readonly number[];
+}
+
 /**
  * Tolerantly projects hand-edited v1 plan data onto the strict engine shape.
  * Rows are sorted by authored order and assigned dense order values. Stable,
@@ -1659,12 +1709,21 @@ export interface NormalizeEvolutionPlanResult {
  * Later overlaps in one family are dropped so enabling an audition toggle
  * cannot turn a loaded patch into an invalid engine request.
  */
-export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionPlanResult {
+export function normalizePatchEvolutionPlan(
+  value: unknown,
+  context?: PatchEvolutionPlanContext
+): NormalizeEvolutionPlanResult {
   let droppedUnknownFamilies = 0;
   let droppedOverlaps = 0;
   let droppedMalformed = 0;
   let disabledOverBudget = 0;
   const source = Array.isArray(value) ? value : [];
+  const contextPalette = context
+    ? normalizeDumkaSubdivisionPalette(context.subdivisionPalette)
+    : null;
+  const contextSeed = context
+    ? analyzeDumkaPattern(context.pattern, contextPalette ?? [])
+    : null;
   const droppedExcess = Math.max(0, source.length - MAX_EVOLUTION_DIRECTIVES);
   const candidates = source
     .slice(0, MAX_EVOLUTION_DIRECTIVES)
@@ -1717,6 +1776,86 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
         droppedMalformed += 1;
         return [];
       }
+      const hasComplexityFloor =
+        rawOptions.complexityFloor !== null &&
+        rawOptions.complexityFloor !== undefined;
+      const hasComplexityCeiling =
+        rawOptions.complexityCeiling !== null &&
+        rawOptions.complexityCeiling !== undefined;
+      if (hasComplexityFloor !== hasComplexityCeiling) {
+        droppedMalformed += 1;
+        return [];
+      }
+      if (
+        hasComplexityFloor &&
+        numberValue(rawOptions.complexityFloor, 0) >
+          numberValue(rawOptions.complexityCeiling, MAX_COMPLEXITY_MILLI)
+      ) {
+        droppedMalformed += 1;
+        return [];
+      }
+      if (
+        rawOptions.subdivisionLevel !== null &&
+        rawOptions.subdivisionLevel !== undefined &&
+        (typeof rawOptions.subdivisionLevel !== "number" ||
+          !Number.isInteger(rawOptions.subdivisionLevel) ||
+          rawOptions.subdivisionLevel < 0 ||
+          rawOptions.subdivisionLevel > MAX_SUBDIVISION_LEVEL_INDEX)
+      ) {
+        droppedMalformed += 1;
+        return [];
+      }
+      if (
+        contextSeed?.ok === true &&
+        rawOptions.subdivisionLevel !== null &&
+        rawOptions.subdivisionLevel !== undefined &&
+        !dumkaSubdivisionLevelExists(
+          Number(rawOptions.subdivisionLevel),
+          contextSeed.required.workingSubdivision
+        )
+      ) {
+        droppedMalformed += 1;
+        return [];
+      }
+      if (raw.family === "morph" && !validMorphTarget(rawOptions.morphTarget)) {
+        droppedMalformed += 1;
+        return [];
+      }
+      if (raw.family === "morph") {
+        const target = compileDumkaPattern(String(rawOptions.morphTarget));
+        if (target.ok && target.compiled.events.length === 0) {
+          droppedMalformed += 1;
+          return [];
+        }
+      }
+      if (
+        raw.enabled !== false &&
+        raw.family === "morph" &&
+        contextSeed?.ok === true
+      ) {
+        const targetAnalysis = analyzeDumkaPattern(
+          String(rawOptions.morphTarget)
+        );
+        if (
+          !targetAnalysis.ok ||
+          targetAnalysis.required.cycleBeats !==
+            contextSeed.required.cycleBeats ||
+          contextSeed.required.workingSubdivision %
+              targetAnalysis.required.subdivision !==
+            0
+        ) {
+          droppedMalformed += 1;
+          return [];
+        }
+      }
+      if (
+        raw.family !== "morph" &&
+        rawOptions.morphTarget !== null &&
+        rawOptions.morphTarget !== undefined
+      ) {
+        droppedMalformed += 1;
+        return [];
+      }
       const fromCycle = clamp(
         Math.round(numberValue(raw.fromCycle, 1)),
         1,
@@ -1765,7 +1904,13 @@ export function normalizePatchEvolutionPlan(value: unknown): NormalizeEvolutionP
           ...(magnitude.magnitude ? { magnitude: magnitude.magnitude } : {}),
           intensity: clamp(Math.round(numberValue(raw.intensity, 25)), 0, 100),
           scope,
-          options: normalizeDirectiveOptions(raw.options),
+          options: {
+            ...normalizeDirectiveOptions(raw.options),
+            morphTarget:
+              raw.family === "morph" && validMorphTarget(rawOptions.morphTarget)
+                ? rawOptions.morphTarget
+                : null,
+          },
         },
       ];
     })
@@ -1856,7 +2001,14 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
   let overBudget = false;
   for (const candidate of generatorCandidates) {
     if (!isRecord(candidate) || candidate.kind !== "dumka") continue;
-    const normalized = normalizePatchEvolutionPlan(candidate.plan);
+    const pattern = normalizeDumkaPattern(candidate.pattern);
+    const subdivisionPalette = normalizeDumkaSubdivisionPalette(
+      candidate.subdivisionPalette
+    );
+    const normalized = normalizePatchEvolutionPlan(candidate.plan, {
+      pattern,
+      subdivisionPalette,
+    });
     unknown ||= normalized.droppedUnknownFamilies > 0;
     overlaps ||= normalized.droppedOverlaps > 0;
     malformed ||= normalized.droppedMalformed > 0;
@@ -1890,11 +2042,18 @@ export function normalizePatchGeneratorConfig(
 ): PatchGeneratorConfig {
   const candidate = isRecord(value) ? value : {};
   if (candidate.kind === "dumka") {
-    const normalizedPlan = normalizePatchEvolutionPlan(candidate.plan).plan;
+    const pattern = normalizeDumkaPattern(candidate.pattern);
+    const subdivisionPalette = normalizeDumkaSubdivisionPalette(
+      candidate.subdivisionPalette
+    );
+    const normalizedPlan = normalizePatchEvolutionPlan(candidate.plan, {
+      pattern,
+      subdivisionPalette,
+    }).plan;
     const normalizedCurve = normalizeEvolutionCurve(candidate.evolutionCurve);
     return {
       kind: "dumka",
-      pattern: normalizeDumkaPattern(candidate.pattern),
+      pattern,
       // Round before clamping: these cross the wire as Rust u32 fields, and
       // serde rejects fractional or negative numbers outright. A hand-edited
       // patch must load to a value the engine will actually accept.
@@ -1906,6 +2065,33 @@ export function normalizePatchGeneratorConfig(
       ),
       densityCeiling: clamp(
         Math.round(numberValue(candidate.densityCeiling, 100)),
+        0,
+        100
+      ),
+      subdivisionPalette,
+      complexityFloor: Math.min(
+        clamp(
+          Math.round(numberValue(candidate.complexityFloor, 0)),
+          0,
+          MAX_COMPLEXITY_MILLI
+        ),
+        clamp(
+          Math.round(
+            numberValue(candidate.complexityCeiling, MAX_COMPLEXITY_MILLI)
+          ),
+          0,
+          MAX_COMPLEXITY_MILLI
+        )
+      ),
+      complexityCeiling: clamp(
+        Math.round(
+          numberValue(candidate.complexityCeiling, MAX_COMPLEXITY_MILLI)
+        ),
+        0,
+        MAX_COMPLEXITY_MILLI
+      ),
+      placementBias: clamp(
+        Math.round(numberValue(candidate.placementBias, 0)),
         0,
         100
       ),
