@@ -298,7 +298,7 @@ with composite levels following their exact price. **Demote(i)** mirrors the
 same smallest-price-step rule (`ξ̂` strictly smaller, displacement bound
 computed from the target's period).
 
-Both operators preserve onset count, duration, and stroke class; both are
+Both operators preserve onset count and duration; both are
 their own inverse's witness (a promotion's reverse demotion is admissible by
 construction unless material moved into the vacated slot — no exactness claim
 is made, unlike figures).

@@ -61,7 +61,8 @@ order-free, pure, pinned. Six ship in v1:
 | **Depth diversity** | `D(x)` (TREE_DEPTH §4f) | exists (`depth.rs`) |
 
 Excluded from lanes, deliberately: attack-edit, timing displacement,
-metrical phase, stroke class — pairwise or register-like quantities.
+metrical phase — pairwise or register-like quantities. (Stroke classes
+no longer exist; the notation is rhythm-only.)
 They remain visible as the pacing lane's component breakdown (§6) and,
 for rotation, as the Rotate directive family. The doc saying "no" here is
 what keeps the lanes meaningful.

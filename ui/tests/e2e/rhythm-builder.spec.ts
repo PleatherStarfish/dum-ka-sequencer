@@ -38,7 +38,7 @@ test("builds a tuplet visually and plays exactly the previewed request", async (
   await expect(field).toHaveValue("x x x .");
 
   // Split the first beat into a quintuplet; structure follows.
-  await page.getByRole("button", { name: "block 0: note x" }).click();
+  await page.getByRole("button", { name: "block 0: note" }).click();
   const splitCount = page.getByLabel("Split count");
   await splitCount.fill("5");
   await splitCount.blur();
@@ -83,9 +83,9 @@ test("Span covers existing Pattern beats without extending the cycle", async ({
   page,
 }) => {
   const counted =
-    "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]";
-  const spanningTwo = "[dum . . ka] [. . ka . x]@2 [x x . x]";
-  const spanningThree = "[dum . . ka] [. . ka . x]@3";
+    "[x . . x] [. . x . x] [x . x .] [x x . x]";
+  const spanningTwo = "[x . . x] [. . x . x]@2 [x x . x]";
+  const spanningThree = "[x . . x] [. . x . x]@3";
 
   await openCaesura(page, {
     setupPreferences: { autosaveEnabled: false, autoloadRecentSession: false },
@@ -155,9 +155,9 @@ test("plays a nested beat-2 5:2 group as a tied span without articulation", asyn
   await field.fill("x x x x");
   await field.blur();
 
-  await page.getByRole("button", { name: "block 1: note x" }).click();
+  await page.getByRole("button", { name: "block 1: note" }).click();
   await page
-    .getByRole("button", { name: "block 2: note x" })
+    .getByRole("button", { name: "block 2: note" })
     .click({ modifiers: ["Shift"] });
   await page.getByRole("button", { name: "Group selection" }).click();
   await expect(field).toHaveValue("x [x x]@2 x");

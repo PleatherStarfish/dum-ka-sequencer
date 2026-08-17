@@ -156,14 +156,13 @@ impl OpWeights {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EvolvedOnset {
     /// Slot on the seed's own grid (total_beats × required_subdivision),
     /// in the unrotated metric frame.
     pub slot: u32,
     /// Duration in slots (never crosses what the seed's structure allowed).
     pub dur: u32,
-    pub class: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +229,6 @@ pub fn evolution_state(seed: &CompiledSeed) -> EvolutionState {
                 EvolvedOnset {
                     slot: u32::try_from(slot.to_integer()).expect("in range"),
                     dur: u32::try_from(dur.to_integer()).expect("in range"),
-                    class: event.class.clone(),
                 }
             })
             .collect(),
@@ -255,7 +253,6 @@ pub fn state_to_compiled(seed: &CompiledSeed, state: &EvolutionState) -> Compile
             SeedEvent {
                 start: Rational::new(i64::from(slot), s),
                 dur: Rational::new(i64::from(onset.dur), s),
-                class: onset.class.clone(),
             }
         })
         .collect();
@@ -806,25 +803,19 @@ fn normalize_to_density_corridor(
                 .position(|onset| onset.slot < slot && slot < onset.slot.saturating_add(onset.dur));
             let added = if let Some(index) = covering {
                 // A high authored floor can require articulating an existing
-                // sustain. Split it without changing coverage or stroke
-                // class; this is the deterministic, temperature-zero form
-                // of adding the strongest missing onset.
+                // sustain. Split it without changing coverage; this is the
+                // deterministic, temperature-zero form of adding the
+                // strongest missing onset.
                 let old_end = candidate.onsets[index]
                     .slot
                     .saturating_add(candidate.onsets[index].dur);
-                let class = candidate.onsets[index].class.clone();
                 candidate.onsets[index].dur = slot - candidate.onsets[index].slot;
                 EvolvedOnset {
                     slot,
                     dur: old_end - slot,
-                    class,
                 }
             } else {
-                EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class: fill_class_before(&current, slot),
-                }
+                EvolvedOnset { slot, dur: 1 }
             };
             let insert_at = candidate.onsets.partition_point(|onset| onset.slot < slot);
             candidate.onsets.insert(insert_at, added);
@@ -935,7 +926,7 @@ fn normalize_to_complexity_corridor(
         if !work_budget.spend(candidate_work.saturating_add(geometric_work)) {
             break;
         }
-        let source = current.onsets[index].clone();
+        let source = current.onsets[index];
         let placement_order = blended_candidate_order(
             &candidates,
             &current,
@@ -1343,27 +1334,14 @@ fn step_scoped(
                 return (current, normalization_trace());
             }
             let slot = silent[pool_pick(silent.len(), temperature, inputs.seed_value, cycle)];
-            let class = current
-                .onsets
-                .iter()
-                .rev()
-                .find(|onset| onset.slot < slot)
-                .or_else(|| current.onsets.last())
-                .map(|onset| onset.class.clone())
-                .unwrap_or_else(|| "x".to_string());
             let insert_at = candidate
                 .onsets
                 .iter()
                 .position(|onset| onset.slot > slot)
                 .unwrap_or(candidate.onsets.len());
-            candidate.onsets.insert(
-                insert_at,
-                EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class,
-                },
-            );
+            candidate
+                .onsets
+                .insert(insert_at, EvolvedOnset { slot, dur: 1 });
         }
         Op::Rotate => {
             let beats = seed.total_beats;
@@ -1479,17 +1457,7 @@ fn step_scoped(
             // the simplest true tuplet, 100 draws over every legal size.
             let k_pool = 1 + (u64::from(fill_complexity) * (ks.len() as u64 - 1)) / 100;
             let k = ks[draw(inputs.seed_value, cycle, SALT_FIG_K, k_pool) as usize];
-            // A silent run's figures inherit the preceding stroke class,
-            // Add's rule generalized to whole figures.
-            let fill_class = current
-                .onsets
-                .iter()
-                .rev()
-                .find(|onset| onset.slot < interval.start)
-                .or_else(|| current.onsets.last())
-                .map(|onset| onset.class.clone())
-                .unwrap_or_else(|| "x".to_string());
-            candidate = super::figures::apply_fragment(&current, &interval, k, &fill_class);
+            candidate = super::figures::apply_fragment(&current, &interval, k);
         }
         Op::Consolidate => {
             let runs = super::figures::ranked_consolidate_runs(&current, ranks, window);
@@ -1625,17 +1593,6 @@ fn occupied_slots(state: &EvolutionState, slots: u32) -> Vec<bool> {
         occupied[onset.slot as usize..end as usize].fill(true);
     }
     occupied
-}
-
-fn fill_class_before(state: &EvolutionState, slot: u32) -> String {
-    state
-        .onsets
-        .iter()
-        .rev()
-        .find(|onset| onset.slot < slot)
-        .or_else(|| state.onsets.last())
-        .map(|onset| onset.class.clone())
-        .unwrap_or_else(|| "x".to_string())
 }
 
 fn windowed_rotate(
@@ -1822,10 +1779,7 @@ fn morph_alignment(
                     let target_index = rotated[j];
                     let delta =
                         circular_slot_distance(left[i].slot, right[target_index].slot, slots);
-                    let attribute = u32::from(
-                        left[i].dur != right[target_index].dur
-                            || left[i].class != right[target_index].class,
-                    );
+                    let attribute = u32::from(left[i].dur != right[target_index].dur);
                     let next = (i + 1) * width + j + 1;
                     relax(
                         next,
@@ -1951,9 +1905,7 @@ fn morph_remaining_steps(
                 let target = &target.onsets[target_index];
                 usize::try_from(circular_slot_distance(source.slot, target.slot, slots))
                     .unwrap_or(usize::MAX)
-                    .saturating_add(usize::from(
-                        source.dur != target.dur || source.class != target.class,
-                    ))
+                    .saturating_add(usize::from(source.dur != target.dur))
             }
             _ => 1,
         })
@@ -1982,9 +1934,8 @@ pub(crate) fn validate_morph_target_work(
             (Some(current_index), Some(target_index)) => {
                 let source = &current.onsets[current_index];
                 let target = &target.onsets[target_index];
-                u64::from(circular_slot_distance(source.slot, target.slot, slots)).saturating_add(
-                    u64::from(source.dur != target.dur || source.class != target.class),
-                )
+                u64::from(circular_slot_distance(source.slot, target.slot, slots))
+                    .saturating_add(u64::from(source.dur != target.dur))
             }
             _ => 1,
         })
@@ -2222,13 +2173,13 @@ fn candidate_failure(
     })
 }
 
-type MorphStateKey = Vec<(u32, u32, String)>;
+type MorphStateKey = Vec<(u32, u32)>;
 
 fn morph_state_key(state: &EvolutionState) -> MorphStateKey {
     state
         .onsets
         .iter()
-        .map(|onset| (onset.slot, onset.dur, onset.class.clone()))
+        .map(|onset| (onset.slot, onset.dur))
         .collect()
 }
 
@@ -2315,14 +2266,13 @@ fn morph_search_neighbors(
             .iter()
             .find(|target_onset| target_onset.slot == onset.slot)
         {
-            if (target_onset.dur != onset.dur || target_onset.class != onset.class)
+            if target_onset.dur != onset.dur
                 && directive_slot_allowed(directive, target_onset.slot, working)
                 && onset_fits_window(onset, window)
                 && onset_fits_window(target_onset, window)
             {
                 let mut next = state.clone();
                 next.onsets[index].dur = target_onset.dur;
-                next.onsets[index].class = target_onset.class.clone();
                 insert(next, false);
             }
         }
@@ -2349,7 +2299,7 @@ fn morph_search_neighbors(
         let at = next
             .onsets
             .partition_point(|current| current.slot < onset.slot);
-        next.onsets.insert(at, onset.clone());
+        next.onsets.insert(at, *onset);
         insert(next, true);
     }
 
@@ -2571,14 +2521,9 @@ fn apply_one_directive_operation(
             );
             let slot = silent[pick];
             let insert_at = candidate.onsets.partition_point(|onset| onset.slot < slot);
-            candidate.onsets.insert(
-                insert_at,
-                EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class: fill_class_before(state, slot),
-                },
-            );
+            candidate
+                .onsets
+                .insert(insert_at, EvolvedOnset { slot, dur: 1 });
         }
         DirectiveFamily::Rotate => {
             if let Some(window) = window {
@@ -2735,12 +2680,7 @@ fn apply_one_directive_operation(
                 draw_base.saturating_add(1),
                 pool,
             ) as usize];
-            candidate = super::figures::apply_fragment(
-                state,
-                &interval,
-                k,
-                &fill_class_before(state, interval.start),
-            );
+            candidate = super::figures::apply_fragment(state, &interval, k);
         }
         DirectiveFamily::Consolidate => {
             let runs = super::figures::ranked_consolidate_runs(state, ranks, window)
@@ -4783,7 +4723,7 @@ mod tests {
         }
     }
 
-    const SEED_TEXT: &str = "[dum . . ka] [. . ka .] [dum . ka .] [x x . x]";
+    const SEED_TEXT: &str = "[x . . x] [. . x .] [x . x .] [x x . x]";
 
     fn fold_env(beats: u32, subdivision: u32) -> (Vec<u32>, Vec<u32>, u32) {
         let strata = stratification(beats, subdivision).unwrap();
@@ -4825,7 +4765,7 @@ mod tests {
         row
     }
 
-    fn event_picture(seed: &CompiledSeed) -> Vec<(i64, i64, &str)> {
+    fn event_picture(seed: &CompiledSeed) -> Vec<(i64, i64)> {
         let subdivision = i64::from(seed.required_subdivision);
         seed.events
             .iter()
@@ -4833,17 +4773,16 @@ mod tests {
                 (
                     *event.start.numer() * subdivision / *event.start.denom(),
                     *event.dur.numer() * subdivision / *event.dur.denom(),
-                    event.class.as_str(),
                 )
             })
             .collect()
     }
 
-    fn onset_snapshot(seed: &CompiledSeed) -> std::collections::BTreeSet<(u32, u32, String)> {
+    fn onset_snapshot(seed: &CompiledSeed) -> std::collections::BTreeSet<(u32, u32)> {
         seed_state(seed)
             .onsets
             .into_iter()
-            .map(|onset| (onset.slot, onset.dur, onset.class))
+            .map(|onset| (onset.slot, onset.dur))
             .collect()
     }
 
@@ -5428,29 +5367,28 @@ mod tests {
         let seed = compiled(SEED_TEXT);
         let s = spans(4, 4);
         let evolved = evolved_seed(&seed, &inputs(42, 40, 60, 60, &s)).unwrap();
-        let picture: Vec<(i64, i64, &str)> = evolved
+        let picture: Vec<(i64, i64)> = evolved
             .events
             .iter()
             .map(|event| {
                 (
                     *event.start.numer() * 16 / *event.start.denom(),
                     *event.dur.numer() * 16 / *event.dur.denom(),
-                    event.class.as_str(),
                 )
             })
             .collect();
         assert_eq!(
             picture,
             vec![
-                (0, 4, "x"),
-                (8, 4, "x"),
-                (12, 4, "x"),
-                (16, 4, "dum"),
-                (24, 4, "dum"),
-                (32, 4, "ka"),
-                (40, 4, "ka"),
-                (48, 4, "dum"),
-                (56, 4, "ka"),
+                (0, 4),
+                (8, 4),
+                (12, 4),
+                (16, 4),
+                (24, 4),
+                (32, 4),
+                (40, 4),
+                (48, 4),
+                (56, 4),
             ]
         );
     }
@@ -5481,35 +5419,28 @@ mod tests {
         assert_eq!(
             event_picture(&cycle12.seed),
             vec![
-                (0, 1, "dum"),
-                (3, 1, "ka"),
-                (6, 1, "ka"),
-                (8, 1, "dum"),
-                (10, 1, "ka"),
-                (12, 1, "x"),
-                (13, 1, "x"),
-                (15, 1, "x"),
+                (0, 1),
+                (3, 1),
+                (6, 1),
+                (8, 1),
+                (10, 1),
+                (12, 1),
+                (13, 1),
+                (15, 1),
             ]
         );
-        let after_remove = vec![
-            (0, 1, "dum"),
-            (6, 1, "ka"),
-            (8, 1, "dum"),
-            (10, 1, "ka"),
-            (12, 1, "x"),
-            (15, 1, "x"),
-        ];
+        let after_remove = vec![(0, 1), (6, 1), (8, 1), (10, 1), (12, 1), (15, 1)];
         assert_eq!(event_picture(&cycle13.seed), after_remove);
         assert_eq!(event_picture(&cycle14.seed), after_remove);
         let after_fragment = vec![
-            (0, 1, "dum"),
-            (6, 1, "ka"),
-            (8, 1, "dum"),
-            (10, 1, "ka"),
-            (12, 1, "x"),
-            (13, 1, "x"),
-            (14, 1, "x"),
-            (15, 1, "x"),
+            (0, 1),
+            (6, 1),
+            (8, 1),
+            (10, 1),
+            (12, 1),
+            (13, 1),
+            (14, 1),
+            (15, 1),
         ];
         assert_eq!(event_picture(&cycle15.seed), after_fragment);
         assert_eq!(event_picture(&cycle16.seed), after_fragment);
@@ -5557,11 +5488,7 @@ mod tests {
             onsets: slots
                 .iter()
                 .copied()
-                .map(|slot| EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class: "x".to_string(),
-                })
+                .map(|slot| EvolvedOnset { slot, dur: 1 })
                 .collect(),
             rotation_beats: 0,
         };
@@ -5610,7 +5537,6 @@ mod tests {
                 .map(|slot| SeedEvent {
                     start: Rational::from_integer(i64::from(slot)),
                     dur: Rational::ONE,
-                    class: "x".to_string(),
                 })
                 .collect(),
         };
@@ -5631,28 +5557,26 @@ mod tests {
                 SeedEvent {
                     start: Rational::ZERO,
                     dur: Rational::ONE,
-                    class: "x".to_string(),
                 },
                 SeedEvent {
                     start: Rational::from_integer(256),
                     dur: Rational::ONE,
-                    class: "x".to_string(),
                 },
             ],
         };
+        // Each pair travels 128 slots and changes duration (the +1 attribute
+        // microstep), landing at 258 — just past the 256 cap.
         let target = CompiledSeed {
             total_beats: 512,
             required_subdivision: 1,
             events: vec![
                 SeedEvent {
                     start: Rational::from_integer(128),
-                    dur: Rational::ONE,
-                    class: "ka".to_string(),
+                    dur: Rational::from_integer(2),
                 },
                 SeedEvent {
                     start: Rational::from_integer(384),
-                    dur: Rational::ONE,
-                    class: "ka".to_string(),
+                    dur: Rational::from_integer(2),
                 },
             ],
         };
@@ -6247,7 +6171,7 @@ mod tests {
         let earlier = resolve_direction(RotateDirection::Earlier);
         assert_eq!(
             event_picture(&earlier.seed),
-            vec![(3, 1, "x")],
+            vec![(3, 1)],
             "earlier wraps the downbeat onset to the preceding beat"
         );
         assert_eq!(earlier.trace[0].requested, 1);
@@ -6256,7 +6180,7 @@ mod tests {
         let later = resolve_direction(RotateDirection::Later);
         assert_eq!(
             event_picture(&later.seed),
-            vec![(1, 1, "x")],
+            vec![(1, 1)],
             "later moves the downbeat onset to the following beat"
         );
         assert_eq!(later.trace[0].requested, 1);
@@ -6711,7 +6635,6 @@ mod tests {
             events: vec![SeedEvent {
                 start: Rational::new(1, 2),
                 dur: Rational::new(1, 12),
-                class: "x".to_string(),
             }],
         };
         let s = spans(2, 12);
@@ -6761,7 +6684,6 @@ mod tests {
             events: vec![SeedEvent {
                 start: Rational::ZERO,
                 dur: Rational::new(1, 12),
-                class: "x".to_string(),
             }],
         };
         let s = spans(1, 12);
@@ -6808,7 +6730,6 @@ mod tests {
                 .map(|slot| SeedEvent {
                     start: Rational::new(slot, 64),
                     dur: Rational::new(1, 64),
-                    class: "x".to_string(),
                 })
                 .collect(),
         };
@@ -6857,7 +6778,6 @@ mod tests {
                 .map(|slot| SeedEvent {
                     start: Rational::new(slot * 2, 64),
                     dur: Rational::new(1, 64),
-                    class: "x".to_string(),
                 })
                 .collect(),
         };
@@ -6907,7 +6827,6 @@ mod tests {
                 .map(|slot| SeedEvent {
                     start: Rational::new(slot, 64),
                     dur: Rational::new(1, 64),
-                    class: "x".to_string(),
                 })
                 .collect(),
         };
@@ -6969,31 +6888,11 @@ mod tests {
         let guard_inputs = inputs(7, 1, 0, 100, &s);
         let candidate = EvolutionState {
             onsets: vec![
-                EvolvedOnset {
-                    slot: 0,
-                    dur: 2,
-                    class: "x".to_string(),
-                },
-                EvolvedOnset {
-                    slot: 1,
-                    dur: 1,
-                    class: "x".to_string(),
-                },
-                EvolvedOnset {
-                    slot: 4,
-                    dur: 1,
-                    class: "x".to_string(),
-                },
-                EvolvedOnset {
-                    slot: 8,
-                    dur: 1,
-                    class: "x".to_string(),
-                },
-                EvolvedOnset {
-                    slot: 12,
-                    dur: 1,
-                    class: "x".to_string(),
-                },
+                EvolvedOnset { slot: 0, dur: 2 },
+                EvolvedOnset { slot: 1, dur: 1 },
+                EvolvedOnset { slot: 4, dur: 1 },
+                EvolvedOnset { slot: 8, dur: 1 },
+                EvolvedOnset { slot: 12, dur: 1 },
             ],
             rotation_beats: 0,
         };
@@ -7273,28 +7172,24 @@ mod tests {
                 .map(|slot| EvolvedOnset {
                     slot,
                     dur: 1,
-                    class: format!("x{slot}"),
                 })
                 .collect::<Vec<_>>();
             if onsets.is_empty() {
                 onsets.push(EvolvedOnset {
                     slot: window.start,
                     dur: 1,
-                    class: "x".to_string(),
                 });
             }
             if window.start > 0 {
                 onsets.push(EvolvedOnset {
                     slot: 0,
                     dur: 1,
-                    class: "outside-before".to_string(),
                 });
             }
             if window.end < 16 {
                 onsets.push(EvolvedOnset {
                     slot: 15,
                     dur: 1,
-                    class: "outside-after".to_string(),
                 });
             }
             onsets.sort_by_key(|onset| onset.slot);
@@ -7552,11 +7447,7 @@ mod tests {
         let (ranks, template, beat_level) = fold_env(4, 1);
         let mut inherited = seed_state(&seed);
         inherited.onsets.remove(0);
-        inherited.onsets.push(EvolvedOnset {
-            slot: 3,
-            dur: 1,
-            class: "removed-by-leash".to_string(),
-        });
+        inherited.onsets.push(EvolvedOnset { slot: 3, dur: 1 });
 
         // The 50% leash first removes slot 3, leaving the seed onset at slot 0
         // missing. Seed 7's cycle-one Add restores that strongest empty slot.
@@ -7573,16 +7464,10 @@ mod tests {
             1,
         )
         .0;
-        let restored = next
-            .onsets
+        next.onsets
             .iter()
             .find(|onset| onset.slot == 0)
             .expect("Add restores slot zero");
-        assert_eq!(restored.class, "b");
-        assert!(next
-            .onsets
-            .iter()
-            .all(|onset| onset.class != "removed-by-leash"));
     }
 
     #[test]
@@ -8260,16 +8145,8 @@ mod tests {
         let (ranks, template, beat_level) = fold_env(2, 4);
         let crossing = EvolutionState {
             onsets: vec![
-                EvolvedOnset {
-                    slot: 3,
-                    dur: 2,
-                    class: "x".to_string(),
-                },
-                EvolvedOnset {
-                    slot: 6,
-                    dur: 1,
-                    class: "x".to_string(),
-                },
+                EvolvedOnset { slot: 3, dur: 2 },
+                EvolvedOnset { slot: 6, dur: 1 },
             ],
             rotation_beats: 0,
         };
@@ -8299,11 +8176,7 @@ mod tests {
 
         let sioros_template = metrical_levels(&[2, 2, 2]);
         let sustained = EvolutionState {
-            onsets: vec![EvolvedOnset {
-                slot: 3,
-                dur: 5,
-                class: "x".to_string(),
-            }],
+            onsets: vec![EvolvedOnset { slot: 3, dur: 5 }],
             rotation_beats: 0,
         };
         assert!(legal_desyncopations(&[3], &sioros_template, 1, None).contains(&4));
@@ -8322,11 +8195,7 @@ mod tests {
     #[test]
     fn scoped_rotate_rejects_a_post_rotation_interval_escape() {
         let state = EvolutionState {
-            onsets: vec![EvolvedOnset {
-                slot: 2,
-                dur: 6,
-                class: "x".to_string(),
-            }],
+            onsets: vec![EvolvedOnset { slot: 2, dur: 6 }],
             rotation_beats: 0,
         };
         assert!(windowed_rotate(
@@ -8341,13 +8210,7 @@ mod tests {
     #[test]
     fn stalled_density_normalization_still_reports_the_active_rail() {
         let unchanged = EvolutionState {
-            onsets: (0..5)
-                .map(|slot| EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class: "x".to_string(),
-                })
-                .collect(),
+            onsets: (0..5).map(|slot| EvolvedOnset { slot, dur: 1 }).collect(),
             rotation_beats: 0,
         };
         assert_eq!(

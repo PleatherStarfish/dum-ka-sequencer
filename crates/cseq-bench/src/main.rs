@@ -434,11 +434,7 @@ fn perceptual_distance_dense_8192() -> usize {
         let left = EvolutionState {
             onsets: (0..8_192)
                 .filter(|slot| (slot % 2 == 0) ^ (slot % 127 == 0))
-                .map(|slot| EvolvedOnset {
-                    slot,
-                    dur: 1,
-                    class: "x".to_string(),
-                })
+                .map(|slot| EvolvedOnset { slot, dur: 1 })
                 .collect(),
             rotation_beats: 0,
         };
@@ -448,7 +444,7 @@ fn perceptual_distance_dense_8192() -> usize {
                 .iter()
                 .map(|onset| EvolvedOnset {
                     slot: (onset.slot + 173) % 8_192,
-                    ..onset.clone()
+                    ..*onset
                 })
                 .collect(),
             rotation_beats: 0,

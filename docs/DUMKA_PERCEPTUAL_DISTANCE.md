@@ -28,7 +28,6 @@ register is applied before scoring. Each onset then contributes:
 
 - an attack at its rotated start slot;
 - circular sounding occupancy for its duration, capped at `N` slots;
-- a stroke class at its attack slot; and
 - onset phase, duration, and cyclic inter-onset interval ratios relative to
   `W`.
 
@@ -83,7 +82,7 @@ the number of attack slots. All slot distance is circular.
 | Meter/phase | 240 | A clarity-controlled interpolation between the cheapest circular attack registration and the salience-weighted edit at the authored phase; defined below. |
 | Syncopation | 120 | For every attack, scan forward until the next attack. If an intervening first stronger metrical slot exists, add `(source_level - target_level) × target_salience` at that slot. Let `D` be signature L1 difference; the component is `R(D, (|A|+|A'|) × max_level × max_salience)`. |
 | Ratio complexity | 100 | Build a histogram of reduced denominators for onset phase within the beat, duration, and every cyclic inter-attack interval. Each denominator receives `1 + Σ prime_cost(p)` per prime factor with multiplicity, where costs are `2→1`, `3→3`, `5→5`, and other primes `min(p,17)`. Compare histograms by `R(L1 difference, sum of per-bin maxima)`. |
-| Density/class | 60 | Density is `R(abs(|A|-|A'|), N)`. Inventory is `R(class-count L1 difference, 2N)`; positional is `R(number of slots attacked in both patterns with different classes, N)`. First combine class as nearest-rounded `(3×positional + inventory)/4`, then combine nearest-rounded `(3×density + class)/4`. |
+| Density/class | 60 | Density is `R(abs(|A|-|A'|), N)`. The historical stroke-class sub-term survives label removal as its exact uniform-label value: inventory is `R(abs(|A|-|A'|), 2N)` and positional is identically 0 (labels no longer exist), so class = nearest-rounded `inventory/4`, then combine nearest-rounded `(3×density + class)/4`. Byte-identical to the labelled `v1` formula for every rhythm-only state. |
 
 The timing term is a symmetric nearest-neighbor cost, not an optimal one-to-one
 earth mover assignment. The ratio term describes the inventory of rhythmic
@@ -245,7 +244,7 @@ version and explicit migration/audition decision; it never silently retunes
 A suitable listener-study workflow is:
 
 1. Sample legal adjacent states from every operator family across several
-   Subdivisions, meters, onset densities, stroke-class inventories, scopes, and
+   Subdivisions, meters, onset densities, scopes, and
    clear versus ambiguous phase structures. Include controlled anchors such as
    a split sustain, one weak/strong rest fill, one weak/strong displacement,
    symmetric/asymmetric rotations, syncopation changes, and simple/prime-ratio

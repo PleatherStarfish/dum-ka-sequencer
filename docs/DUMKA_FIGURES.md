@@ -47,9 +47,9 @@ outside the platform contract. See [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
 note (onset + its sustain, length `n ≥ 2` slots) or one maximal rest run
 (`n ≥ 2`). Draw a figure size `k` (2..=n). Replace the interval with onsets
 at the `E(k, n, 0)` positions; each fragment sustains to the next fragment
-boundary. A fragmented note keeps its stroke class on the first fragment
+boundary. A fragmented note's pieces keep its duration coverage
 (the rest inherit it); a fragmented rest run becomes sounding figures that
-inherit the preceding stroke class (Add's rule, generalized).
+fill the interval as plain onsets (the notation is rhythm-only).
 
 **Consolidate** — exact inverse: choose a maximal run of ≥ 2 consecutive
 sounding fragments with no interior rest, and merge it into one note

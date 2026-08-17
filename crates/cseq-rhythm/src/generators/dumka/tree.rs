@@ -55,16 +55,15 @@ fn model_rational(value: &BigRational, line: u32, col: u32) -> Result<Rational, 
     }
 }
 
-/// One sounding event on the cycle's rational timeline.
+/// One sounding event on the cycle's rational timeline. Rhythm only: the
+/// notation's identifier spellings are discarded at parse, so an event is
+/// fully described by where it starts and how long it sounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeedEvent {
     /// Onset in beats from the cycle start.
     pub start: Rational,
     /// Duration in beats (holds already merged).
     pub dur: Rational,
-    /// Stroke-class label from the notation (inert until the payload
-    /// milestone).
-    pub class: String,
 }
 
 /// A compiled pattern: exact events plus the structure they require.
@@ -133,7 +132,7 @@ pub fn compile(tree: &SeedTree) -> Result<CompiledSeed, PatternError> {
     struct Element {
         start: BigRational,
         dur: BigRational,
-        class: Option<String>,
+        sounding: bool,
         line: u32,
         col: u32,
     }
@@ -150,17 +149,17 @@ pub fn compile(tree: &SeedTree) -> Result<CompiledSeed, PatternError> {
         for node in nodes {
             let dur = &unit * big_integer(node.weight);
             match &node.kind {
-                NodeKind::Onset { class } => elements.push(Element {
+                NodeKind::Onset => elements.push(Element {
                     start: cursor.clone(),
                     dur: dur.clone(),
-                    class: Some(class.clone()),
+                    sounding: true,
                     line: node.line,
                     col: node.col,
                 }),
                 NodeKind::Rest => elements.push(Element {
                     start: cursor.clone(),
                     dur: dur.clone(),
-                    class: None,
+                    sounding: false,
                     line: node.line,
                     col: node.col,
                 }),
@@ -212,11 +211,10 @@ pub fn compile(tree: &SeedTree) -> Result<CompiledSeed, PatternError> {
 
     let mut events = Vec::new();
     for element in elements {
-        if let Some(class) = element.class {
+        if element.sounding {
             events.push(SeedEvent {
                 start: model_rational(&element.start, element.line, element.col)?,
                 dur: model_rational(&element.dur, element.line, element.col)?,
-                class,
             });
         }
     }
@@ -391,22 +389,19 @@ mod tests {
         let seed = compiled("[dum@3 ka] [. ka] [dum ka dum ka dum]@2");
         assert_eq!(seed.total_beats, 4);
         assert_eq!(seed.required_subdivision, 20);
-        let onsets: Vec<(Rational, Rational, &str)> = seed
-            .events
-            .iter()
-            .map(|e| (e.start, e.dur, e.class.as_str()))
-            .collect();
+        let onsets: Vec<(Rational, Rational)> =
+            seed.events.iter().map(|e| (e.start, e.dur)).collect();
         assert_eq!(
             onsets,
             vec![
-                (rational(0, 1), rational(3, 4), "dum"),
-                (rational(3, 4), rational(1, 4), "ka"),
-                (rational(3, 2), rational(1, 2), "ka"),
-                (rational(2, 1), rational(2, 5), "dum"),
-                (rational(12, 5), rational(2, 5), "ka"),
-                (rational(14, 5), rational(2, 5), "dum"),
-                (rational(16, 5), rational(2, 5), "ka"),
-                (rational(18, 5), rational(2, 5), "dum"),
+                (rational(0, 1), rational(3, 4)),
+                (rational(3, 4), rational(1, 4)),
+                (rational(3, 2), rational(1, 2)),
+                (rational(2, 1), rational(2, 5)),
+                (rational(12, 5), rational(2, 5)),
+                (rational(14, 5), rational(2, 5)),
+                (rational(16, 5), rational(2, 5)),
+                (rational(18, 5), rational(2, 5)),
             ]
         );
     }
@@ -501,7 +496,6 @@ mod tests {
                         "events": seed.events.iter().map(|event| serde_json::json!({
                             "start": { "num": event.start.numer(), "den": event.start.denom() },
                             "dur": { "num": event.dur.numer(), "den": event.dur.denom() },
-                            "cls": event.class,
                         })).collect::<Vec<_>>(),
                     }
                 }),

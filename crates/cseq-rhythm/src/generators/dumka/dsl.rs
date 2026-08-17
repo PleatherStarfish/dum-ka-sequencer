@@ -4,9 +4,10 @@
 //! (default 1); a `[ ... ]` group divides its span among its children in
 //! proportion to their weights, which is how tuplets of any ratio start
 //! anywhere and span any number of nodes (`[x x x x x]@2` is five in the
-//! time of two beats). Leaves are onsets (a bare identifier naming a stroke
-//! class such as `x`, `dum`, `ka`), rests (`.`), and holds (`_`, which
-//! extend the previous event). Sugar: `E(k,n[,r])` expands to a Bjorklund
+//! time of two beats). Leaves are onsets (any bare identifier; `x` is the
+//! convention, and historical names like `dum`/`ka` still parse with their
+//! labels discarded — the notation is rhythm-only), rests (`.`), and holds
+//! (`_`, which extend the previous event). Sugar: `E(k,n[,r])` expands to a Bjorklund
 //! necklace, `*n` repeats the preceding node as siblings, `|` is an ignored
 //! visual bar separator, and `#` comments to end of line.
 //!
@@ -57,9 +58,11 @@ struct Pos {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
-    /// A sounding attack carrying a stroke-class label (inert until the
-    /// payload milestone; `x` is the conventional generic class).
-    Onset { class: String },
+    /// A sounding attack. Any bare identifier in the notation is an onset —
+    /// historical stroke-class names (`dum`, `ka`, …) still parse for patch
+    /// compatibility, but the label is discarded: the notation describes
+    /// rhythm only, and the canonical printer emits `x`.
+    Onset,
     /// Silence for the node's span.
     Rest,
     /// Extends whatever element precedes it in time by this node's span.
@@ -322,7 +325,10 @@ impl Parser {
                         "'(' is only valid after E, as in E(3,8)",
                     ));
                 } else {
-                    NodeKind::Onset { class: name }
+                    // The identifier's spelling is intentionally dropped:
+                    // rhythm-only notation, no stroke classes.
+                    let _ = name;
+                    NodeKind::Onset
                 }
             }
             TokenKind::RBracket => unreachable!("handled by parse_siblings"),
@@ -439,9 +445,7 @@ impl Parser {
             .into_iter()
             .map(|sounds| Node {
                 kind: if sounds {
-                    NodeKind::Onset {
-                        class: "x".to_string(),
-                    }
+                    NodeKind::Onset
                 } else {
                     NodeKind::Rest
                 },
@@ -512,7 +516,7 @@ fn print_nodes(nodes: &[Node], out: &mut String) {
 
 fn print_node(node: &Node, out: &mut String) {
     match &node.kind {
-        NodeKind::Onset { class } => out.push_str(class),
+        NodeKind::Onset => out.push('x'),
         NodeKind::Rest => out.push('.'),
         NodeKind::Hold => out.push('_'),
         NodeKind::Group(children) => {
@@ -532,11 +536,9 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn onset(class: &str, weight: u32) -> Node {
+    fn onset(_class: &str, weight: u32) -> Node {
         Node {
-            kind: NodeKind::Onset {
-                class: class.to_string(),
-            },
+            kind: NodeKind::Onset,
             weight,
             line: 0,
             col: 0,
@@ -548,7 +550,7 @@ mod tests {
         fn walk(nodes: &[Node], depth: usize, out: &mut Vec<(String, u32)>) {
             for node in nodes {
                 let label = match &node.kind {
-                    NodeKind::Onset { class } => format!("{depth}:{class}"),
+                    NodeKind::Onset => format!("{depth}:x"),
                     NodeKind::Rest => format!("{depth}:."),
                     NodeKind::Hold => format!("{depth}:_"),
                     NodeKind::Group(children) => {
@@ -578,12 +580,7 @@ mod tests {
         match &tree.nodes[0].kind {
             NodeKind::Group(children) => {
                 assert_eq!(children[0].weight, 3);
-                assert_eq!(
-                    children[0].kind,
-                    NodeKind::Onset {
-                        class: "dum".to_string()
-                    }
-                );
+                assert_eq!(children[0].kind, NodeKind::Onset);
             }
             other => panic!("expected group, got {other:?}"),
         }
@@ -650,14 +647,9 @@ mod tests {
     }
 
     #[test]
-    fn plain_e_is_an_ordinary_stroke_class() {
+    fn plain_e_is_an_ordinary_onset() {
         let tree = parse("E x").unwrap();
-        assert_eq!(
-            tree.nodes[0].kind,
-            NodeKind::Onset {
-                class: "E".to_string()
-            }
-        );
+        assert_eq!(tree.nodes[0].kind, NodeKind::Onset);
     }
 
     #[test]
@@ -732,12 +724,12 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(print(&tree), "dum@3 [ka x@2]@2");
+        assert_eq!(print(&tree), "x@3 [x x@2]@2");
     }
 
     fn leaf_strategy() -> impl Strategy<Value = NodeKind> {
         prop_oneof![
-            3 => "[a-z][a-z0-9]{0,3}".prop_map(|class| NodeKind::Onset { class }),
+            3 => Just(NodeKind::Onset),
             1 => Just(NodeKind::Rest),
             1 => Just(NodeKind::Hold),
         ]

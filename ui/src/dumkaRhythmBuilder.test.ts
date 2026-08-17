@@ -18,14 +18,12 @@ import {
   groupSelection,
   hasArticulatableGroup,
   insertSibling,
-  isValidDumkaStroke,
   patternHasRewritableSugar,
   printBuilderPattern,
   removeSelection,
   setGroupCount,
   setGroupSpan,
   setLeafKind,
-  setStroke,
   setWeight,
   siblingRange,
   splitIntoTuplet,
@@ -93,26 +91,13 @@ describe("dumkaRhythmBuilder", () => {
     expect(ids(reparsed)).toEqual(ids(nodes));
   });
 
-  it("cycles a leaf's type and defaults the stroke", () => {
+  it("cycles a leaf's type through the toolbar kinds", () => {
     const nodes = mustBuild("x . x .");
     const result = setLeafKind(nodes, 1, "note");
     expect(result.ok && printBuilderPattern(result.nodes)).toBe("x x x .");
     const back = setLeafKind(nodes, 0, "rest");
     expect(back.ok && printBuilderPattern(back.nodes)).toBe(". . x .");
     expect(setLeafKind(mustBuild("[x x]"), 0, "rest").ok).toBe(false);
-  });
-
-  it("names strokes only when the parser reads them back verbatim", () => {
-    expect(isValidDumkaStroke("dum")).toBe(true);
-    expect(isValidDumkaStroke("E")).toBe(true);
-    expect(isValidDumkaStroke("")).toBe(false);
-    expect(isValidDumkaStroke("two words")).toBe(false);
-    expect(isValidDumkaStroke("x@2")).toBe(false);
-    const nodes = mustBuild("x . x .");
-    const named = setStroke(nodes, 0, "dum");
-    expect(named.ok && printBuilderPattern(named.nodes)).toBe("dum . x .");
-    expect(setStroke(nodes, 0, "not valid").ok).toBe(false);
-    expect(setStroke(nodes, 1, "dum").ok).toBe(false);
   });
 
   it("wraps existing beats in an identity group, then count makes the tuplet", () => {
@@ -137,13 +122,16 @@ describe("dumkaRhythmBuilder", () => {
   });
 
   it("grows a top-level group across existing beats without extending the cycle", () => {
+    // Historical stroke names in the input still parse; the printer is
+    // rhythm-only and emits x for every note.
     const pattern =
       "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]";
+    const printed = "[x . . x] [. . x . x] [x . x .] [x x . x]";
     const nodes = mustBuild(pattern);
     const twoBeats = setGroupSpan(nodes, 5, 2);
     if (!twoBeats.ok) throw new Error(twoBeats.message);
     expect(printBuilderPattern(twoBeats.nodes)).toBe(
-      "[dum . . ka] [. . ka . x]@2 [x x . x]"
+      "[x . . x] [. . x . x]@2 [x x . x]"
     );
     expect(tryCommitBuilder(twoBeats.nodes)).toMatchObject({
       ok: true,
@@ -153,13 +141,13 @@ describe("dumkaRhythmBuilder", () => {
     const threeBeats = setGroupSpan(twoBeats.nodes, twoBeats.focusId, 3);
     if (!threeBeats.ok) throw new Error(threeBeats.message);
     expect(printBuilderPattern(threeBeats.nodes)).toBe(
-      "[dum . . ka] [. . ka . x]@3"
+      "[x . . x] [. . x . x]@3"
     );
     expect(tryCommitBuilder(threeBeats.nodes)).toMatchObject({
       ok: true,
       required: { cycleBeats: 4 },
     });
-    expect(printBuilderPattern(nodes)).toBe(pattern);
+    expect(printBuilderPattern(nodes)).toBe(printed);
   });
 
   it("shrinks into rest and refuses to end midway through a following block", () => {
@@ -241,9 +229,9 @@ describe("dumkaRhythmBuilder", () => {
   it("resizes a group by appending and trimming from the end", () => {
     const nodes = mustBuild("[dum ka]@2 .");
     const grown = setGroupCount(nodes, 0, 3);
-    expect(grown.ok && printBuilderPattern(grown.nodes)).toBe("[dum ka x]@2 .");
+    expect(grown.ok && printBuilderPattern(grown.nodes)).toBe("[x x x]@2 .");
     const trimmed = setGroupCount(nodes, 0, 1);
-    expect(trimmed.ok && printBuilderPattern(trimmed.nodes)).toBe("[dum]@2 .");
+    expect(trimmed.ok && printBuilderPattern(trimmed.nodes)).toBe("[x]@2 .");
   });
 
   it("can stylistically articulate a spanning 5:2 group into one grid tick per note", () => {
@@ -287,7 +275,7 @@ describe("dumkaRhythmBuilder", () => {
     ).toBe(true);
   });
 
-  it("preserves strokes and outer weight, using exact-grid slot cells", () => {
+  it("preserves onsets and outer weight, using exact-grid slot cells", () => {
     const source = mustBuild("[dum@3 ka] [. ka] [dum ka dum ka dum]@2");
     const result = articulateGroup(
       source,
@@ -295,7 +283,7 @@ describe("dumkaRhythmBuilder", () => {
       perBeatProjection("[dum@3 ka] [. ka] [dum ka dum ka dum]@2")
     );
     expect(result.ok && printBuilderPattern(result.nodes)).toBe(
-      "[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2"
+      "[x@3 x] [. x] [[x .] [x .] [x .] [x .] [x .]]@2"
     );
 
     const threeBeat = mustBuild("[dum ka dum ka dum]@3");
@@ -305,7 +293,7 @@ describe("dumkaRhythmBuilder", () => {
       perBeatProjection("[dum ka dum ka dum]@3")
     );
     expect(generalized.ok && printBuilderPattern(generalized.nodes)).toBe(
-      "[[dum .@2] [ka .@2] [dum .@2] [ka .@2] [dum .@2]]@3"
+      "[[x .@2] [x .@2] [x .@2] [x .@2] [x .@2]]@3"
     );
     const before = tryCommitBuilder(threeBeat);
     const after = generalized.ok ? tryCommitBuilder(generalized.nodes) : null;
@@ -390,7 +378,7 @@ describe("dumkaRhythmBuilder", () => {
     const result = articulateGroup(source, group.id, projection);
     if (!result.ok) throw new Error(result.message);
     expect(printBuilderPattern(result.nodes)).toBe(
-      "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]"
+      "[x . . x] [. . [x .] . [x .]]@2 [x . x .] [x x . x]"
     );
     expect(
       resolveDumkaCells(
@@ -557,7 +545,7 @@ describe("dumkaRhythmBuilder", () => {
   it("ungroups in place and classifies selections strictly", () => {
     const nodes = mustBuild("[x .]@2 ka");
     const flat = ungroupNode(nodes, 0);
-    expect(flat.ok && printBuilderPattern(flat.nodes)).toBe("x . ka");
+    expect(flat.ok && printBuilderPattern(flat.nodes)).toBe("x . x");
     expect(ungroupNode(nodes, 1).ok).toBe(false);
     const tuplet = mustBuild("[x x x x x]@2 . .");
     expect(ungroupNode(tuplet, 0)).toEqual({

@@ -171,13 +171,22 @@ describe("dumkaPattern mirror", () => {
     expect(seed.events[0]).toEqual({
       start: { num: 0, den: 1 },
       dur: { num: 3, den: 4 },
-      cls: "dum",
     });
     expect(seed.events[3]).toEqual({
       start: { num: 2, den: 1 },
       dur: { num: 2, den: 5 },
-      cls: "dum",
     });
+  });
+
+  it("still parses historical stroke names as plain onsets", () => {
+    // Back-compat pin: bare identifiers like dum/ka remain valid notation,
+    // but their labels are discarded — rhythm only.
+    const named = compileDumkaPattern("dum . ka .");
+    expect(named.ok).toBe(true);
+    if (named.ok) {
+      expect(named.compiled.events).toHaveLength(2);
+    }
+    expect(named).toEqual(compileDumkaPattern("x . x ."));
   });
 
   it("derives the exact minimal slot grid for every physical beat", () => {
@@ -320,7 +329,7 @@ describe("dumkaPattern mirror", () => {
     const seed = compiled(nested);
     expect(seed.totalBeats).toBe(1);
     expect(seed.events).toEqual([
-      { start: { num: 0, den: 1 }, dur: { num: 1, den: 1 }, cls: "x" },
+      { start: { num: 0, den: 1 }, dur: { num: 1, den: 1 } },
     ]);
   });
 
@@ -340,7 +349,7 @@ describe("dumkaPattern mirror", () => {
     expect(compiled(cancelled)).toEqual({
       totalBeats: 1,
       requiredSubdivision: 1,
-      events: [{ start: { num: 0, den: 1 }, dur: { num: 1, den: 1 }, cls: "x" }],
+      events: [{ start: { num: 0, den: 1 }, dur: { num: 1, den: 1 } }],
     });
   });
 

@@ -185,24 +185,14 @@ pub fn fragment_positions(len: u32, k: u32) -> Vec<u32> {
 /// inherit the preceding stroke class like Add, `fill_class` being that
 /// precomputed class. Fragments sustain to the next fragment boundary, so
 /// the interval stays exactly covered.
-pub fn apply_fragment(
-    state: &EvolutionState,
-    interval: &FigureInterval,
-    k: u32,
-    fill_class: &str,
-) -> EvolutionState {
+pub fn apply_fragment(state: &EvolutionState, interval: &FigureInterval, k: u32) -> EvolutionState {
     let positions = fragment_positions(interval.len, k);
-    let class = match interval.onset_index {
-        Some(index) => state.onsets[index].class.clone(),
-        None => fill_class.to_string(),
-    };
     let mut fragments = Vec::with_capacity(positions.len());
     for (index, &position) in positions.iter().enumerate() {
         let end = positions.get(index + 1).copied().unwrap_or(interval.len);
         fragments.push(EvolvedOnset {
             slot: interval.start + position,
             dur: end - position,
-            class: class.clone(),
         });
     }
     let mut next = state.clone();
@@ -219,9 +209,8 @@ pub fn apply_fragment(
     next
 }
 
-/// Merge the run into one note: the first onset's slot and class, the
-/// run's combined duration. Exact inverse of `apply_fragment` on a
-/// sounding interval.
+/// Merge the run into one note: the first onset's slot, the run's combined
+/// duration. Exact inverse of `apply_fragment` on a sounding interval.
 pub fn apply_consolidate(state: &EvolutionState, run: &ConsolidateRun) -> EvolutionState {
     let mut next = state.clone();
     let combined: u32 = next.onsets[run.first_index..run.first_index + run.count]
@@ -231,7 +220,6 @@ pub fn apply_consolidate(state: &EvolutionState, run: &ConsolidateRun) -> Evolut
     let merged = EvolvedOnset {
         slot: next.onsets[run.first_index].slot,
         dur: combined,
-        class: next.onsets[run.first_index].class.clone(),
     };
     next.onsets
         .splice(run.first_index..run.first_index + run.count, [merged]);
@@ -242,12 +230,8 @@ pub fn apply_consolidate(state: &EvolutionState, run: &ConsolidateRun) -> Evolut
 mod tests {
     use super::*;
 
-    fn onset(slot: u32, dur: u32, class: &str) -> EvolvedOnset {
-        EvolvedOnset {
-            slot,
-            dur,
-            class: class.to_string(),
-        }
+    fn onset(slot: u32, dur: u32, _class: &str) -> EvolvedOnset {
+        EvolvedOnset { slot, dur }
     }
 
     fn state(onsets: Vec<EvolvedOnset>) -> EvolutionState {
@@ -359,11 +343,10 @@ mod tests {
             len: 6,
             onset_index: Some(0),
         };
-        let split = apply_fragment(&s, &interval, 4, "x");
+        let split = apply_fragment(&s, &interval, 4);
         let covered: u32 = split.onsets.iter().map(|o| o.dur).sum();
         assert_eq!(covered, 6);
         assert_eq!(split.onsets.first().unwrap().slot, 2);
-        assert!(split.onsets.iter().all(|o| o.class == "dum"));
         let ends: Vec<u32> = split.onsets.iter().map(|o| o.slot + o.dur).collect();
         let starts: Vec<u32> = split.onsets.iter().skip(1).map(|o| o.slot).collect();
         assert_eq!(&ends[..ends.len() - 1], &starts[..]);
@@ -377,10 +360,9 @@ mod tests {
             len: 6,
             onset_index: None,
         };
-        let filled = apply_fragment(&s, &interval, 3, "dum");
+        let filled = apply_fragment(&s, &interval, 3);
         let slots: Vec<u32> = filled.onsets.iter().map(|o| o.slot).collect();
         assert_eq!(slots, vec![0, 2, 4, 6, 8]);
-        assert!(filled.onsets[1..4].iter().all(|o| o.class == "dum"));
         let covered: u32 = filled.onsets[1..4].iter().map(|o| o.dur).sum();
         assert_eq!(covered, 6);
     }
@@ -396,7 +378,7 @@ mod tests {
                     len,
                     onset_index: Some(0),
                 };
-                let split = apply_fragment(&s, &interval, k, "x");
+                let split = apply_fragment(&s, &interval, k);
                 assert_eq!(split.onsets.len(), 1 + k as usize);
                 let run = ConsolidateRun {
                     first_index: 0,

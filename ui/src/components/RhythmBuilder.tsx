@@ -8,13 +8,11 @@ import {
   groupRatio,
   groupSelection,
   insertSibling,
-  isValidDumkaStroke,
   patternHasRewritableSugar,
   removeSelection,
   setGroupCount,
   setGroupSpan,
   setLeafKind,
-  setStroke,
   setWeight,
   siblingRange,
   splitIntoTuplet,
@@ -29,50 +27,10 @@ import {
 import { DUMKA_MAX_EUCLID_SLOTS, DUMKA_MAX_WEIGHT } from "../dumkaPattern";
 import { NumericField } from "../NumericField";
 
-const STROKE_SUGGESTIONS = ["dum", "ka", "x", "ta", "na", "tin"];
-
-/** Committed-on-blur stroke name field (parser-validated, else reverts). */
-function StrokeField({
-  value,
-  disabled,
-  onCommit,
-}: {
-  value: string;
-  disabled: boolean;
-  onCommit: (stroke: string) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft !== null && draft !== value && isValidDumkaStroke(draft)) {
-      onCommit(draft);
-    }
-    setDraft(null);
-  };
-  return (
-    <input
-      aria-label="Stroke name"
-      className="rb-stroke-input"
-      list="dumka-stroke-suggestions"
-      spellCheck={false}
-      value={draft ?? value}
-      disabled={disabled}
-      onChange={(event) => setDraft(event.currentTarget.value)}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          commit();
-        }
-        if (event.key === "Escape") setDraft(null);
-      }}
-    />
-  );
-}
-
 function leafGlyph(node: BuilderNode): string {
   if (node.kind === "rest") return "·";
   if (node.kind === "hold") return "‿";
-  return node.stroke;
+  return "x";
 }
 
 function BlockRow({
@@ -122,10 +80,7 @@ function BlockRow({
             </div>
           );
         }
-        const label =
-          node.kind === "note"
-            ? `note ${node.stroke}`
-            : node.kind;
+        const label = node.kind;
         const name = `block ${node.id}: ${label}${
           node.weight > 1 ? ` over ${node.weight}` : ""
         }`;
@@ -299,30 +254,21 @@ export function RhythmBuilder({
 
       <div className="rb-toolbar" role="toolbar" aria-label="Rhythm builder tools">
         {leaf ? (
-          <>
-            <span className="rb-tool-cluster" aria-label="Element type">
-              {(["note", "rest", "hold"] as BuilderLeafKind[]).map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  className={leaf.kind === kind ? "is-active" : ""}
-                  disabled={disabled}
-                  aria-pressed={leaf.kind === kind}
-                  aria-label={`Set element to ${kind}`}
-                  onClick={() => apply(setLeafKind(nodes, leaf.id, kind))}
-                >
-                  {kind}
-                </button>
-              ))}
-            </span>
-            {leaf.kind === "note" ? (
-              <StrokeField
-                value={leaf.stroke}
+          <span className="rb-tool-cluster" aria-label="Element type">
+            {(["note", "rest", "hold"] as BuilderLeafKind[]).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={leaf.kind === kind ? "is-active" : ""}
                 disabled={disabled}
-                onCommit={(stroke) => apply(setStroke(nodes, leaf.id, stroke))}
-              />
-            ) : null}
-          </>
+                aria-pressed={leaf.kind === kind}
+                aria-label={`Set element to ${kind}`}
+                onClick={() => apply(setLeafKind(nodes, leaf.id, kind))}
+              >
+                {kind}
+              </button>
+            ))}
+          </span>
         ) : null}
 
         {single ? (
@@ -514,11 +460,6 @@ export function RhythmBuilder({
             Select a block to edit it — shift-click extends along siblings.
           </span>
         )}
-        <datalist id="dumka-stroke-suggestions">
-          {STROKE_SUGGESTIONS.map((stroke) => (
-            <option key={stroke} value={stroke} />
-          ))}
-        </datalist>
       </div>
 
       {topLevelGroup ? (

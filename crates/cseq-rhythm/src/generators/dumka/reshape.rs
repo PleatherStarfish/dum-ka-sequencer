@@ -153,11 +153,6 @@ pub fn apply_reshape(
         return None;
     }
 
-    // Classes carry over in order, cycling when inversion grows the count.
-    let classes: Vec<String> = indices
-        .iter()
-        .map(|&index| state.onsets[index].class.clone())
-        .collect();
     let window_end = window.start + window.len;
     let mut replacement = Vec::with_capacity(positions.len());
     for (order, &slot) in positions.iter().enumerate() {
@@ -167,11 +162,7 @@ pub fn apply_reshape(
                 positions.get(order + 1).copied().unwrap_or(window_end) - slot
             }
         };
-        replacement.push(EvolvedOnset {
-            slot,
-            dur,
-            class: classes[order % classes.len()].clone(),
-        });
+        replacement.push(EvolvedOnset { slot, dur });
     }
 
     let mut next = state.clone();
@@ -194,12 +185,8 @@ pub fn apply_reshape(
 mod tests {
     use super::*;
 
-    fn onset(slot: u32, dur: u32, class: &str) -> EvolvedOnset {
-        EvolvedOnset {
-            slot,
-            dur,
-            class: class.to_string(),
-        }
+    fn onset(slot: u32, dur: u32, _class: &str) -> EvolvedOnset {
+        EvolvedOnset { slot, dur }
     }
 
     fn state(onsets: Vec<EvolvedOnset>) -> EvolutionState {
@@ -268,8 +255,6 @@ mod tests {
         };
         let next = apply_reshape(&s, &window, &options).unwrap();
         assert_eq!(slots_of(&next), vec![0, 3, 6], "E(3,8) tresillo");
-        let classes: Vec<&str> = next.onsets.iter().map(|o| o.class.as_str()).collect();
-        assert_eq!(classes, vec!["dum", "ka", "x"]);
         assert!(next.onsets.iter().all(|o| o.dur == 1), "silent policy");
     }
 
@@ -340,8 +325,6 @@ mod tests {
         };
         let next = apply_reshape(&s, &window, &options).unwrap();
         assert_eq!(slots_of(&next), vec![1, 2, 4, 5, 7]);
-        let classes: Vec<&str> = next.onsets.iter().map(|o| o.class.as_str()).collect();
-        assert_eq!(classes, vec!["dum", "ka", "x", "dum", "ka"], "cycled");
     }
 
     #[test]

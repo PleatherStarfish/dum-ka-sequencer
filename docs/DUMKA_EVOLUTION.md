@@ -105,7 +105,7 @@ fires:
 | Operator | Default weight | What it does | Basis |
 |---|---|---|---|
 | BarlowRemove | 3 | Silences the least indispensable sounding onset | Barlow's "rhythmic dilution": density falls, metric feel survives (Barlow 1987; the survey's Stage-2 add/remove family) |
-| BarlowAdd | 3 | Sounds the most indispensable silent pulse (including no covering sustain) as a one-slot hit, inheriting the preceding stroke class | Barlow "filling"; ranks come from [barlow.rs](../crates/cseq-rhythm/src/generators/dumka/barlow.rs) |
+| BarlowAdd | 3 | Sounds the most indispensable silent pulse (including no covering sustain) as a one-slot hit | Barlow "filling"; ranks come from [barlow.rs](../crates/cseq-rhythm/src/generators/dumka/barlow.rs) |
 | Rotate | 2 | Moves the whole pattern one beat earlier or later via a rotation register | Beat-class transposition T_k (Babbitt/Cohn phasing); ranks stay in the unrotated metric frame, where indispensability means something |
 | Syncopate | 0 (opt-in) | Anticipates one onset backward from its strong pulse onto a silent preceding pulse `type` levels faster | Sioros, *Syncopation as Transformation*, PhD diss., U. Porto 2015, ch. 4 (CMMR 2013/LNCS chapter of the same title); [sioros.rs](../crates/cseq-rhythm/src/generators/dumka/sioros.rs) |
 | Desyncopate | 0 (opt-in) | Resolves one felt syncopation forward: the qualifying preceding onset moves onto its silent stronger pulse | Same source; exact inverse of Syncopate via the `{pulse, type}` vector |

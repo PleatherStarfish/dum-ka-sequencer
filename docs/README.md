@@ -20,8 +20,11 @@ For platform work:
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — Rust/Tauri/React structure.
 3. [UI_AND_INTERACTION.md](UI_AND_INTERACTION.md) — current visible surfaces and
    async interaction rules.
-4. [KNOWN_RISKS.md](KNOWN_RISKS.md) — parity, queue, persistence, and race risks.
-5. [TIMELINE_AUDIO_PARITY_POSTMORTEM.md](TIMELINE_AUDIO_PARITY_POSTMORTEM.md) —
+4. [UI_CONTROL_REFERENCE.md](UI_CONTROL_REFERENCE.md) — every mounted control
+   family and meaningful readout mapped to the property, command, or view state
+   it owns.
+5. [KNOWN_RISKS.md](KNOWN_RISKS.md) — parity, queue, persistence, and race risks.
+6. [TIMELINE_AUDIO_PARITY_POSTMORTEM.md](TIMELINE_AUDIO_PARITY_POSTMORTEM.md) —
    why cycle-local finalization is load-bearing.
 
 ## Current references
@@ -59,6 +62,8 @@ For platform work:
   fixed section, Subdivision, and Grouping rules.
 - [UI_AND_INTERACTION.md](UI_AND_INTERACTION.md) — authoring surfaces, timeline
   truth, draft commit, playback locks, and persistence workflows.
+- [UI_CONTROL_REFERENCE.md](UI_CONTROL_REFERENCE.md) — exhaustive UI control and
+  readout ownership map, including native menus and dynamic automation targets.
 - [TESTING.md](TESTING.md) — local matrix, DTO fixtures, ledgers, fuzz, and CI.
 - [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) — setup and contribution
   workflow.

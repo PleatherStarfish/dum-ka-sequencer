@@ -5,10 +5,14 @@
  * canonicalization are the Rust engine's job (`crates/cseq-rhythm/src/
  * generators/dumka`). The values here mirror the engine's serde default and
  * length cap code-point-for-code-point so the two sides cannot drift silently.
+ *
+ * The notation is rhythm-only: any bare identifier still parses as an onset
+ * for backward compatibility, but its label is discarded — `x` is the
+ * canonical spelling and the canonical printer emits `x` for every note.
  */
 
 /** Mirrors `DEFAULT_DUMKA_PATTERN` in crates/cseq-rhythm (serde default). */
-export const DEFAULT_DUMKA_PATTERN = "[dum . . ka] [. . ka .] [dum . ka .] [x x . x]";
+export const DEFAULT_DUMKA_PATTERN = "[x . . x] [. . x .] [x . x .] [x x . x]";
 
 /** Mirrors `MAX_PATTERN_LEN` in the engine's notation parser. */
 export const MAX_DUMKA_PATTERN_LENGTH = 4096;
@@ -67,7 +71,6 @@ export type Frac = { num: number; den: number };
 export interface DumkaEvent {
   start: Frac;
   dur: Frac;
-  cls: string;
 }
 
 export interface DumkaCompiled {
@@ -226,7 +229,7 @@ export function formatDumkaStructureError(message: string): string {
 }
 
 type NodeKind =
-  | { t: "onset"; cls: string }
+  | { t: "onset" }
   | { t: "rest" }
   | { t: "hold" }
   | { t: "group"; children: PatternNode[] };
@@ -482,7 +485,7 @@ function parseEuclid(state: ParserState, line: number, col: number): NodeKind {
   countNodes(state, slots.value, line, col);
   const children = dumkaEuclid(onsets.value, slots.value, rotation).map<PatternNode>(
     (sounds) => ({
-      kind: sounds ? { t: "onset", cls: "x" } : { t: "rest" },
+      kind: sounds ? { t: "onset" } : { t: "rest" },
       weight: 1,
       line,
       col,
@@ -520,7 +523,9 @@ function parseNode(state: ParserState, depth: number): PatternNode[] {
         const at = here(state);
         fail(at.line, at.col, "'(' is only valid after E, as in E(3,8)");
       } else {
-        kind = { t: "onset", cls: token.text };
+        // Rhythm-only: the identifier text is deliberately discarded — any
+        // name (historical `dum`/`ka` included) is just an onset.
+        kind = { t: "onset" };
       }
       break;
     }
@@ -662,7 +667,7 @@ function compileDumkaPatternInternal(
     type Element = {
       start: ExactFrac;
       dur: ExactFrac;
-      cls: string | null;
+      sounding: boolean;
       line: number;
       col: number;
     };
@@ -679,7 +684,7 @@ function compileDumkaPatternInternal(
             elements.push({
               start: cursor,
               dur,
-              cls: node.kind.cls,
+              sounding: true,
               line: node.line,
               col: node.col,
             });
@@ -688,7 +693,7 @@ function compileDumkaPatternInternal(
             elements.push({
               start: cursor,
               dur,
-              cls: null,
+              sounding: false,
               line: node.line,
               col: node.col,
             });
@@ -747,11 +752,10 @@ function compileDumkaPatternInternal(
         totalBeats,
         requiredSubdivision: Number(subdivision),
         events: elements
-          .filter((element) => element.cls !== null)
+          .filter((element) => element.sounding)
           .map((element) => ({
             start: publicFrac(element.start, element.line, element.col),
             dur: publicFrac(element.dur, element.line, element.col),
-            cls: element.cls!,
           })),
       },
       slotsPerBeat: beatSubdivisions.map(Number),
@@ -906,7 +910,7 @@ export function resolveDumkaCells(
  * compile path the parser contract fixture pins.
  */
 export type DumkaPatternNode =
-  | { kind: "note"; stroke: string; weight: number }
+  | { kind: "note"; weight: number }
   | { kind: "rest"; weight: number }
   | { kind: "hold"; weight: number }
   | { kind: "group"; weight: number; children: DumkaPatternNode[] };
@@ -936,7 +940,7 @@ export function parseDumkaPatternNodes(
     const convert = (node: PatternNode): DumkaPatternNode => {
       switch (node.kind.t) {
         case "onset":
-          return { kind: "note", stroke: node.kind.cls, weight: node.weight };
+          return { kind: "note", weight: node.weight };
         case "rest":
           return { kind: "rest", weight: node.weight };
         case "hold":

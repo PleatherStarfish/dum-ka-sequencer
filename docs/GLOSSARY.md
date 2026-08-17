@@ -42,10 +42,10 @@ a custom beat length.
 
 The seed-notation generator: a **pattern** (weighted proportional tree,
 [DUMKA_DSL.md](DUMKA_DSL.md)) compiles to exact rational events and renders
-verbatim each cycle. Its **stroke classes** (`dum`, `ka`, any bare name)
-are carried through parsing and become velocity/pitch payload in a later
-milestone; its required structure (beats + Subdivision) is applied from the
-Generator editor.
+verbatim each cycle. The notation is rhythm-only — any bare identifier is
+an onset and its spelling is discarded (historical stroke names like `dum`
+and `ka` still parse for patch compatibility); its required structure
+(beats + Subdivision) is applied from the Generator editor.
 
 ## Example generator
 

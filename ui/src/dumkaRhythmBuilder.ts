@@ -36,8 +36,6 @@ export type BuilderLeafKind = "note" | "rest" | "hold";
 export interface BuilderNode {
   id: number;
   kind: BuilderLeafKind | "group";
-  /** Stroke class; meaningful only when kind === "note". */
-  stroke: string;
   weight: number;
   /** Children; non-empty only when kind === "group". */
   children: BuilderNode[];
@@ -51,13 +49,10 @@ export type BuilderOpResult =
  * screen-sized — the analyzer still enforces every real platform cap. */
 export const BUILDER_MAX_TUPLET_COUNT = 64;
 
-const DEFAULT_STROKE = "x";
-
 function fromParsed(node: DumkaPatternNode): BuilderNode {
   return {
     id: 0,
     kind: node.kind,
-    stroke: node.kind === "note" ? node.stroke : "",
     weight: node.weight,
     children: node.kind === "group" ? node.children.map(fromParsed) : [],
   };
@@ -93,7 +88,8 @@ function printNode(node: BuilderNode): string {
   const suffix = node.weight > 1 ? `@${node.weight}` : "";
   switch (node.kind) {
     case "note":
-      return `${node.stroke}${suffix}`;
+      // Rhythm-only notation: every note prints as the canonical `x`.
+      return `x${suffix}`;
     case "rest":
       return `.${suffix}`;
     case "hold":
@@ -122,14 +118,6 @@ export function tryCommitBuilder(
   return analysis.ok
     ? { ok: true, pattern, required: analysis.required }
     : { ok: false, message: analysis.issue.message };
-}
-
-/** A stroke name is valid iff the parser reads it back as that one note. */
-export function isValidDumkaStroke(name: string): boolean {
-  const parsed = parseDumkaPatternNodes(name);
-  if (!parsed.ok || parsed.nodes.length !== 1) return false;
-  const only = parsed.nodes[0]!;
-  return only.kind === "note" && only.stroke === name && only.weight === 1;
 }
 
 /** True when visual edits would rewrite sugar, comments, or bar lines. */
@@ -522,25 +510,6 @@ export function setLeafKind(
     return { ok: false, message: "select a note, rest, or hold" };
   }
   found.node.kind = kind;
-  found.node.stroke =
-    kind === "note" ? found.node.stroke || DEFAULT_STROKE : "";
-  return finish(next, found.node);
-}
-
-export function setStroke(
-  nodes: BuilderNode[],
-  id: number,
-  stroke: string
-): BuilderOpResult {
-  const next = clone(nodes);
-  const found = locate(next, id);
-  if (!found || found.node.kind !== "note") {
-    return { ok: false, message: "select a note to name its stroke" };
-  }
-  if (!isValidDumkaStroke(stroke)) {
-    return { ok: false, message: `"${stroke}" is not a valid stroke name` };
-  }
-  found.node.stroke = stroke;
   return finish(next, found.node);
 }
 
@@ -656,7 +625,6 @@ export function setGroupSpan(
     ...Array.from({ length: released }, (): BuilderNode => ({
       id: 0,
       kind: "rest",
-      stroke: "",
       weight: 1,
       children: [],
     }))
@@ -675,7 +643,6 @@ export function insertSibling(
   const inserted: BuilderNode = {
     id: 0,
     kind: "note",
-    stroke: DEFAULT_STROKE,
     weight: 1,
     children: [],
   };
@@ -731,7 +698,6 @@ export function groupSelection(
   const group: BuilderNode = {
     id: 0,
     kind: "group",
-    stroke: "",
     weight,
     children: run,
   };
@@ -777,12 +743,10 @@ export function splitIntoTuplet(
   const group: BuilderNode = {
     id: 0,
     kind: "group",
-    stroke: "",
     weight: found.node.weight,
     children: Array.from({ length: count }, () => ({
       id: 0,
       kind: "note" as const,
-      stroke: DEFAULT_STROKE,
       weight: 1,
       children: [],
     })),
@@ -799,7 +763,6 @@ function restNodesForWeight(weight: number): BuilderNode[] {
     nodes.push({
       id: 0,
       kind: "rest",
-      stroke: "",
       weight: chunk,
       children: [],
     });
@@ -831,13 +794,11 @@ function articulatedCandidate(
     return {
       id: 0,
       kind: "group",
-      stroke: "",
       weight: child.weight,
       children: [
         {
           id: 0,
           kind: "note",
-          stroke: child.stroke,
           weight: 1,
           children: [],
         },
@@ -922,12 +883,10 @@ export function fillEuclid(
   const group: BuilderNode = {
     id: 0,
     kind: "group",
-    stroke: "",
     weight: found.node.weight,
     children: dumkaEuclid(onsets, slots, rotation).map((sounds) => ({
       id: 0,
       kind: sounds ? ("note" as const) : ("rest" as const),
-      stroke: sounds ? DEFAULT_STROKE : "",
       weight: 1,
       children: [],
     })),
@@ -957,7 +916,6 @@ export function setGroupCount(
     children.push({
       id: 0,
       kind: "note",
-      stroke: DEFAULT_STROKE,
       weight: 1,
       children: [],
     });

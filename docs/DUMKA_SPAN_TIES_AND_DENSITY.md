@@ -228,7 +228,7 @@ no mechanism gain. Rejected.
 
 - **Wrap ties** (last cell → cycle start): defer to M5 phrase drift,
   where cycle identity itself is in motion; fencing stays.
-- **Corridor on stroke-class balance** (not just count): defer to M4
+- **Corridor on accent balance** (not just count): defer to M4
   bass payload, where classes become audible as pitch.
 - **Finer-than-seed tuplets**: delivered later by M3.95's exact prime
   subdivision palette within the platform's Subdivision-64 ceiling. Truly

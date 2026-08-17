@@ -91,8 +91,8 @@ the time of w beats). Narrow blocks shed detail rather than clip: weight
 badges disappear, text shrinks, and a very narrow note block renders a dot
 glyph — the full name stays in the block's tooltip and accessible name.
 Click selects a block, shift-click extends along
-siblings, and a toolbar edits the selection: note/rest/hold type, stroke
-name, weight, "split into tuplet" (k equal strokes over the block's span),
+siblings, and a toolbar edits the selection: note/rest/hold type, weight,
+"split into tuplet" (k equal notes over the block's span),
 identity-weight Group/Ungroup, group Count, nested relative Span, and a
 top-level Span gesture that consumes whole following Pattern blocks without
 changing the cycle's beat count. Growing replaces the covered blocks;

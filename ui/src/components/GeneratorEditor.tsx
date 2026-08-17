@@ -40,7 +40,7 @@ export type GeneratorKind = GeneratorConfig["kind"];
  * together.
  */
 const DUMKA_SYNTAX_ROWS: ReadonlyArray<readonly [string, string]> = [
-  ["dum ka x", "an onset — the name is its stroke class"],
+  ["x", "a note — any name is accepted, but names carry no meaning (rhythm only); x is the convention"],
   [".", "a rest"],
   ["_", "a hold: extends the previous note or rest"],
   ["[ … ]", "a group: splits its span among its children by weight"],

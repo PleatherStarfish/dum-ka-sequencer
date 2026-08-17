@@ -62,7 +62,13 @@ class Roll {
   }
 }
 
-const STROKES = ["dum", "dum", "ka", "ka", "x"] as const;
+/**
+ * Historical rolls drew a stroke label for every sounding slot from a
+ * five-entry table. The notation is rhythm-only now (labels are discarded
+ * by the parser), but the draw is kept so a saved rollSeed still reproduces
+ * the exact rhythm it produced when stroke names existed.
+ */
+const LEGACY_STROKE_DRAW_BOUND = 5;
 
 /** Caesura's burst clustering, mirrored for expanded-mask emission. */
 export function burstMask(pulses: number, steps: number, maxRun: number): boolean[] {
@@ -184,7 +190,8 @@ function expandedBeat(
   const glyphs: string[] = [];
   for (const sounds of mask) {
     if (sounds) {
-      glyphs.push(STROKES[roll.below(STROKES.length)]!);
+      roll.below(LEGACY_STROKE_DRAW_BOUND);
+      glyphs.push("x");
     } else if (restPolicy === "tied" && glyphs.length > 0 && glyphs[glyphs.length - 1] !== ".") {
       glyphs.push("_");
     } else {
@@ -196,9 +203,10 @@ function expandedBeat(
 
 /**
  * Roll one cycle. Deterministic per (rollSeed, options); every beat draws
- * its own k (by density), rotation, and — for expanded styles — stroke
- * classes. The result always parses: plain style emits `E(k,n,r)` sugar,
- * the extension styles emit expanded per-beat groups.
+ * its own k (by density), rotation, and — for expanded styles — a legacy
+ * per-onset draw (see LEGACY_STROKE_DRAW_BOUND). The result always parses:
+ * plain style emits `E(k,n,r)` sugar, the extension styles emit expanded
+ * per-beat groups.
  */
 export function rollEuclideanSeed(rollSeed: number, options: SeedRollOptions): string {
   const requestedSlots = options.slotsPerBeat.slice(0, DUMKA_MAX_TOTAL_BEATS);

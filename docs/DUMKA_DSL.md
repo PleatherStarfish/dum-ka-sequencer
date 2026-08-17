@@ -13,7 +13,7 @@ one-sided parser or compiler change fails the cross-language contract gate.
 
 | Form | Meaning |
 |---|---|
-| `dum`, `ka`, `x`, any name | An onset. The bare identifier is its **stroke class** — carried through parsing today, becomes velocity/pitch payload in the M4 milestone. |
+| `x`, any name | An onset. The notation is **rhythm-only**: the identifier's spelling is discarded at parse (historical names like `dum`/`ka` still parse for patch compatibility), and the canonical printer emits `x`. |
 | `.` | A rest. |
 | `_` | A hold: extends whatever element precedes it in time (note or rest). |
 | `[ ... ]` | A group: divides its span among its children in proportion to their weights. |
@@ -97,14 +97,14 @@ The reference example (quintuplet onsets across beats three and four, each
 note deliberately detached) remains:
 
 ```
-[dum@3 ka] [. ka] [[dum .] [ka .] [dum .] [ka .] [dum .]]@2
+[x@3 x] [. x] [[x .] [x .] [x .] [x .] [x .]]@2
 ```
 
 ## Examples
 
 ```
-dum . ka .                                # four-on-the-floor call/answer, S=1
-[dum . . ka] [. . ka .] [dum . ka .] [x x . x]   # the default pattern, S=4
+x . x .                                   # four-on-the-floor call/answer, S=1
+[x . . x] [. . x .] [x . x .] [x x . x]   # the default pattern, S=4
 E(3,8)@4                                  # tresillo stretched over four beats, S=2
 [x x] . [x x x] .                         # duplet, rest, triplet, rest, S=6
 x@2 _ . .                                 # a two-beat note, tied across its seam

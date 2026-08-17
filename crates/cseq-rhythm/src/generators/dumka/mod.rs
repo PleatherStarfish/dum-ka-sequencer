@@ -78,7 +78,7 @@ pub const DUMKA_PLACEMENT_BIAS_TARGET: &str = "generator.dumka.placementBias";
 
 /// The pattern a fresh Dum-Ka config carries: four beats at Subdivision 4,
 /// so it plays on a fresh project's default structure without edits.
-pub const DEFAULT_DUMKA_PATTERN: &str = "[dum . . ka] [. . ka .] [dum . ka .] [x x . x]";
+pub const DEFAULT_DUMKA_PATTERN: &str = "[x . . x] [. . x .] [x . x .] [x x . x]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

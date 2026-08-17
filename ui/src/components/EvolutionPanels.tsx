@@ -385,8 +385,7 @@ export function EvolutionPanels({
               against the published tables). <b>Remove</b> silences the
               least indispensable sounding onset — density falls, metric
               feel survives. <b>Add</b> sounds the most indispensable free
-              pulse (sustains block it) as a one-slot hit that inherits the
-              preceding stroke class.
+              pulse (sustains block it) as a one-slot hit.
             </p>
             <p>
               <b>Temperature</b> widens the candidate pool over the rank
@@ -655,8 +654,8 @@ export function EvolutionPanels({
               notation's E sugar and the channel strategies use). Windows
               are every whole beat plus the whole cycle; candidates rank by
               the same indispensability order as the other families and
-              widen with the temperature pool. Onset count and stroke
-              classes are preserved unless inversion fires.
+              widen with the temperature pool. Onset count is preserved
+              unless inversion fires.
             </p>
             <p>
               The Caesura extension set rides along: <b>max run</b> &gt; 1

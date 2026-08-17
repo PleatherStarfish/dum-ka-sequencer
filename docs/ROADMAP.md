@@ -147,9 +147,10 @@ Full specification: [DUMKA_PROPERTY_CURVES.md](DUMKA_PROPERTY_CURVES.md).
 
 Optional per-cell `accent_class`/`pitch_degree` honored through
 overlay → realize → MIDI; scale model; pitch operators (indispensability-
-anchored roots/fifths, seeded walks). The DSL's stroke classes (`dum`, `ka`,
-…) become audible. Full DTO/patch/golden churn, each regen atomic with a
-musical explanation.
+anchored roots/fifths, seeded walks). Payload is authored through dedicated
+M4 surfaces (accent/pitch lanes), NOT through pattern-notation labels — the
+DSL is rhythm-only by decision (2026-08-17; stroke classes were removed).
+Full DTO/patch/golden churn, each regen atomic with a musical explanation.
 
 ## M5 — Phrase drift (evolving cycle length)
 

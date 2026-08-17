@@ -7,8 +7,6 @@
 //! independently.  All arithmetic is integer/fixed-point so a locked seed and
 //! the calibrated-change planner replay byte-identically on every platform.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -250,7 +248,7 @@ impl PerceptualContext {
     /// Summed syncopation signature normalized by its per-state maximum: each
     /// of the `k` attacks contributes at most `max_level × max_salience`, so
     /// the ratio stays in `0..=100_000`. Zero when nothing can syncopate.
-    fn state_syncopation_milli(&self, view: &RhythmView<'_>) -> u32 {
+    fn state_syncopation_milli(&self, view: &RhythmView) -> u32 {
         let onset_count = view.attack_slots.len() as u64;
         let max_level = u64::from(self.metrical_levels.iter().copied().max().unwrap_or(0));
         let max_salience = self.salience.iter().copied().max().unwrap_or(0);
@@ -382,23 +380,21 @@ pub fn perceptual_distance(
 }
 
 #[derive(Debug)]
-struct NormalizedOnset<'a> {
+struct NormalizedOnset {
     start: u32,
     dur: u32,
-    class: &'a str,
 }
 
 #[derive(Debug)]
-struct RhythmView<'a> {
-    onsets: Vec<NormalizedOnset<'a>>,
+struct RhythmView {
+    onsets: Vec<NormalizedOnset>,
     attacks: Vec<bool>,
     attack_slots: Vec<u32>,
     occupancy: Vec<bool>,
-    class_by_slot: Vec<Option<&'a str>>,
 }
 
-impl<'a> RhythmView<'a> {
-    fn new(state: &'a EvolutionState, context: &PerceptualContext) -> Self {
+impl RhythmView {
+    fn new(state: &EvolutionState, context: &PerceptualContext) -> Self {
         let slots = context.slots;
         let rotation = (state.rotation_beats % context.total_beats) * context.subdivision;
         let mut onsets = state
@@ -407,17 +403,14 @@ impl<'a> RhythmView<'a> {
             .map(|onset| NormalizedOnset {
                 start: (onset.slot % slots + rotation) % slots,
                 dur: onset.dur.min(slots),
-                class: &onset.class,
             })
             .collect::<Vec<_>>();
-        onsets.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.class.cmp(b.class)));
+        onsets.sort_by(|a, b| a.start.cmp(&b.start));
 
         let mut attacks = vec![false; slots as usize];
         let mut occupancy = vec![false; slots as usize];
-        let mut class_by_slot = vec![None; slots as usize];
         for onset in &onsets {
             attacks[onset.start as usize] = true;
-            class_by_slot[onset.start as usize] = Some(onset.class);
             for offset in 0..onset.dur {
                 occupancy[((onset.start + offset) % slots) as usize] = true;
             }
@@ -433,7 +426,6 @@ impl<'a> RhythmView<'a> {
             attacks,
             attack_slots,
             occupancy,
-            class_by_slot,
         }
     }
 }
@@ -713,7 +705,7 @@ fn shift_key(shift: usize, slots: usize) -> (u32, bool) {
     (signed.unsigned_abs(), signed.is_positive())
 }
 
-fn syncopation_signature(view: &RhythmView<'_>, context: &PerceptualContext) -> Vec<u64> {
+fn syncopation_signature(view: &RhythmView, context: &PerceptualContext) -> Vec<u64> {
     let slots = context.slots;
     let mut signature = vec![0u64; slots as usize];
     if view.attack_slots.is_empty() {
@@ -737,11 +729,7 @@ fn syncopation_signature(view: &RhythmView<'_>, context: &PerceptualContext) -> 
     signature
 }
 
-fn syncopation_edit(
-    left: &RhythmView<'_>,
-    right: &RhythmView<'_>,
-    context: &PerceptualContext,
-) -> u32 {
+fn syncopation_edit(left: &RhythmView, right: &RhythmView, context: &PerceptualContext) -> u32 {
     let left_signature = syncopation_signature(left, context);
     let right_signature = syncopation_signature(right, context);
     let changed = left_signature
@@ -760,7 +748,7 @@ fn syncopation_edit(
     )
 }
 
-fn ratio_signature(view: &RhythmView<'_>, context: &PerceptualContext) -> Vec<u64> {
+fn ratio_signature(view: &RhythmView, context: &PerceptualContext) -> Vec<u64> {
     let mut signature = vec![0u64; context.subdivision as usize + 1];
     for onset in &view.onsets {
         add_ratio(
@@ -839,51 +827,27 @@ fn signature_edit(left: &[u64], right: &[u64]) -> u32 {
     scaled_ratio(changed, union_mass)
 }
 
-fn density_class_edit(left: &RhythmView<'_>, right: &RhythmView<'_>) -> u32 {
+fn density_class_edit(left: &RhythmView, right: &RhythmView) -> u32 {
     let left_count = left.attack_slots.len() as u64;
     let right_count = right.attack_slots.len() as u64;
     let slots = left.attacks.len() as u64;
     let density = scaled_ratio(left_count.abs_diff(right_count), slots);
 
-    let mut left_classes = BTreeMap::<&str, u64>::new();
-    let mut right_classes = BTreeMap::<&str, u64>::new();
-    for onset in &left.onsets {
-        *left_classes.entry(onset.class).or_default() += 1;
-    }
-    for onset in &right.onsets {
-        *right_classes.entry(onset.class).or_default() += 1;
-    }
-    let all_classes = left_classes
-        .keys()
-        .chain(right_classes.keys())
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
-    let class_changed = all_classes
-        .iter()
-        .map(|class| {
-            left_classes
-                .get(class)
-                .copied()
-                .unwrap_or(0)
-                .abs_diff(right_classes.get(class).copied().unwrap_or(0))
-        })
-        .sum();
-    let inventory = scaled_ratio(class_changed, slots.saturating_mul(2));
-    let positional_changes = left
-        .class_by_slot
-        .iter()
-        .zip(&right.class_by_slot)
-        .filter(
-            |&(left, right)| matches!((left, right), (Some(left), Some(right)) if left != right),
-        )
-        .count() as u64;
-    let positional = scaled_ratio(positional_changes, slots);
-    let class = ((u64::from(positional) * 3 + u64::from(inventory) + 2) / 4) as u32;
+    // Label-free translation of the v1 stroke-class term (the notation is
+    // rhythm-only, so the historical per-class inventory always holds exactly
+    // one class): the positional sub-term is identically zero — two attacks on
+    // the same slot can no longer differ — and the inventory sub-term reduces
+    // to the onset-count difference over 2·slots. Byte-identical to the
+    // labelled formula for every state the rhythm-only notation can produce.
+    let inventory = scaled_ratio(left_count.abs_diff(right_count), slots.saturating_mul(2));
+    let class = ((u64::from(inventory) + 2) / 4) as u32;
     ((u64::from(density) * 3 + u64::from(class) + 2) / 4) as u32
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use proptest::prelude::*;
 
     use super::*;
@@ -906,11 +870,7 @@ mod tests {
         EvolutionState {
             onsets: onsets
                 .iter()
-                .map(|&(slot, dur, class)| EvolvedOnset {
-                    slot,
-                    dur,
-                    class: class.to_owned(),
-                })
+                .map(|&(slot, dur, _class)| EvolvedOnset { slot, dur })
                 .collect(),
             rotation_beats,
         }
@@ -1028,34 +988,6 @@ mod tests {
                 subdivision: MAX_SUBDIVISION + 1,
             })
         );
-    }
-
-    #[test]
-    fn a_single_stroke_class_change_cannot_round_down_to_identity() {
-        let context = context(128, 64);
-        let dum = state(&[(0, 1, "dum")], 0);
-        let ka = state(&[(0, 1, "ka")], 0);
-        let result = distance(&dum, &ka, &context);
-        assert!(result.density_class_milli > 0);
-        assert_eq!(result.total_milli, 1);
-    }
-
-    #[test]
-    fn attack_symmetric_rotation_still_hears_positional_stroke_classes() {
-        let context = context(4, 4);
-        let pattern = state(
-            &[(0, 1, "dum"), (4, 1, "ka"), (8, 1, "dum"), (12, 1, "ka")],
-            0,
-        );
-        let rotated = EvolutionState {
-            rotation_beats: 1,
-            ..pattern.clone()
-        };
-        let result = distance(&pattern, &rotated, &context);
-        assert_eq!(result.attack_edit_milli, 0);
-        assert_eq!(result.aligned_milli, 0);
-        assert!(result.density_class_milli > 0);
-        assert!(result.total_milli > 0);
     }
 
     #[test]
@@ -1292,7 +1224,6 @@ mod tests {
             prop_assert_eq!(forward.alignment_clarity_milli, reverse.alignment_clarity_milli);
             if left_view.attacks != right_view.attacks
                 || left_view.occupancy != right_view.occupancy
-                || left_view.class_by_slot != right_view.class_by_slot
             {
                 prop_assert!(forward.total_milli > 0);
             }

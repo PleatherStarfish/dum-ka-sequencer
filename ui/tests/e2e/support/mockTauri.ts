@@ -51,11 +51,21 @@ const DUMKA_MOCK_PATTERNS: string[] = [
   "[[x x x x x]@2 .]@2",
   "[[[x .@3] [x .@3] [x .@3] [x .@3] [x .@3]]@2 .]@2",
   // Reported five-beat mixed tuplet and its optional detached-note rewrite.
+  // The dum/ka strings below stay verbatim: they are the living proof that
+  // historical stroke-named patterns still parse as plain onsets.
   "[dum . . ka] [. . ka . x] [dum . ka .] [x x . x]",
   "[dum . . ka] [. . ka . x]@2 [x x . x]",
   "[dum . . ka] [. . ka . x]@3",
   "[dum . . ka] [. . ka . x]@2 [dum . ka .] [x x . x]",
   "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]",
+  // The pre-rhythm-only default pattern, still typed by specs as the
+  // back-compat pin (evolution-plan-boundary.spec.ts).
+  "[dum . . ka] [. . ka .] [dum . ka .] [x x . x]",
+  // Authored by the visual rhythm builder from the rhythm-only default
+  // (rhythm-builder.spec.ts Span flow); the builder prints every note as x.
+  "[x . . x] [. . x . x] [x . x .] [x x . x]",
+  "[x . . x] [. . x . x]@2 [x x . x]",
+  "[x . . x] [. . x . x]@3",
 ];
 
 type DumkaMockEntry =

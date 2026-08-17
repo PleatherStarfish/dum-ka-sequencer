@@ -361,11 +361,7 @@ mod tests {
                         let state = EvolutionState {
                             onsets: onsets
                                 .iter()
-                                .map(|&(slot, dur)| EvolvedOnset {
-                                    slot,
-                                    dur,
-                                    class: "x".to_owned(),
-                                })
+                                .map(|&(slot, dur)| EvolvedOnset { slot, dur })
                                 .collect(),
                             rotation_beats,
                         };

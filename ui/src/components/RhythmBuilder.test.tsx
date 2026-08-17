@@ -12,12 +12,12 @@ const FIVE_GRID_TWO_BEATS = Array.from({ length: 2 }, () => ({
 }));
 
 describe("RhythmBuilder", () => {
-  it("renders one block per element with kind and stroke in the name", () => {
+  it("renders one block per element with its kind in the name", () => {
     render(
       <RhythmBuilder pattern="dum . x ." disabled={false} onCommit={vi.fn()} />
     );
     expect(
-      screen.getByRole("button", { name: "block 0: note dum" })
+      screen.getByRole("button", { name: "block 0: note" })
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "block 1: rest" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "block 3: rest" })).toBeTruthy();
@@ -38,7 +38,7 @@ describe("RhythmBuilder", () => {
     render(
       <RhythmBuilder pattern="x . x ." disabled={false} onCommit={onCommit} />
     );
-    fireEvent.click(screen.getByRole("button", { name: "block 0: note x" }));
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
     fireEvent.change(screen.getByLabelText("Split count"), {
       target: { value: "5" },
     });
@@ -52,7 +52,7 @@ describe("RhythmBuilder", () => {
     render(
       <RhythmBuilder pattern="x . x ." disabled={false} onCommit={onCommit} />
     );
-    fireEvent.click(screen.getByRole("button", { name: "block 0: note x" }));
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
     fireEvent.click(screen.getByRole("button", { name: "block 1: rest" }), {
       shiftKey: true,
     });
@@ -65,7 +65,7 @@ describe("RhythmBuilder", () => {
     render(
       <RhythmBuilder pattern="x . x ." disabled={false} onCommit={onCommit} />
     );
-    fireEvent.click(screen.getByRole("button", { name: "block 0: note x" }));
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
     fireEvent.change(screen.getByLabelText("Euclid onsets"), {
       target: { value: "3" },
     });
@@ -127,7 +127,7 @@ describe("RhythmBuilder", () => {
     });
     fireEvent.blur(screen.getByLabelText("Group span in existing beats"));
     const twoBeatPattern =
-      "[dum . . ka] [. . ka . x]@2 [x x . x]";
+      "[x . . x] [. . x . x]@2 [x x . x]";
     expect(onCommit).toHaveBeenLastCalledWith(twoBeatPattern);
 
     view.rerender(
@@ -143,7 +143,7 @@ describe("RhythmBuilder", () => {
     });
     fireEvent.blur(screen.getByLabelText("Group span in existing beats"));
     expect(onCommit).toHaveBeenLastCalledWith(
-      "[dum . . ka] [. . ka . x]@3"
+      "[x . . x] [. . x . x]@3"
     );
   });
 
@@ -168,8 +168,8 @@ describe("RhythmBuilder", () => {
     const view = render(
       <RhythmBuilder pattern="x x" disabled={false} onCommit={onCommit} />
     );
-    fireEvent.click(screen.getByRole("button", { name: "block 0: note x" }));
-    fireEvent.click(screen.getByRole("button", { name: "block 1: note x" }), {
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
+    fireEvent.click(screen.getByRole("button", { name: "block 1: note" }), {
       shiftKey: true,
     });
     fireEvent.click(screen.getByRole("button", { name: "Group selection" }));
@@ -239,7 +239,7 @@ describe("RhythmBuilder", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Articulate" }));
     expect(onCommit).toHaveBeenCalledWith(
-      "[dum . . ka] [. . [ka .] . [x .]]@2 [dum . ka .] [x x . x]"
+      "[x . . x] [. . [x .] . [x .]]@2 [x . x .] [x x . x]"
     );
   });
 
@@ -266,7 +266,7 @@ describe("RhythmBuilder", () => {
   it("rejects an illegal edit with the compiler's message and commits nothing", () => {
     const onCommit = vi.fn();
     render(<RhythmBuilder pattern="x ." disabled={false} onCommit={onCommit} />);
-    fireEvent.click(screen.getByRole("button", { name: "block 0: note x" }));
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
     fireEvent.click(screen.getByRole("button", { name: "Set element to hold" }));
     expect(onCommit).not.toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe(
