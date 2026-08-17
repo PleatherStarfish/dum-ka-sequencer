@@ -117,7 +117,7 @@ describe("GeneratorEditor", () => {
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 5 · working 5 · authored 35 = 7 × 5 (compatible; cells show 7× matra counts)"
+      "needs 4 beats · Subdivision 5 · authored 35 = 7 × 5 (compatible; cells show 7× matra counts)"
     );
     const simplify = screen.getByRole("button", { name: "Simplify to 5" });
     fireEvent.click(simplify);
@@ -135,7 +135,7 @@ describe("GeneratorEditor", () => {
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 5 · working 5"
+      "needs 4 beats · Subdivision 5"
     );
     const ready = screen.getByRole("button", { name: "Structure ready" });
     expect((ready as HTMLButtonElement).disabled).toBe(true);
@@ -407,7 +407,7 @@ describe("GeneratorEditor", () => {
       />
     );
     expect(screen.getByLabelText("Required structure").textContent).toBe(
-      "needs 4 beats · Subdivision 20 · working 20"
+      "needs 4 beats · Subdivision 20"
     );
     fireEvent.click(screen.getByRole("button", { name: "Apply structure" }));
     expect(onApplyDumkaStructure).toHaveBeenCalledTimes(1);

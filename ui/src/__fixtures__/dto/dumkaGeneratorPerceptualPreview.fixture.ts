@@ -193,5 +193,13 @@ export const dumkaGeneratorPerceptualPreviewFixture: GeneratorPreview = {
     "ceiling": 100000
   },
   "stateComplexityMilli": 42560,
-  "stateDepthDiversityMilli": 67699
+  "stateDepthDiversityMilli": 67699,
+  "propertyProfile": {
+    "densityMilli": 10000,
+    "complexityMilli": 42560,
+    "syncopationMilli": 7098,
+    "evennessMilli": 96565,
+    "occupancyMilli": 62500,
+    "diversityMilli": 67699
+  }
 };

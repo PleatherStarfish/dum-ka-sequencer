@@ -1548,6 +1548,7 @@ describe("patchIo", () => {
         maxOperations: 4,
         points: [],
       },
+      propertyCurves: [],
       plan: [],
       planLengthCycles: 0,
       seedMode: { type: "perCycle", seed: 17 },
@@ -1662,7 +1663,7 @@ describe("patchIo", () => {
     });
   });
 
-  it("uses the seed lattice when validating enabled level filters and Morph targets", () => {
+  it("validates enabled subdivisionLevel filters against palette primes and Morph targets against the working grid", () => {
     const normalized = normalizePatchEvolutionPlan(
       [
         {
@@ -1709,10 +1710,16 @@ describe("patchIo", () => {
       { pattern: "x x x x", subdivisionPalette: [2] }
     );
 
-    expect(normalized.droppedMalformed).toBe(3);
-    expect(normalized.plan.map((row) => row.id)).toEqual([4]);
+    // id1 drops: subdivisionLevel 3 is not an enabled palette prime ([2]).
+    // id2 drops: its enabled Morph target "x x x" (3 beats) misses the 4-beat
+    // pattern. id3 survives: it is disabled (Morph target not validated) and
+    // its subdivisionLevel 2 IS an enabled palette prime. id4's target matches.
+    expect(normalized.droppedMalformed).toBe(2);
+    expect(normalized.plan.map((row) => row.id)).toEqual([3, 4]);
 
-    const indexed = normalizePatchEvolutionPlan(
+    // An enabled palette prime survives; a prime absent from the palette is
+    // dropped as malformed (the working grid is 12, but only 3 is enabled).
+    const enabledPrime = normalizePatchEvolutionPlan(
       [
         {
           id: 5,
@@ -1722,13 +1729,24 @@ describe("patchIo", () => {
           toCycle: 1,
           family: "barlowAdd",
           intensity: 25,
+          options: { subdivisionLevel: 3 },
+        },
+        {
+          id: 6,
+          order: 1,
+          enabled: true,
+          fromCycle: 2,
+          toCycle: 2,
+          family: "barlowAdd",
+          intensity: 25,
           options: { subdivisionLevel: 2 },
         },
       ],
       { pattern: "[x . . .]", subdivisionPalette: [3] }
     );
-    expect(indexed.droppedMalformed).toBe(0);
-    expect(indexed.plan[0]!.options.subdivisionLevel).toBe(2);
+    expect(enabledPrime.droppedMalformed).toBe(1);
+    expect(enabledPrime.plan.map((row) => row.id)).toEqual([5]);
+    expect(enabledPrime.plan[0]!.options.subdivisionLevel).toBe(3);
   });
 
   it("normalizes evolution plans without changing stable directive identities", () => {
@@ -2044,7 +2062,135 @@ describe("patchIo", () => {
     target.generator = { kind: "dumka", pattern: "x . x .", plan: rows };
     const loaded = readPatchDocument(raw);
     expect(loaded.loadWarnings).toContain(
-      "Over-budget Dum-Ka perceptual directives were disabled."
+      "Over-budget Dum-Ka perceptual directives or evolution curve were disabled."
+    );
+  });
+
+  it("charges the evolution curve against the shared budget and disables it when over", () => {
+    // A curve spanning 512 nonzero cycles reserves 512 × (maxOps + 1) scoring
+    // operations, exceeding the 4,096 lifetime budget on its own — it must load
+    // preserved-but-disabled with a warning, never a config the engine rejects.
+    const hotCurve = {
+      enabled: true,
+      modelVersion: "v1",
+      toleranceMilli: 1_000,
+      maxOperations: 8,
+      points: [
+        { cycle: 1, targetMilli: 1_000 },
+        { cycle: 512, targetMilli: 1_000 },
+      ],
+    };
+    const config = normalizePatchGeneratorConfig({
+      kind: "dumka",
+      pattern: "x . x .",
+      evolutionCurve: hotCurve,
+    });
+    expect(config.kind).toBe("dumka");
+    if (config.kind === "dumka") {
+      expect(config.evolutionCurve.enabled).toBe(false);
+      // The authored points are preserved; only the enable flag is cleared.
+      expect(config.evolutionCurve.points.length).toBe(2);
+    }
+
+    const raw = makeProjectFixture() as unknown as Record<string, unknown>;
+    const project = raw.project as { tracks: Array<Record<string, unknown>> };
+    const target = project.tracks.find((track) => track.id === "track-active")!;
+    target.generator = {
+      kind: "dumka",
+      pattern: "x . x .",
+      evolutionCurve: hotCurve,
+    };
+    const loaded = readPatchDocument(raw);
+    expect(loaded.loadWarnings).toContain(
+      "Over-budget Dum-Ka perceptual directives or evolution curve were disabled."
+    );
+
+    // A curve within budget loads enabled.
+    const coolConfig = normalizePatchGeneratorConfig({
+      kind: "dumka",
+      pattern: "x . x .",
+      evolutionCurve: { ...hotCurve, points: [{ cycle: 1, targetMilli: 1_000 }] },
+    });
+    if (coolConfig.kind === "dumka") {
+      expect(coolConfig.evolutionCurve.enabled).toBe(true);
+    }
+  });
+
+  it("repairs imported property curves and reports every destructive repair", () => {
+    const raw = makeProjectFixture() as unknown as Record<string, unknown>;
+    const project = raw.project as { tracks: Array<Record<string, unknown>> };
+    const target = project.tracks.find((track) => track.id === "track-active")!;
+    target.generator = {
+      kind: "dumka",
+      pattern: "x . x .",
+      densityFloor: 0,
+      densityCeiling: 50,
+      evolutionCurve: {
+        enabled: true,
+        modelVersion: "v1",
+        toleranceMilli: 500,
+        maxOperations: 8,
+        points: [
+          { cycle: 1, targetMilli: 0 },
+          { cycle: 64, targetMilli: 0 },
+        ],
+      },
+      propertyCurves: [
+        {
+          property: "density",
+          enabled: true,
+          toleranceMilli: 1_000,
+          weight: 50,
+          points: [{ cycle: 1, targetMilli: 90_000 }],
+        },
+        {
+          property: "syncopation",
+          enabled: true,
+          toleranceMilli: 1_000,
+          weight: 50,
+          points: [
+            { cycle: 1, targetMilli: 50_000 },
+            { cycle: 64, targetMilli: 50_000 },
+          ],
+        },
+        {
+          property: "evenness",
+          enabled: true,
+          weight: 50,
+          points: [{ cycle: 0, targetMilli: 50_000 }],
+        },
+        { property: "futureProperty", enabled: true, points: [] },
+      ],
+    };
+
+    const loaded = readPatchDocument(raw);
+    const active = loaded.project.tracks.find(
+      (track) => track.id === loaded.project.activeTrackId
+    )!;
+    expect(active.generator.kind).toBe("dumka");
+    if (active.generator.kind === "dumka") {
+      expect(
+        active.generator.propertyCurves.find(
+          (curve) => curve.property === "density"
+        )?.enabled
+      ).toBe(false);
+      expect(
+        active.generator.propertyCurves.find(
+          (curve) => curve.property === "syncopation"
+        )?.enabled
+      ).toBe(false);
+      expect(
+        active.generator.propertyCurves.find(
+          (curve) => curve.property === "evenness"
+        )?.points
+      ).toEqual([]);
+    }
+    expect(loaded.loadWarnings).toEqual(
+      expect.arrayContaining([
+        "Malformed Dum-Ka property curves or points were dropped.",
+        "Over-budget Dum-Ka property curves were disabled.",
+        "Dum-Ka property curves conflicting with global corridors were disabled.",
+      ])
     );
   });
 
@@ -2289,6 +2435,7 @@ describe("patchIo", () => {
         maxOperations: 4,
         points: [],
       },
+      propertyCurves: [],
       plan: [],
       planLengthCycles: 0,
       seedMode: { type: "locked", seed: FALLBACK_GLOBAL_SEED },

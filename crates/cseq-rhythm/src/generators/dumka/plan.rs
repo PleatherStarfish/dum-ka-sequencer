@@ -34,6 +34,15 @@ pub const MAX_PERCEPTUAL_OPERATIONS: u32 = 256;
 /// [`MAX_PERCEPTUAL_OPERATIONS`] bounds a far historical preview without
 /// making ordinary calibration too coarse.
 pub const MAX_PERCEPTUAL_SCORING_WORK: u64 = 4_096;
+/// Lifetime budget for property-steering *functional* evaluations (M3.97 §4),
+/// kept separate from [`MAX_PERCEPTUAL_SCORING_WORK`] (v1 distance work). Each
+/// steered cycle evaluates one candidate per family (`STEERING_FAMILY_COUNT`)
+/// per operation step, so the charge is `activeCycles × families × maxOps`; a
+/// single full-span curve at the maximum operation count sits exactly at this
+/// ceiling.
+pub const PROPERTY_EVAL_BUDGET: u64 = 32_768;
+/// The eight operator families the steering search enumerates each step.
+pub const STEERING_FAMILY_COUNT: u64 = 8;
 /// Maximum microsteps one Morph target may reserve. Morph recomputes its
 /// deterministic transport frontier after each accepted step, so this cap is
 /// both a gradualism bound and a hostile-patch work bound.
@@ -61,7 +70,7 @@ pub const MAX_CURVE_POINTS: usize = 64;
 /// Widest cycle span (last point − first point) the curve may cover. With
 /// the per-cycle search bounded by [`MAX_CURVE_OPERATIONS`], the whole
 /// curve stays inside the shared perceptual scoring budget.
-pub const MAX_CURVE_SPAN_CYCLES: u64 = 512;
+pub const MAX_CURVE_SPAN_CYCLES: u64 = 511;
 
 /// Per-cycle prefix-search cap for the curve, deliberately tighter than a
 /// directive's [`MAX_PERCEPTUAL_OPERATIONS`]: the curve runs on every
@@ -132,18 +141,25 @@ impl EvolutionCurve {
     /// exact at breakpoints, integer round-half-away-from-zero linear
     /// interpolation between neighbors. Pure integer arithmetic.
     pub fn target_milli_at(&self, cycle: u64) -> u32 {
+        self.target_milli_in_span(cycle).unwrap_or(0)
+    }
+
+    /// The interpolated pacing target while `cycle` is inside the authored
+    /// point span. `None` means the pacing curve is absent at that cycle;
+    /// `Some(0)` is a real hold and must not be collapsed into absence.
+    pub fn target_milli_in_span(&self, cycle: u64) -> Option<u32> {
         if !self.enabled || self.points.is_empty() {
-            return 0;
+            return None;
         }
         let first = self.points.first().expect("non-empty");
         let last = self.points.last().expect("non-empty");
         if cycle < first.cycle || cycle > last.cycle {
-            return 0;
+            return None;
         }
         let mut previous = first;
         for point in &self.points {
             if point.cycle == cycle {
-                return point.target_milli;
+                return Some(point.target_milli);
             }
             if point.cycle > cycle {
                 let span = i128::from(point.cycle) - i128::from(previous.cycle);
@@ -157,12 +173,14 @@ impl EvolutionCurve {
                     (numerator - half) / span
                 };
                 let value = i128::from(previous.target_milli) + rounded;
-                return u32::try_from(value.clamp(0, i128::from(MAX_PERCEPTUAL_DISTANCE_MILLI)))
-                    .expect("clamped to u32 range");
+                return Some(
+                    u32::try_from(value.clamp(0, i128::from(MAX_PERCEPTUAL_DISTANCE_MILLI)))
+                        .expect("clamped to u32 range"),
+                );
             }
             previous = point;
         }
-        0
+        None
     }
 
     /// Scoring evaluations the curve reserves through `through_cycle`:
@@ -238,6 +256,302 @@ pub(crate) fn validate_curve(curve: &EvolutionCurve) -> Result<(), GeneratorErro
             return Err(invalid(format!(
                 "curve spans {span} cycles between its first and last points, the maximum is {MAX_CURVE_SPAN_CYCLES}"
             )));
+        }
+    }
+    Ok(())
+}
+
+/// The steering weight of a property curve in the error vector (§4). Higher
+/// weight pulls the operator search harder toward that property's band.
+const fn default_property_curve_weight() -> u32 {
+    50
+}
+
+/// The six per-state functionals a property curve can steer (M3.97 §1). Two
+/// (Density, Complexity) also have a global corridor and so are enforced as a
+/// hard rail; the other four are steering targets only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CurveProperty {
+    Density,
+    Complexity,
+    Syncopation,
+    Evenness,
+    Occupancy,
+    Diversity,
+}
+
+impl CurveProperty {
+    /// Fixed lane order (density, complexity, then the other four), used for
+    /// deterministic tie-breaking in the steering search and for the `[bool; 6]`
+    /// uniqueness scan.
+    pub const ALL: [CurveProperty; 6] = [
+        CurveProperty::Density,
+        CurveProperty::Complexity,
+        CurveProperty::Syncopation,
+        CurveProperty::Evenness,
+        CurveProperty::Occupancy,
+        CurveProperty::Diversity,
+    ];
+
+    /// Stable lowercase label used in pinned validation and trace messages.
+    pub const fn label(self) -> &'static str {
+        match self {
+            CurveProperty::Density => "density",
+            CurveProperty::Complexity => "complexity",
+            CurveProperty::Syncopation => "syncopation",
+            CurveProperty::Evenness => "evenness",
+            CurveProperty::Occupancy => "occupancy",
+            CurveProperty::Diversity => "diversity",
+        }
+    }
+
+    /// Position in [`CurveProperty::ALL`]; the deterministic band order.
+    pub const fn index(self) -> usize {
+        match self {
+            CurveProperty::Density => 0,
+            CurveProperty::Complexity => 1,
+            CurveProperty::Syncopation => 2,
+            CurveProperty::Evenness => 3,
+            CurveProperty::Occupancy => 4,
+            CurveProperty::Diversity => 5,
+        }
+    }
+}
+
+/// A drawn per-property automation curve (M3.97 §2): a piecewise-linear target
+/// **level** over the cycle axis, with a tolerance band the steering search
+/// tracks. Unlike the pacing [`EvolutionCurve`], **outside its point span the
+/// curve is absent** — no band, no steering — which is a different thing from a
+/// level of 0. Empty `property_curves` reproduces legacy behavior byte for byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PropertyCurve {
+    pub property: CurveProperty,
+    #[serde(default)]
+    pub enabled: bool,
+    /// Half-width of the acceptance band around the drawn line.
+    #[serde(default)]
+    pub tolerance_milli: u32,
+    /// Steering weight in the error vector; 1..=100, default 50.
+    #[serde(default = "default_property_curve_weight")]
+    pub weight: u32,
+    #[serde(default)]
+    pub points: Vec<CurvePoint>,
+}
+
+impl PropertyCurve {
+    /// Whether the curve steers at all: enabled with at least one drawn point.
+    /// (A target of 0 is a real level, so — unlike the pacing curve — activity
+    /// does not depend on a nonzero target.)
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.points.is_empty()
+    }
+
+    /// The interpolated **center** level at `cycle`, or `None` when the cycle
+    /// lies outside the drawn point span (the curve is absent there). Integer
+    /// round-half-away-from-zero, identical to [`EvolutionCurve::target_milli_at`]
+    /// except for the absent-outside-span return.
+    pub fn target_milli_at(&self, cycle: u64) -> Option<u32> {
+        if !self.enabled || self.points.is_empty() {
+            return None;
+        }
+        let first = self.points.first().expect("non-empty");
+        let last = self.points.last().expect("non-empty");
+        if cycle < first.cycle || cycle > last.cycle {
+            return None;
+        }
+        let mut previous = first;
+        for point in &self.points {
+            if point.cycle == cycle {
+                return Some(point.target_milli);
+            }
+            if point.cycle > cycle {
+                let span = i128::from(point.cycle) - i128::from(previous.cycle);
+                let offset = i128::from(cycle) - i128::from(previous.cycle);
+                let delta = i128::from(point.target_milli) - i128::from(previous.target_milli);
+                let numerator = delta * offset;
+                let half = span / 2;
+                let rounded = if numerator >= 0 {
+                    (numerator + half) / span
+                } else {
+                    (numerator - half) / span
+                };
+                let value = i128::from(previous.target_milli) + rounded;
+                return Some(
+                    u32::try_from(value.clamp(0, i128::from(MAX_PERCEPTUAL_DISTANCE_MILLI)))
+                        .expect("clamped to u32 range"),
+                );
+            }
+            previous = point;
+        }
+        None
+    }
+
+    /// The acceptance band `[center - tol, center + tol]` clamped to
+    /// `0..=100_000`, or `None` outside the point span.
+    pub fn band_at(&self, cycle: u64) -> Option<(u32, u32)> {
+        self.target_milli_at(cycle).map(|center| {
+            let floor = center.saturating_sub(self.tolerance_milli);
+            let ceiling = center
+                .saturating_add(self.tolerance_milli)
+                .min(MAX_PERCEPTUAL_DISTANCE_MILLI);
+            (floor, ceiling)
+        })
+    }
+}
+
+/// Why a steered cycle could not pull a property's realized value into its
+/// drawn band (M3.97 §5). Engine-only knowledge — the UI cannot infer *why* a
+/// band was missed, only *that* it was, so this reason rides the preview DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MissReason {
+    /// No admissible operator reduced the error further — a frontier stall.
+    NoReducingCandidate,
+    /// The aggregate pacing curve capped this cycle's travel before the band
+    /// was reached; the level is re-approached under the same pace next cycle.
+    PacingCapped,
+    /// The per-cycle operation budget (`max_operations`) ran out mid-approach.
+    BudgetCapped,
+    /// A structural projection fence blocked the only reducing operator.
+    Projection,
+    /// A density/complexity rail or the discrete onset lattice made the drawn
+    /// band unreachable at this cycle. `CurveMiss::rail` names the source.
+    RailBlocked,
+}
+
+/// The rail that made a drawn Density/Complexity band unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CurveRail {
+    GlobalCorridor,
+    Automation,
+    DiscreteGrid,
+}
+
+/// One property whose realized level finished a steered cycle outside its drawn
+/// band, with the integer gap to the nearest edge and the reason steering could
+/// not close it (M3.97 §5). Never silence: a conflict *looks* like exactly what
+/// it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurveMiss {
+    pub property: CurveProperty,
+    pub gap_milli: u32,
+    pub reason: MissReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rail: Option<CurveRail>,
+}
+
+/// Validate the drawn property curves against the same integer domain as the
+/// pacing curve, plus the per-property uniqueness rule and the **static
+/// intersection check** (§2): where a Density/Complexity curve band and its
+/// matching global corridor are both active, their intersection must be
+/// non-empty. Cross-property conflicts are state-dependent and surface at
+/// runtime as traced misses, never here.
+pub(crate) fn validate_property_curves(
+    curves: &[PropertyCurve],
+    density_floor: u32,
+    density_ceiling: u32,
+    complexity_floor: u32,
+    complexity_ceiling: u32,
+) -> Result<(), GeneratorError> {
+    let invalid = |message: String| GeneratorError::DumkaPlanInvalid { message };
+    let mut seen = [false; 6];
+    for curve in curves {
+        let property = curve.property;
+        if seen[property.index()] {
+            return Err(invalid(format!(
+                "propertyCurve supports at most one curve per property, got a second {}",
+                property.label()
+            )));
+        }
+        seen[property.index()] = true;
+
+        if curve.points.len() > MAX_CURVE_POINTS {
+            return Err(invalid(format!(
+                "propertyCurve {} supports at most {MAX_CURVE_POINTS} points, got {}",
+                property.label(),
+                curve.points.len()
+            )));
+        }
+        if curve.weight < 1 || curve.weight > 100 {
+            return Err(invalid(format!(
+                "propertyCurve {} weight must be 1-100, got {}",
+                property.label(),
+                curve.weight
+            )));
+        }
+        if curve.tolerance_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+            return Err(invalid(format!(
+                "propertyCurve {} toleranceMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {}",
+                property.label(),
+                curve.tolerance_milli
+            )));
+        }
+        let mut previous: Option<u64> = None;
+        for point in &curve.points {
+            if point.cycle == 0 {
+                return Err(invalid(format!(
+                    "propertyCurve {} point cycles must be ≥ 1",
+                    property.label()
+                )));
+            }
+            if let Some(previous) = previous {
+                if point.cycle <= previous {
+                    return Err(invalid(format!(
+                        "propertyCurve {} points must have strictly ascending cycles",
+                        property.label()
+                    )));
+                }
+            }
+            if point.target_milli > MAX_PERCEPTUAL_DISTANCE_MILLI {
+                return Err(invalid(format!(
+                    "propertyCurve {} targetMilli must be 0-{MAX_PERCEPTUAL_DISTANCE_MILLI}, got {}",
+                    property.label(),
+                    point.target_milli
+                )));
+            }
+            previous = Some(point.cycle);
+        }
+        if let (Some(first), Some(last)) = (curve.points.first(), curve.points.last()) {
+            let span = last.cycle.saturating_sub(first.cycle);
+            if span > MAX_CURVE_SPAN_CYCLES {
+                return Err(invalid(format!(
+                    "propertyCurve {} spans {span} cycles between its first and last points, the maximum is {MAX_CURVE_SPAN_CYCLES}",
+                    property.label()
+                )));
+            }
+        }
+
+        // Static intersection: only Density and Complexity have a global
+        // corridor to conflict with. Density milli = 1000 × density percent.
+        let rail = match property {
+            CurveProperty::Density => Some((
+                "density corridor",
+                density_floor.saturating_mul(1_000),
+                density_ceiling.saturating_mul(1_000),
+            )),
+            CurveProperty::Complexity => {
+                Some(("complexity corridor", complexity_floor, complexity_ceiling))
+            }
+            _ => None,
+        };
+        if let (Some((rail_name, rail_floor, rail_ceiling)), (Some(first), Some(last))) =
+            (rail, (curve.points.first(), curve.points.last()))
+        {
+            for cycle in first.cycle..=last.cycle {
+                let Some((band_floor, band_ceiling)) = curve.band_at(cycle) else {
+                    continue;
+                };
+                if band_floor > rail_ceiling || band_ceiling < rail_floor {
+                    return Err(invalid(format!(
+                        "propertyCurve {} conflicts with the {rail_name} at cycle {cycle}",
+                        property.label()
+                    )));
+                }
+            }
         }
     }
     Ok(())
@@ -455,6 +769,134 @@ pub(crate) fn validate_perceptual_scoring_work_through(
     Ok(())
 }
 
+/// Validate the real worst-case v1-distance work when property steering and
+/// the aggregate pacing curve overlap. The ordinary curve reservation already
+/// charges `maxOperations + 1`; a steered pacing cycle evaluates up to eight
+/// family candidates per step plus candidate zero, so only the difference is
+/// added here. A drawn zero is charged too: it is a real hold, not absence.
+pub(crate) fn validate_property_pacing_work_through(
+    plan: &[EvolutionDirective],
+    curve: &EvolutionCurve,
+    property_curves: &[PropertyCurve],
+    through_cycle: u64,
+) -> Result<(), GeneratorError> {
+    let mut requested = plan.iter().fold(0_u64, |total, directive| {
+        let DirectiveMagnitude::Perceptual { max_operations, .. } = directive.magnitude else {
+            return total;
+        };
+        if !directive.enabled || through_cycle == 0 {
+            return total;
+        }
+        let first = directive.from_cycle.max(1);
+        let last = directive.to_cycle.min(through_cycle);
+        let active_cycles = last
+            .saturating_sub(first)
+            .saturating_add(u64::from(last >= first));
+        total.saturating_add(
+            active_cycles.saturating_mul(u64::from(max_operations).saturating_add(1)),
+        )
+    });
+
+    if curve.enabled && through_cycle > 0 && !curve.points.is_empty() {
+        let first = curve.points.first().expect("non-empty").cycle.max(1);
+        let last = curve
+            .points
+            .last()
+            .expect("non-empty")
+            .cycle
+            .min(through_cycle);
+        for cycle in first..=last {
+            if plan.iter().any(|directive| directive.is_active(cycle)) {
+                continue;
+            }
+            let ordinary = if curve.target_milli_at(cycle) > 0 {
+                u64::from(curve.max_operations).saturating_add(1)
+            } else {
+                0
+            };
+            let steered = property_curves
+                .iter()
+                .any(|property_curve| property_curve.band_at(cycle).is_some());
+            let cycle_work = if steered {
+                STEERING_FAMILY_COUNT
+                    .saturating_mul(u64::from(curve.max_operations))
+                    .saturating_add(1)
+            } else {
+                ordinary
+            };
+            requested = requested.saturating_add(cycle_work);
+        }
+    }
+
+    if requested > MAX_PERCEPTUAL_SCORING_WORK {
+        return Err(GeneratorError::DumkaPerceptualWorkLimit {
+            requested,
+            limit: MAX_PERCEPTUAL_SCORING_WORK,
+        });
+    }
+    Ok(())
+}
+
+/// The number of distinct cycles in `1..=through_cycle` steered by at least one
+/// enabled property curve — the merged union of the curves' point spans. A
+/// cycle counts once no matter how many curves cover it, because one steering
+/// pass evaluates the same fixed family set regardless of curve count.
+pub(crate) fn property_steering_active_cycles(curves: &[PropertyCurve], through_cycle: u64) -> u64 {
+    let mut spans: Vec<(u64, u64)> = curves
+        .iter()
+        .filter(|curve| curve.is_active())
+        .filter_map(|curve| {
+            let first = curve.points.first()?.cycle;
+            let last = curve.points.last()?.cycle.min(through_cycle);
+            (first <= last).then_some((first, last))
+        })
+        .collect();
+    spans.sort_unstable();
+    let mut total = 0_u64;
+    let mut current: Option<(u64, u64)> = None;
+    for (start, end) in spans {
+        match current {
+            // Overlapping or contiguous spans cover one unbroken cycle run.
+            Some((_, current_end)) if start <= current_end.saturating_add(1) => {
+                current = current.map(|(open, close)| (open, close.max(end)));
+            }
+            _ => {
+                if let Some((open, close)) = current {
+                    total = total.saturating_add(close - open + 1);
+                }
+                current = Some((start, end));
+            }
+        }
+    }
+    if let Some((open, close)) = current {
+        total = total.saturating_add(close - open + 1);
+    }
+    total
+}
+
+/// Bound the property-steering functional work over `1..=through_cycle` against
+/// [`PROPERTY_EVAL_BUDGET`], mirroring [`validate_perceptual_scoring_work_through`].
+/// `max_operations` is the aggregate curve's per-cycle step cap, which the
+/// steering loop also honors.
+pub(crate) fn validate_property_steering_work_through(
+    curves: &[PropertyCurve],
+    max_operations: u32,
+    through_cycle: u64,
+) -> Result<(), GeneratorError> {
+    let active_cycles = property_steering_active_cycles(curves, through_cycle);
+    let requested = active_cycles
+        .saturating_mul(STEERING_FAMILY_COUNT)
+        .saturating_mul(u64::from(max_operations));
+    if requested > PROPERTY_EVAL_BUDGET {
+        return Err(GeneratorError::DumkaPlanInvalid {
+            message: format!(
+                "propertyCurve steering needs {requested} functional evaluations across {active_cycles} cycles, the maximum is {PROPERTY_EVAL_BUDGET}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Why a scheduled quota did not fully apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -517,6 +959,40 @@ pub struct PerceptualPacingTrace {
     pub exhausted: bool,
 }
 
+/// What one accepted steering operation was chosen to improve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SteeringTarget {
+    Density,
+    Complexity,
+    Syncopation,
+    Evenness,
+    Occupancy,
+    Diversity,
+    Pacing,
+}
+
+impl From<CurveProperty> for SteeringTarget {
+    fn from(property: CurveProperty) -> Self {
+        match property {
+            CurveProperty::Density => Self::Density,
+            CurveProperty::Complexity => Self::Complexity,
+            CurveProperty::Syncopation => Self::Syncopation,
+            CurveProperty::Evenness => Self::Evenness,
+            CurveProperty::Occupancy => Self::Occupancy,
+            CurveProperty::Diversity => Self::Diversity,
+        }
+    }
+}
+
+/// The actual family and objective selected for one applied steering step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SteeringChoice {
+    pub family: DirectiveFamily,
+    pub chosen_for: SteeringTarget,
+}
+
 /// Authoring trace for one active directive at one cycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -533,6 +1009,10 @@ pub struct DirectiveTraceEntry {
     pub complexity_corridor_clamp: Option<ComplexityCorridorClamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perceptual: Option<PerceptualPacingTrace>,
+    /// Populated only by composition-level property steering. It records every
+    /// accepted family's real identity and the objective it improved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_choices: Vec<SteeringChoice>,
 }
 
 /// Exact integer remainder carried by one range across the historical fold.
@@ -1207,6 +1687,132 @@ mod tests {
     }
 
     #[test]
+    fn property_steering_work_budget_admits_a_full_span_curve_and_rejects_beyond_it() {
+        let curve = |first: u64, last: u64| PropertyCurve {
+            property: CurveProperty::Density,
+            enabled: true,
+            tolerance_milli: 1_000,
+            weight: 50,
+            points: vec![
+                CurvePoint {
+                    cycle: first,
+                    target_milli: 40_000,
+                },
+                CurvePoint {
+                    cycle: last,
+                    target_milli: 60_000,
+                },
+            ],
+        };
+        // The union of spans counts each covered cycle once: overlapping and
+        // contiguous runs merge, disjoint runs sum.
+        assert_eq!(
+            property_steering_active_cycles(&[curve(1, 512)], u64::MAX),
+            512
+        );
+        assert_eq!(
+            property_steering_active_cycles(&[curve(1, 5), curve(6, 10)], u64::MAX),
+            10
+        );
+        assert_eq!(
+            property_steering_active_cycles(&[curve(1, 5), curve(8, 10)], u64::MAX),
+            8
+        );
+        // 512 cycles × 8 families × 8 ops = 32_768 = PROPERTY_EVAL_BUDGET.
+        assert!(validate_property_steering_work_through(&[curve(1, 512)], 8, u64::MAX).is_ok());
+        let over = validate_property_steering_work_through(&[curve(1, 513)], 8, u64::MAX);
+        assert!(matches!(over, Err(GeneratorError::DumkaPlanInvalid { .. })));
+        // A disabled curve charges nothing.
+        let mut disabled = curve(1, 512);
+        disabled.enabled = false;
+        assert_eq!(property_steering_active_cycles(&[disabled], u64::MAX), 0);
+    }
+
+    #[test]
+    fn property_and_pacing_curves_share_the_real_v1_distance_budget() {
+        let property_curve = PropertyCurve {
+            property: CurveProperty::Syncopation,
+            enabled: true,
+            tolerance_milli: 1_000,
+            weight: 50,
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 50_000,
+                },
+                CurvePoint {
+                    cycle: 64,
+                    target_milli: 50_000,
+                },
+            ],
+        };
+        let pacing = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 500,
+            max_operations: 8,
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 0,
+                },
+                CurvePoint {
+                    cycle: 64,
+                    target_milli: 0,
+                },
+            ],
+        };
+
+        assert_eq!(
+            validate_property_pacing_work_through(
+                &[],
+                &pacing,
+                std::slice::from_ref(&property_curve),
+                u64::MAX,
+            )
+            .unwrap_err(),
+            GeneratorError::DumkaPerceptualWorkLimit {
+                requested: 64 * (STEERING_FAMILY_COUNT * 8 + 1),
+                limit: MAX_PERCEPTUAL_SCORING_WORK,
+            },
+            "a drawn zero still reserves the steered hold search"
+        );
+
+        let within_budget = EvolutionCurve {
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 0,
+                },
+                CurvePoint {
+                    cycle: 63,
+                    target_milli: 0,
+                },
+            ],
+            ..pacing
+        };
+        validate_property_pacing_work_through(
+            &[],
+            &within_budget,
+            &[PropertyCurve {
+                points: vec![
+                    CurvePoint {
+                        cycle: 1,
+                        target_milli: 50_000,
+                    },
+                    CurvePoint {
+                        cycle: 63,
+                        target_milli: 50_000,
+                    },
+                ],
+                ..property_curve
+            }],
+            u64::MAX,
+        )
+        .expect("63 × 65 = 4,095 evaluations fits the shared budget");
+    }
+
+    #[test]
     fn directive_density_corridor_is_paired_ordered_and_bounded() {
         let mut row = directive(9, DirectiveFamily::Fragment, 1, 4);
         row.options.density_floor = Some(25);
@@ -1250,6 +1856,7 @@ mod tests {
             }),
             complexity_corridor_clamp: None,
             perceptual: None,
+            steering_choices: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(trace).unwrap(),
@@ -1284,6 +1891,7 @@ mod tests {
                 reached: false,
                 exhausted: true,
             }),
+            steering_choices: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(trace).unwrap(),
@@ -1543,7 +2151,7 @@ mod tests {
                 ],
                 ..base.clone()
             }),
-            "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 512"
+            "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 511"
         );
         assert_eq!(
             err(&EvolutionCurve {
@@ -1560,6 +2168,172 @@ mod tests {
                 ..base.clone()
             }),
             "dumka plan invalid: curve points must have strictly ascending cycles"
+        );
+    }
+
+    #[test]
+    fn property_curve_interpolates_and_is_absent_outside_its_span() {
+        let curve = PropertyCurve {
+            property: CurveProperty::Density,
+            enabled: true,
+            tolerance_milli: 1_000,
+            weight: 50,
+            points: vec![
+                CurvePoint {
+                    cycle: 2,
+                    target_milli: 20_000,
+                },
+                CurvePoint {
+                    cycle: 6,
+                    target_milli: 80_000,
+                },
+            ],
+        };
+        // Absent — not zero — before the first and after the last point.
+        assert_eq!(curve.target_milli_at(1), None);
+        assert_eq!(curve.band_at(1), None);
+        assert_eq!(curve.target_milli_at(7), None);
+        // Exact at breakpoints; integer round-half-away-from-zero between.
+        assert_eq!(curve.target_milli_at(2), Some(20_000));
+        assert_eq!(curve.target_milli_at(6), Some(80_000));
+        assert_eq!(curve.target_milli_at(4), Some(50_000)); // midpoint
+                                                            // Band brackets the center by the tolerance, clamped to 0..=100_000.
+        assert_eq!(curve.band_at(2), Some((19_000, 21_000)));
+        let wide = PropertyCurve {
+            tolerance_milli: 100_000,
+            ..curve.clone()
+        };
+        assert_eq!(wide.band_at(2), Some((0, 100_000)));
+        // A disabled curve is absent everywhere.
+        let disabled = PropertyCurve {
+            enabled: false,
+            ..curve
+        };
+        assert_eq!(disabled.target_milli_at(4), None);
+        assert!(!disabled.is_active());
+    }
+
+    #[test]
+    fn property_curve_validation_messages_are_pinned() {
+        let density = |points: Vec<CurvePoint>| PropertyCurve {
+            property: CurveProperty::Density,
+            enabled: true,
+            tolerance_milli: 5_000,
+            weight: 50,
+            points,
+        };
+        let ok_points = vec![CurvePoint {
+            cycle: 1,
+            target_milli: 50_000,
+        }];
+        // Wide-open corridor: no static conflict.
+        let err = |curves: &[PropertyCurve]| {
+            validate_property_curves(curves, 0, 100, 0, 100_000)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(
+            validate_property_curves(&[density(ok_points.clone())], 0, 100, 0, 100_000).is_ok()
+        );
+
+        // One curve per property.
+        assert_eq!(
+            err(&[density(ok_points.clone()), density(ok_points.clone())]),
+            "dumka plan invalid: propertyCurve supports at most one curve per property, got a second density"
+        );
+        // Weight range.
+        assert_eq!(
+            err(&[PropertyCurve {
+                weight: 0,
+                ..density(ok_points.clone())
+            }]),
+            "dumka plan invalid: propertyCurve density weight must be 1-100, got 0"
+        );
+        // Tolerance range.
+        assert_eq!(
+            err(&[PropertyCurve {
+                tolerance_milli: 100_001,
+                ..density(ok_points.clone())
+            }]),
+            "dumka plan invalid: propertyCurve density toleranceMilli must be 0-100000, got 100001"
+        );
+        // Ascending cycles.
+        assert_eq!(
+            err(&[density(vec![
+                CurvePoint {
+                    cycle: 3,
+                    target_milli: 1
+                },
+                CurvePoint {
+                    cycle: 3,
+                    target_milli: 2
+                },
+            ])]),
+            "dumka plan invalid: propertyCurve density points must have strictly ascending cycles"
+        );
+        // Cycle ≥ 1.
+        assert_eq!(
+            err(&[density(vec![CurvePoint {
+                cycle: 0,
+                target_milli: 1
+            }])]),
+            "dumka plan invalid: propertyCurve density point cycles must be ≥ 1"
+        );
+        // Static intersection: a density band at 90% ± 1% cannot fit a 0-50% corridor.
+        assert_eq!(
+            validate_property_curves(
+                &[PropertyCurve {
+                    tolerance_milli: 1_000,
+                    ..density(vec![CurvePoint {
+                        cycle: 5,
+                        target_milli: 90_000,
+                    }])
+                }],
+                0,
+                50,
+                0,
+                100_000,
+            )
+            .unwrap_err()
+            .to_string(),
+            "dumka plan invalid: propertyCurve density conflicts with the density corridor at cycle 5"
+        );
+        // A steered-only property (no corridor) never triggers the intersection check.
+        assert!(validate_property_curves(
+            &[PropertyCurve {
+                property: CurveProperty::Syncopation,
+                ..density(vec![CurvePoint {
+                    cycle: 5,
+                    target_milli: 90_000,
+                }])
+            }],
+            0,
+            50,
+            0,
+            100_000,
+        )
+        .is_ok());
+
+        let span_curve = |last| PropertyCurve {
+            points: vec![
+                CurvePoint {
+                    cycle: 1,
+                    target_milli: 50_000,
+                },
+                CurvePoint {
+                    cycle: last,
+                    target_milli: 50_000,
+                },
+            ],
+            ..density(ok_points.clone())
+        };
+        validate_property_curves(&[span_curve(512)], 0, 100, 0, 100_000)
+            .expect("the inclusive 512-cycle budget has a 511-cycle endpoint delta");
+        assert_eq!(
+            validate_property_curves(&[span_curve(513)], 0, 100, 0, 100_000)
+                .unwrap_err()
+                .to_string(),
+            "dumka plan invalid: propertyCurve density spans 512 cycles between its first and last points, the maximum is 511"
         );
     }
 

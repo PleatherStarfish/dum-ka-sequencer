@@ -243,40 +243,67 @@ instead of attempting an unbounded canvas allocation.
 The **Curve card** at the top of the Evolve inspector authors the
 composition-level evolution curve: an enabled toggle, tolerance and
 max-operations fields, and the breakpoint list. With the curve enabled,
-clicking the Step size lane places a breakpoint at that cycle (height =
+clicking the **Pacing lane** places a breakpoint at that cycle (height =
 target), shift-click removes one, and removing the last point disables
-the curve. Below the composition strip, the **Step size lane** plots each cached
-cycle's whole-cycle realized perceptual distance (`cycleDistance` on the
-preview DTO) as a bar, overlays every enabled perceptual directive's
-target ± tolerance as a band (stacked rows sum), and colors the bar green
-inside the band, red outside; cycles without a cached preview say "not
-cached". This is the calibration feedback loop: author a target, read
-what the cycle actually realized.
-The composition strip uses a bounded, authoring-only cache populated through
-the same structure-preview and `generator_preview` commands as the timeline.
-It follows the visible canvas, works while the Generator playback toggle is
-off, and shows onset/density marks against the global corridor band, with one
-focusable filled trace tick per
-applied directive, one hollow tick per skipped directive, and a split
-green/red tick when only part of a requested quota survived projection. A
-corridor clamp is marked independently and names the floor or ceiling that
-limited the operation, even when projection/exhaustion is also true. The
-inspector can override both corridor rails as one paired option. For a
-perceptual row, `requested` is the count of successfully examined nonzero
-prefixes, `applied` is the selected prefix (including zero), and
-reached/exhausted reflects the inclusive
-target tolerance rather than an inferred operation percentage. A
-gradual range labels its current step, including scheduled 0/0 holds; trace
-fractions remain this-cycle work, not a cumulative percentage inferred from a
-partial cache. This cache never
-supplies timeline rows or playback. Generator retains the legacy stochastic knobs, annotated as
-applying only where no plan directive is active, and links directly to Evolve.
+the curve.
 
-Under Step size, the **Complexity** lane plots each cached cycle's backend
-state complexity inside the effective complexity band and labels an independent
-complexity clamp, including a normalization stall. The adjacent **Depth
-diversity** value is an insight readout only; the UI never draws an authored
-diversity band or describes it as an admissibility limit.
+Directly beneath the ruler sits the **property lane stack**, before Events and
+the directive-family lanes in both visual and keyboard focus order. It replaces
+the former Composition / Step size / Complexity rows (M3.97). The **Pacing
+lane** — the renamed step-size lane —
+plots each cached cycle's whole-cycle realized perceptual distance
+(`cycleDistance` on the preview DTO) as a bar, overlays every enabled
+perceptual directive's target ± tolerance as a band (stacked rows sum), and
+colors the bar green inside the band, red outside; cycles without a cached
+preview say "not cached". This is the calibration feedback loop: author a
+target, read what the cycle actually realized.
+
+Below it, six drawable **property lanes** — Density, Complexity, Syncopation,
+Evenness, Occupancy, Diversity — plot that cycle's realized per-state
+functional (`propertyProfile` on the preview DTO, an absolute `0..=100_000`
+milliunit measurement) and overlay the authored center line plus tolerance
+band. Dragging draws; handles move or remove authored points. Keyboard users
+focus a cell and press Enter/Space to create, Up/Down to adjust, Left/Right to
+move, and Delete to remove. The Property curves card selects a lane and edits
+its enabled state, tolerance, and steering weight, including disabled curves
+preserved during tolerant import.
+
+Density and Complexity intersect the drawn band with their effective hard
+corridor. The density preview carries exact milliunit endpoints in addition to
+legacy whole-percent fields, so fractional-percent targets are not rounded in
+the display contract. A valid active directive owns its cycle and renders a
+drawn band neutrally as **overridden by directive**; an orphaned scope does not.
+Otherwise, a miss stays red and uses the backend's property-specific reason and
+rail attribution. On unsupported property grids the `propertyProfile` is
+absent; the band-less lanes fall silent while Density, Complexity, and
+Diversity retain their standalone fallbacks. Playback never runs through these
+display lanes—the same generator realization supplies them.
+
+A single **Events gutter** row beneath the property lanes carries the directive trace
+ticks: one focusable filled tick per applied directive, one hollow tick per
+skipped directive, and a split green/red tick when only part of a requested
+quota survived projection. A corridor clamp is marked independently and names
+the floor or ceiling that limited the operation, even when
+projection/exhaustion is also true; a complexity-corridor clamp is marked
+distinctly. The inspector can override both density corridor rails as one
+paired option. For a steered cycle, `requested` counts every family candidate
+actually examined, `applied` counts selected operations, and every selection
+names its actual family and `chosenFor` objective. For a perceptual row,
+`requested` is the count of successfully
+examined nonzero prefixes, `applied` is the selected prefix (including zero),
+and reached/exhausted reflects the inclusive target tolerance rather than an
+inferred operation percentage. A gradual range labels its current step,
+including scheduled 0/0 holds; trace fractions remain this-cycle work, not a
+cumulative percentage inferred from a partial cache.
+
+The lanes and gutter use a bounded, authoring-only cache populated through the
+same structure-preview and `generator_preview` commands as the timeline. It
+follows the visible canvas, works while the Generator playback toggle is off,
+and never supplies timeline rows or playback. Generator retains the legacy
+stochastic knobs, annotated as applying only where no plan directive is active,
+and links directly to Evolve. The adjacent **Depth diversity** value in the
+inspector is an insight readout only; the UI never draws an authored diversity
+band or describes it as an admissibility limit.
 
 Gradual quota evolution is operation pacing, not an audio crossfade. It spreads
 a fixed number of engine operations across cycle boundaries. One Rotate,

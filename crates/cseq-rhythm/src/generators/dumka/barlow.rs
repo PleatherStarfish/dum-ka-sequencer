@@ -189,6 +189,8 @@ mod tests {
     /// `UPDATE_DTO_FIXTURES=1 cargo test -p cseq-rhythm rust_metrics_contract_fixture_matches`.
     #[test]
     fn rust_metrics_contract_fixture_matches() {
+        use super::super::evolve::{EvolutionState, EvolvedOnset};
+        use super::super::perceptual::PerceptualContext;
         use super::super::sioros::metrical_levels;
         use super::super::spectrum::{
             blended_order, cosine_table, geometric_add_order, geometric_remove_order,
@@ -305,6 +307,83 @@ mod tests {
         }
         assert_eq!(fingerprint_onsets, vec![0, 4, 1, 6]);
 
+        // §M3.97 property lanes: the six read-only per-state functionals. The
+        // TS mirror (`dumkaMetrics.stateProperties`) must reproduce every
+        // field byte-for-byte, so the engine emits reference profiles for
+        // representative realized states — an even polygon (evenness maxed,
+        // syncopation nil), sustains (occupancy above density), a syncopated
+        // set, a rotated multi-beat state, and a grid whose primes exceed the
+        // published tables (no profile, exactly as the fold reports none).
+        // (cycle_beats, subdivision, [(slot, dur), …], rotation_beats)
+        type PropertySpec = (u32, u32, Vec<(u32, u32)>, u32);
+        let property_specs: Vec<PropertySpec> = vec![
+            (1, 8, vec![(0, 1), (2, 1), (4, 1), (6, 1)], 0),
+            (1, 8, vec![(0, 4), (4, 2)], 0),
+            (1, 8, vec![(0, 1), (3, 1)], 0),
+            (1, 8, vec![], 0),
+            (2, 8, vec![(0, 3), (5, 1), (11, 2)], 1),
+            (4, 4, vec![(0, 1), (4, 1), (8, 1), (12, 1)], 0),
+            // Whole-cycle period above the old per-beat 64-slot spectrum cap.
+            // One onset per beat is a regular octagon and must remain maximally
+            // even rather than silently collapsing to zero.
+            (
+                8,
+                9,
+                vec![
+                    (0, 1),
+                    (9, 1),
+                    (18, 1),
+                    (27, 1),
+                    (36, 1),
+                    (45, 1),
+                    (54, 1),
+                    (63, 1),
+                ],
+                0,
+            ),
+            (3, 2, vec![(0, 1), (2, 1), (4, 1)], 0),
+            (4, 13, vec![(0, 1)], 0),
+        ];
+        let property_profiles = property_specs
+            .into_iter()
+            .map(|(cycle_beats, subdivision, onsets, rotation_beats)| {
+                let profile = stratification(cycle_beats, subdivision)
+                    .and_then(|strata| {
+                        PerceptualContext::new(
+                            cycle_beats,
+                            subdivision,
+                            indispensability(&strata),
+                            metrical_levels(&strata),
+                        )
+                        .ok()
+                    })
+                    .map(|context| {
+                        let state = EvolutionState {
+                            onsets: onsets
+                                .iter()
+                                .map(|&(slot, dur)| EvolvedOnset {
+                                    slot,
+                                    dur,
+                                    class: "x".to_owned(),
+                                })
+                                .collect(),
+                            rotation_beats,
+                        };
+                        context.state_properties(&state)
+                    });
+                serde_json::json!({
+                    "cycleBeats": cycle_beats,
+                    "subdivision": subdivision,
+                    "rotationBeats": rotation_beats,
+                    "onsets": onsets
+                        .iter()
+                        .map(|&(slot, dur)| vec![slot, dur])
+                        .collect::<Vec<_>>(),
+                    "profile": profile,
+                })
+            })
+            .collect::<Vec<_>>();
+
         let contract = serde_json::json!({
             "metricalCases": metrical_cases,
             "spectrum": {
@@ -314,6 +393,7 @@ mod tests {
                 "cases": spectrum_cases,
                 "greedyW8K4Fingerprint": fingerprint_onsets,
             },
+            "propertyProfiles": property_profiles,
         });
         let rendered = format!(
             "{}\n",

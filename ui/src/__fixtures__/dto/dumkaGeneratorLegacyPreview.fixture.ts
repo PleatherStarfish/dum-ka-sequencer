@@ -167,5 +167,13 @@ export const dumkaGeneratorLegacyPreviewFixture: GeneratorPreview = {
     "ceiling": 100000
   },
   "stateComplexityMilli": 42063,
-  "stateDepthDiversityMilli": 74210
+  "stateDepthDiversityMilli": 74210,
+  "propertyProfile": {
+    "densityMilli": 7500,
+    "complexityMilli": 42063,
+    "syncopationMilli": 4483,
+    "evennessMilli": 92038,
+    "occupancyMilli": 51250,
+    "diversityMilli": 74210
+  }
 };

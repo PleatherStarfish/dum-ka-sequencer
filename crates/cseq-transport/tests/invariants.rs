@@ -193,6 +193,25 @@ fn evolution_plan_strategy() -> impl Strategy<Value = Vec<rhythm::EvolutionDirec
         })
 }
 
+/// Small, valid authored property-curve sets. The final targets for Density
+/// and Complexity are projected into the generated global rails below so this
+/// strategy exercises steering rather than being discarded by validation.
+fn property_curve_hints_strategy() -> impl Strategy<Value = Vec<(usize, bool, u32, u32, u32)>> {
+    prop_oneof![
+        3 => Just(Vec::new()),
+        1 => prop::collection::vec(
+            (
+                0_usize..6,
+                prop::bool::ANY,
+                0_u32..=100_000,
+                0_u32..=10_000,
+                1_u32..=100,
+            ),
+            1..=2,
+        ),
+    ]
+}
+
 fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams> {
     (
         0..DUMKA_FUZZ_PATTERNS.len(),
@@ -211,6 +230,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
             Just(vec![7]),
             Just(vec![2, 3]),
         ],
+        property_curve_hints_strategy(),
         generator_seed_mode_strategy(),
     )
         .prop_map(
@@ -224,6 +244,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                 (euclid_max_run, euclid_invert, euclid_tied),
                 mut plan,
                 subdivision_palette,
+                property_curve_hints,
                 seed_mode,
             )| {
                 for (index, directive) in plan.iter_mut().enumerate() {
@@ -231,6 +252,53 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                         directive.options.subdivision_level = subdivision_palette.first().copied();
                     }
                 }
+                let density_floor = barlow_temperature.min(fill_complexity);
+                let density_ceiling = barlow_temperature.max(fill_complexity);
+                let complexity_floor = density_floor.saturating_mul(1_000);
+                let complexity_ceiling = density_ceiling.saturating_mul(1_000);
+                let mut seen = HashSet::new();
+                let property_curves = property_curve_hints
+                    .into_iter()
+                    .filter_map(|(property_index, enabled, hint, tolerance_milli, weight)| {
+                        let property = match property_index {
+                            0 => rhythm::CurveProperty::Density,
+                            1 => rhythm::CurveProperty::Complexity,
+                            2 => rhythm::CurveProperty::Syncopation,
+                            3 => rhythm::CurveProperty::Evenness,
+                            4 => rhythm::CurveProperty::Occupancy,
+                            _ => rhythm::CurveProperty::Diversity,
+                        };
+                        if !seen.insert(property) {
+                            return None;
+                        }
+                        let (floor, ceiling) = match property {
+                            rhythm::CurveProperty::Density => (
+                                density_floor.saturating_mul(1_000),
+                                density_ceiling.saturating_mul(1_000),
+                            ),
+                            rhythm::CurveProperty::Complexity => {
+                                (complexity_floor, complexity_ceiling)
+                            }
+                            _ => (0, 100_000),
+                        };
+                        let width = ceiling.saturating_sub(floor);
+                        let target_milli = floor.saturating_add(if width == 0 {
+                            0
+                        } else {
+                            hint % width.saturating_add(1)
+                        });
+                        Some(rhythm::PropertyCurve {
+                            property,
+                            enabled,
+                            tolerance_milli,
+                            weight,
+                            points: vec![rhythm::CurvePoint {
+                                cycle: 1,
+                                target_milli,
+                            }],
+                        })
+                    })
+                    .collect();
                 rhythm::DumkaGeneratorParams {
                     pattern: DUMKA_FUZZ_PATTERNS[index].to_string(),
                     subdivision_palette,
@@ -238,14 +306,10 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     drift_leash,
                     barlow_temperature,
                     fill_complexity,
-                    density_floor: barlow_temperature.min(fill_complexity),
-                    density_ceiling: barlow_temperature.max(fill_complexity),
-                    complexity_floor: barlow_temperature
-                        .min(fill_complexity)
-                        .saturating_mul(1_000),
-                    complexity_ceiling: barlow_temperature
-                        .max(fill_complexity)
-                        .saturating_mul(1_000),
+                    density_floor,
+                    density_ceiling,
+                    complexity_floor,
+                    complexity_ceiling,
                     placement_bias: euclid_invert,
                     weight_barlow_remove: weights[0],
                     weight_barlow_add: weights[1],
@@ -265,6 +329,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     plan,
                     plan_length_cycles: 0,
                     evolution_curve: rhythm::EvolutionCurve::default(),
+                    property_curves,
                     seed_mode,
                 }
             },
@@ -870,6 +935,7 @@ fn dumka_depth_strategy_reaches_every_palette_and_new_control_bounds() {
     let mut saw_max_bias = false;
     let mut saw_morph = false;
     let mut saw_level_filter = false;
+    let mut curve_properties = HashSet::new();
     for _ in 0..2_048 {
         let tree = strategy
             .new_tree(&mut runner)
@@ -888,6 +954,7 @@ fn dumka_depth_strategy_reaches_every_palette_and_new_control_bounds() {
             .plan
             .iter()
             .any(|directive| directive.options.subdivision_level.is_some());
+        curve_properties.extend(params.property_curves.iter().map(|curve| curve.property));
     }
     assert_eq!(
         palettes,
@@ -896,6 +963,18 @@ fn dumka_depth_strategy_reaches_every_palette_and_new_control_bounds() {
     assert!(saw_zero_complexity && saw_max_complexity);
     assert!(saw_zero_bias && saw_max_bias);
     assert!(saw_morph && saw_level_filter);
+    assert_eq!(
+        curve_properties,
+        HashSet::from([
+            rhythm::CurveProperty::Density,
+            rhythm::CurveProperty::Complexity,
+            rhythm::CurveProperty::Syncopation,
+            rhythm::CurveProperty::Evenness,
+            rhythm::CurveProperty::Occupancy,
+            rhythm::CurveProperty::Diversity,
+        ]),
+        "the transport invariant generator must exercise every property lane"
+    );
 }
 
 #[test]
@@ -957,12 +1036,14 @@ fn subdivision_level_filters_real_add_candidates_on_the_working_grid() {
         .filter(|slot| *slot != 0)
         .collect::<Vec<_>>();
 
+    // subdivisionLevel 3 is a palette PRIME: every filtered addition must land
+    // on a slot the ×3 refinement created (reduced denominator divisible by 3).
     assert!(!filtered_additions.is_empty());
     assert!(filtered_additions
         .iter()
-        .all(|slot| { rhythm::generators::dumka::depth::slot_level_index(*slot, 12) == Some(3) }));
+        .all(|slot| { rhythm::generators::dumka::depth::reduced_denominator(*slot, 12) % 3 == 0 }));
     assert!(unfiltered_slots.iter().any(|slot| {
-        *slot != 0 && rhythm::generators::dumka::depth::slot_level_index(*slot, 12) != Some(3)
+        *slot != 0 && rhythm::generators::dumka::depth::reduced_denominator(*slot, 12) % 3 != 0
     }));
     assert_ne!(filtered_slots, unfiltered_slots);
     assert!(filtered.trace[0].applied > 0);

@@ -17,7 +17,15 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 3,
+          "len": 2,
+          "rest": true,
+          "tiedFromPrevious": false,
+          "tiedToNext": false
+        },
+        {
+          "index": 1,
+          "start": 2,
+          "len": 1,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false
@@ -31,8 +39,24 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 3,
+          "len": 1,
+          "rest": false,
+          "tiedFromPrevious": false,
+          "tiedToNext": false
+        },
+        {
+          "index": 1,
+          "start": 1,
+          "len": 1,
           "rest": true,
+          "tiedFromPrevious": false,
+          "tiedToNext": false
+        },
+        {
+          "index": 2,
+          "start": 2,
+          "len": 1,
+          "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false
         }
@@ -59,24 +83,80 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 3,
+          "len": 1,
+          "rest": false,
+          "tiedFromPrevious": false,
+          "tiedToNext": false
+        },
+        {
+          "index": 1,
+          "start": 1,
+          "len": 1,
           "rest": true,
+          "tiedFromPrevious": false,
+          "tiedToNext": false
+        },
+        {
+          "index": 2,
+          "start": 2,
+          "len": 1,
+          "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false
         }
       ]
     }
   ],
-  "trace": [],
+  "trace": [
+    {
+      "cycle": 1,
+      "directiveId": 9007199254740991,
+      "family": "euclid",
+      "requested": 16,
+      "applied": 1,
+      "skipped": "exhausted",
+      "corridorClamp": {
+        "limit": "floor",
+        "densityPercent": 50
+      },
+      "steeringChoices": [
+        {
+          "family": "euclid",
+          "chosenFor": "syncopation"
+        }
+      ]
+    }
+  ],
   "densityCorridor": {
-    "floor": 0,
-    "ceiling": 100
+    "floor": 50,
+    "ceiling": 50,
+    "floorMilli": 50000,
+    "ceilingMilli": 50000
+  },
+  "cycleDistance": {
+    "modelVersion": "v1",
+    "distanceMilli": 48407
   },
   "workingSubdivision": 3,
   "complexityCorridor": {
     "floor": 0,
     "ceiling": 100000
   },
-  "stateComplexityMilli": 0,
-  "stateDepthDiversityMilli": 0
+  "stateComplexityMilli": 50000,
+  "stateDepthDiversityMilli": 100000,
+  "propertyProfile": {
+    "densityMilli": 50000,
+    "complexityMilli": 50000,
+    "syncopationMilli": 16666,
+    "evennessMilli": 97222,
+    "occupancyMilli": 66667,
+    "diversityMilli": 100000
+  },
+  "curveMisses": [
+    {
+      "property": "syncopation",
+      "gapMilli": 4321,
+      "reason": "noReducingCandidate"
+    }
+  ]
 };

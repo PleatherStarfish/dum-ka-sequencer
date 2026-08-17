@@ -168,7 +168,7 @@ describe("Dum-Ka directive trace fixture semantics", () => {
         directiveId: 101,
         family: "barlowRemove",
         requested: 3,
-        applied: 0,
+        applied: 1,
         skipped: "none",
         corridorClamp: {
           limit: "floor",

@@ -399,9 +399,9 @@ export function GeneratorEditor({
                 <div className="dumka-structure-row">
                   <span aria-label="Required structure">
                     {dumkaRequired
-                      ? `needs ${dumkaRequired.cycleBeats} beats · Subdivision ${dumkaRequired.subdivision} · working ${dumkaWorkingSubdivision}${
+                      ? `needs ${dumkaRequired.cycleBeats} beats · Subdivision ${dumkaRequired.subdivision}${
                           paletteFactor > 1
-                            ? ` (palette ×${paletteFactor})`
+                            ? ` · working ${dumkaWorkingSubdivision} (palette ×${paletteFactor})`
                             : ""
                         }${
                           dumkaOversizedMultiple !== null

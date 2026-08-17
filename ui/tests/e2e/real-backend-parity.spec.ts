@@ -344,7 +344,7 @@ test.describe("real backend parity", () => {
     await field.fill(pattern);
     await field.blur();
     await expect(page.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 20 · working 20"
+      "needs 4 beats · Subdivision 20"
     );
     await page.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -406,7 +406,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 1 · working 1"
+      "needs 4 beats · Subdivision 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -427,9 +427,7 @@ test.describe("real backend parity", () => {
     // This tick is rendered only from the real generator_preview trace. A
     // filled 1/1 entry proves the scheduled quota survived projection.
     await expect(
-      evolve
-        .getByLabel("Composition strip")
-        .getByRole("img", { name: "Remove: 1/1" })
+      evolve.getByLabel("Events").getByRole("img", { name: "Remove: 1/1" })
     ).toBeVisible({ timeout: 15_000 });
 
     // Capture the exact cycle-one request authored by the UI. Re-resolving the
@@ -570,7 +568,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 4 beats · Subdivision 1 · working 1"
+      "needs 4 beats · Subdivision 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -821,7 +819,7 @@ test.describe("real backend parity", () => {
     await pattern.fill("x x x x x x x x");
     await pattern.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 8 beats · Subdivision 1 · working 1"
+      "needs 8 beats · Subdivision 1"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
@@ -1010,6 +1008,10 @@ test.describe("real backend parity", () => {
     await expect(generator.getByLabel("Required structure")).toHaveText(
       "needs 4 beats · Subdivision 1 · working 6 (palette ×6)"
     );
+    // A palette refines the working grid (×6): the seed's Subdivision-1
+    // structure no longer satisfies it, so Apply structure authors the
+    // working-6 recipe before the refined Morph can project.
+    await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(
       generator.getByRole("button", { name: "Structure ready" })
     ).toBeDisabled();
@@ -1193,8 +1195,15 @@ test.describe("real backend parity", () => {
       appliedByCycle.reduce((sum, applied) => sum + applied, 0)
     );
 
+    // Complexity renders as a per-cycle band lane, so cycle 4's group exists
+    // regardless of the inspected cycle. Depth diversity is a single insight
+    // readout tied to the inspected cycle — selecting the Morph directive
+    // scrubs the stopped preview to its fromCycle (1), so the readout shows
+    // that cycle's value (per-cycle diversity lanes arrive in the M3.97
+    // property-lane work). Both assert the UI mirrors the real backend.
+    const inspectedPreview = previews[1]!;
     const complexityLabel = `Cycle 4 complexity ${(finalPreview.stateComplexityMilli! / 1_000).toFixed(1)}, corridor 0.0 through 55.0, inside corridor`;
-    const diversityLabel = `Cycle 4 depth diversity ${(finalPreview.stateDepthDiversityMilli! / 1_000).toFixed(1)}`;
+    const diversityLabel = `Cycle 1 depth diversity ${(inspectedPreview.stateDepthDiversityMilli! / 1_000).toFixed(1)}`;
     await expect(
       evolve.getByRole("group", { name: complexityLabel })
     ).toBeVisible();
@@ -1386,7 +1395,7 @@ test.describe("real backend parity", () => {
     ).toBeVisible();
     await expect(
       evolve.getByRole("group", {
-        name: /Cycle 4 composition: .* corridor 0% through 50%/,
+        name: /Cycle 4 density .* corridor 0% through 50%/,
       })
     ).toBeVisible();
   });
@@ -1581,7 +1590,7 @@ test.describe("real backend parity", () => {
     await field.fill(pattern);
     await field.blur();
     await expect(generator.getByLabel("Required structure")).toHaveText(
-      "needs 2 beats · Subdivision 5 · working 5"
+      "needs 2 beats · Subdivision 5"
     );
     await generator.getByRole("button", { name: "Apply structure" }).click();
     await expect(

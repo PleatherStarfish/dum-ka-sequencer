@@ -328,6 +328,18 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
           maxOperations: 4,
           points: [],
         },
+        propertyCurves: [
+          {
+            property: "syncopation",
+            enabled: true,
+            toleranceMilli: 2_500,
+            weight: 70,
+            points: [
+              { cycle: 1, targetMilli: 20_000 },
+              { cycle: 8, targetMilli: 65_000 },
+            ],
+          },
+        ],
         seedMode: { type: "locked", seed: 20260611 },
       },
       cycle: 0,
@@ -430,6 +442,18 @@ describe("DTO contract fixture generation (TS → Rust)", () => {
             placementBias: 65,
             morphTarget: "x x x x",
           },
+        },
+      ],
+      propertyCurves: [
+        {
+          property: "occupancy",
+          enabled: true,
+          toleranceMilli: 4_000,
+          weight: 65,
+          points: [
+            { cycle: 2, targetMilli: 35_000 },
+            { cycle: 12, targetMilli: 70_000 },
+          ],
         },
       ],
       planLengthCycles: 20,

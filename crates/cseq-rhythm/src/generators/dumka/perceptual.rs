@@ -224,6 +224,67 @@ impl PerceptualContext {
     pub fn metrical_levels(&self) -> &[u32] {
         &self.metrical_levels
     }
+
+    /// The six read-only per-state property functionals the calibration UI
+    /// plots over cycle time (M3.97 §1). Each is an absolute `0..=100_000`
+    /// milliunit measurement of one realized cycle on the working grid,
+    /// order-free and pure — display inputs only, never a decision path.
+    /// Complexity/diversity delegate to `depth`; evenness to `spectrum`;
+    /// syncopation reuses this model's own signature per state.
+    pub fn state_properties(&self, state: &EvolutionState) -> StateProperties {
+        let view = RhythmView::new(state, self);
+        let slots = self.slots;
+        let attack_slots = &view.attack_slots;
+        let onset_count = attack_slots.len() as u32;
+        let covered = view.occupancy.iter().filter(|&&covered| covered).count() as u32;
+        StateProperties {
+            density_milli: ratio_milli(onset_count, slots),
+            complexity_milli: super::depth::state_complexity_milli(attack_slots, self.subdivision),
+            syncopation_milli: self.state_syncopation_milli(&view),
+            evenness_milli: super::spectrum::state_evenness_milli(slots, attack_slots),
+            occupancy_milli: ratio_milli(covered, slots),
+            diversity_milli: super::depth::depth_diversity_milli(attack_slots, self.subdivision),
+        }
+    }
+
+    /// Summed syncopation signature normalized by its per-state maximum: each
+    /// of the `k` attacks contributes at most `max_level × max_salience`, so
+    /// the ratio stays in `0..=100_000`. Zero when nothing can syncopate.
+    fn state_syncopation_milli(&self, view: &RhythmView<'_>) -> u32 {
+        let onset_count = view.attack_slots.len() as u64;
+        let max_level = u64::from(self.metrical_levels.iter().copied().max().unwrap_or(0));
+        let max_salience = self.salience.iter().copied().max().unwrap_or(0);
+        let capacity = onset_count
+            .saturating_mul(max_level)
+            .saturating_mul(max_salience);
+        if capacity == 0 {
+            return 0;
+        }
+        let total: u64 = syncopation_signature(view, self).into_iter().sum();
+        u32::try_from((100_000 * total.min(capacity)) / capacity).unwrap_or(100_000)
+    }
+}
+
+/// The read-only per-state property profile (M3.97 §1). All six are
+/// absolute `0..=100_000` milliunits; the calibration UI plots them per cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateProperties {
+    pub density_milli: u32,
+    pub complexity_milli: u32,
+    pub syncopation_milli: u32,
+    pub evenness_milli: u32,
+    pub occupancy_milli: u32,
+    pub diversity_milli: u32,
+}
+
+/// `round(100_000 × numerator / denominator)`, saturating and integer-exact.
+fn ratio_milli(numerator: u32, denominator: u32) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    let scaled = 100_000u64 * u64::from(numerator) + u64::from(denominator) / 2;
+    u32::try_from((scaled / u64::from(denominator)).min(100_000)).unwrap_or(100_000)
 }
 
 /// Auditable feature breakdown for one comparison.
@@ -853,6 +914,44 @@ mod tests {
                 .collect(),
             rotation_beats,
         }
+    }
+
+    #[test]
+    fn state_properties_report_the_six_functionals() {
+        let context = context(1, 8);
+        // An even 4-gon of one-slot hits: exactly known density, occupancy,
+        // and evenness; syncopation is zero because no attack is followed by
+        // a silent stronger pulse before the next attack.
+        let even = state(&[(0, 1, "x"), (2, 1, "x"), (4, 1, "x"), (6, 1, "x")], 0);
+        let profile = context.state_properties(&even);
+        assert_eq!(profile.density_milli, 50_000);
+        assert_eq!(profile.occupancy_milli, 50_000);
+        assert_eq!(profile.evenness_milli, 100_000);
+        assert_eq!(profile.syncopation_milli, 0);
+        // Complexity and diversity match the standalone depth helpers on the
+        // same working grid (the profile must not diverge from the corridor
+        // metrics the fold enforces).
+        let slots = [0u32, 2, 4, 6];
+        assert_eq!(
+            profile.complexity_milli,
+            super::super::depth::state_complexity_milli(&slots, 8)
+        );
+        assert_eq!(
+            profile.diversity_milli,
+            super::super::depth::depth_diversity_milli(&slots, 8)
+        );
+
+        // Sustains raise occupancy above density; every field stays bounded.
+        let sustained = state(&[(0, 4, "x"), (4, 2, "x")], 0);
+        let held = context.state_properties(&sustained);
+        assert_eq!(held.density_milli, 25_000); // 2 attacks of 8 slots
+        assert_eq!(held.occupancy_milli, 75_000); // 6 covered of 8
+        assert!(held.evenness_milli <= 100_000 && held.syncopation_milli <= 100_000);
+
+        // A syncopated pattern (offbeat attack before a silent stronger pulse)
+        // reports positive syncopation, unlike the on-grid even set above.
+        let syncopated = state(&[(0, 1, "x"), (3, 1, "x")], 0);
+        assert!(context.state_properties(&syncopated).syncopation_milli > 0);
     }
 
     fn distance(

@@ -35,8 +35,12 @@ The **Evolve** editor turns that fold into an authored score. Put a pin on one
 cycle or stretch a family across a range, choose an operation quota or a
 versioned perceptual target for each active cycle, and optionally confine it to
 a contiguous beat window. Its composition strip
-shows cached onset density inside the authored corridor plus applied/skipped
-and corridor-clamp trace ticks; selecting a
+starts with a pacing lane and six drawable property lanes—Density, Complexity,
+Syncopation, Evenness, Occupancy, and Diversity—overlaying authored tolerance
+bands with the backend-realized trajectory. Active directives visibly override
+drawn bands; otherwise an unreachable target stays mounted as a traced miss
+rather than collapsing to silence. The Events gutter shows applied/skipped,
+corridor-clamp, and chosen-family trace detail; selecting a
 directive scrubs stopped preview to its cycle for an honest before/after visual
 comparison. Playback still starts through the ordinary transport path; Evolve
 does not claim a separate stopped-audition engine.

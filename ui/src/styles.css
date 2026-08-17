@@ -6352,11 +6352,18 @@ input:disabled {
   background: var(--surface-0);
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
+  /* Rows are authored in their visual/focus order: calibration first, then
+     events and directive families. Lanes keep their own `width: max-content`
+     under flex-start, so the shared grid columns stay aligned. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .evolve-plan-ruler,
 .evolve-plan-lane,
-.evolve-plan-composition {
+.evolve-plan-property-lane,
+.evolve-plan-events {
   position: relative;
   display: grid;
   grid-template-columns: var(--evolve-label-width) repeat(var(--evolve-cycle-count), var(--evolve-cycle-width));
@@ -6378,44 +6385,205 @@ input:disabled {
   border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
 }
 
-.evolve-plan-complexity-lane {
-  position: relative;
-  display: grid;
-  grid-template-columns: var(--evolve-label-width) repeat(var(--evolve-cycle-count), var(--evolve-cycle-width));
-  width: max-content;
-  min-width: 100%;
+/* Read-only property lanes (M3.97): each functional's realized trajectory as
+   a per-cycle mark on a 0..100 scale (faint 50% guide line). Density and
+   Complexity also shade their effective corridor band; the mark reads accent
+   inside the band and red on a breach — the legibility the bar rows lacked. */
+.evolve-plan-property-lane {
   align-items: end;
-  height: 30px;
+  /* Tall enough to draw automation into comfortably; the mark, band, line, and
+     handle all scale by percentage. Guide lines at 25/50/75 give the eye a
+     reference while dragging (the 50% line strongest). */
+  height: 64px;
   border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  background-image: linear-gradient(
+      to top,
+      transparent calc(50% - 1px),
+      color-mix(in srgb, var(--line) 36%, transparent) 50%,
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to top,
+      transparent calc(25% - 1px),
+      color-mix(in srgb, var(--line) 18%, transparent) 25%,
+      transparent calc(25% + 1px)
+    ),
+    linear-gradient(
+      to top,
+      transparent calc(75% - 1px),
+      color-mix(in srgb, var(--line) 18%, transparent) 75%,
+      transparent calc(75% + 1px)
+    );
 }
 
-.evolve-plan-complexity-cell {
+.evolve-plan-property-lane.is-density {
+  --lane-accent: var(--cyan);
+}
+.evolve-plan-property-lane.is-complexity {
+  --lane-accent: var(--violet);
+}
+.evolve-plan-property-lane.is-syncopation {
+  --lane-accent: var(--data-blue);
+}
+.evolve-plan-property-lane.is-evenness {
+  --lane-accent: var(--green);
+}
+.evolve-plan-property-lane.is-occupancy {
+  --lane-accent: var(--yellow);
+}
+.evolve-plan-property-lane.is-diversity {
+  --lane-accent: var(--magenta);
+}
+
+.evolve-plan-property-cell {
   position: relative;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
   border-left: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
 }
 
-.evolve-plan-complexity-band {
+.evolve-plan-property-cell:focus-visible {
+  z-index: 4;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.evolve-plan-property-cell.is-overridden .evolve-plan-property-band,
+.evolve-plan-property-cell.is-overridden .evolve-plan-property-mark {
+  opacity: 0.38;
+}
+
+.evolve-plan-property-cell.is-overridden .evolve-plan-property-mark {
+  background: var(--muted);
+}
+
+.evolve-plan-property-band {
   position: absolute;
   right: 2px;
   left: 2px;
   min-height: 1px;
-  background: color-mix(in srgb, var(--violet) 14%, transparent);
-  border-top: 1px solid color-mix(in srgb, var(--violet) 48%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--violet) 48%, transparent);
+  background: color-mix(in srgb, var(--lane-accent, var(--violet)) 14%, transparent);
+  border-top: 1px solid
+    color-mix(in srgb, var(--lane-accent, var(--violet)) 48%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--lane-accent, var(--violet)) 48%, transparent);
+  pointer-events: none;
 }
 
-.evolve-plan-complexity-mark {
+.evolve-plan-property-mark {
   position: absolute;
-  right: 5px;
-  left: 5px;
+  right: 4px;
+  left: 4px;
   height: 2px;
-  background: var(--muted);
+  background: var(--lane-accent, var(--muted));
 }
 
-.evolve-plan-complexity-cell.is-within-corridor .evolve-plan-complexity-mark {
-  background: var(--violet);
+.evolve-plan-property-cell.is-within-corridor .evolve-plan-property-mark {
+  background: var(--lane-accent, var(--violet));
+}
+
+.evolve-plan-property-cell.is-outside-corridor .evolve-plan-property-mark {
+  background: var(--red);
+}
+
+/* Drawable property curves (M3.97 §6): an editable lane shows a crosshair; a
+   click places a target point, shift-click removes it. */
+.evolve-plan-property-lane.is-editable .evolve-plan-property-cell {
+  cursor: crosshair;
+}
+
+/* The drawn tolerance band is the authored steering target — tinted stronger
+   than the faint global corridor it overrides. */
+.evolve-plan-property-cell.is-drawn .evolve-plan-property-band {
+  background: color-mix(
+    in srgb,
+    var(--lane-accent, var(--accent)) 20%,
+    transparent
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--lane-accent, var(--accent)) 60%,
+    transparent
+  );
+}
+
+/* The drawn automation line: a continuous accent polyline, one segment per
+   cell (previous level → this level), with a round handle at each authored
+   breakpoint. Drag across a lane to draw it freehand. */
+.evolve-plan-property-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -100%;
+  width: 200%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.evolve-plan-property-line line {
+  stroke: var(--lane-accent, var(--accent));
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+/* An authored breakpoint: a round handle you can click to delete. It grows and
+   turns red on hover/focus so deletion is discoverable, not a hidden chord.
+   The explicit min-height/box-sizing override the global `button` sizing that
+   would otherwise stretch it into an oval. */
+.evolve-plan-property-handle {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  min-height: 0;
+  margin-left: -6px;
+  margin-bottom: -6px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--surface-0) 75%, transparent);
+  border-radius: 50%;
+  background: var(--lane-accent, var(--accent));
+  cursor: grab;
+  z-index: 2;
+  transition: transform 80ms ease;
+}
+
+.evolve-plan-property-handle:active {
+  cursor: grabbing;
+}
+
+/* Grow on hover/focus (a bigger grab target); redden to signal that a click —
+   as opposed to a drag — removes the point. */
+button.evolve-plan-property-handle:hover:not(:disabled),
+.evolve-plan-property-handle:focus-visible {
+  background: var(--red);
+  transform: scale(1.4);
+  outline: none;
+}
+
+.evolve-plan-property-handle:disabled {
+  cursor: default;
+}
+
+/* A realized line outside its drawn band is a miss — always red. */
+.evolve-plan-property-mark.is-miss {
+  background: var(--red);
+}
+
+/* Events gutter: the directive trace ticks, relocated from the old
+   Composition strip into one row beneath the property lanes. */
+.evolve-plan-events {
+  align-items: center;
+  min-height: 24px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.evolve-plan-events-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 100%;
+  border-left: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
 }
 
 .evolve-plan-step-cell {
@@ -6453,7 +6621,8 @@ input:disabled {
   cursor: crosshair;
 }
 
-.evolve-plan-curve-card {
+.evolve-plan-curve-card,
+.evolve-plan-property-card {
   display: grid;
   gap: 7px;
   padding: 9px;
@@ -6461,6 +6630,24 @@ input:disabled {
   background: var(--surface-1);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
   border-radius: var(--radius-control);
+}
+
+.evolve-plan-property-card {
+  border-color: color-mix(in srgb, var(--cyan) 34%, var(--line));
+}
+
+.evolve-plan-property-card > .rb-tool-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.evolve-plan-property-card > .rb-tool-field > span {
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .evolve-plan-curve-head {
@@ -6548,8 +6735,7 @@ input:disabled {
 .evolve-plan-ruler > span,
 .evolve-plan-corner,
 .evolve-plan-lane-name,
-.evolve-plan-seed-lock,
-.evolve-plan-composition-cell {
+.evolve-plan-seed-lock {
   display: grid;
   place-items: center;
   min-width: 0;
@@ -6708,51 +6894,6 @@ input:disabled {
 
 .evolve-plan-scope-glyph i.is-covered {
   background: var(--lane-accent);
-}
-
-.evolve-plan-composition {
-  min-height: 54px;
-  background: var(--surface-1);
-  border-top: 1px solid var(--line-strong);
-}
-
-.evolve-plan-composition-cell {
-  position: relative;
-  align-items: end;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--accent) var(--density-percent), transparent);
-}
-
-.evolve-plan-corridor-band {
-  position: absolute;
-  right: 0;
-  bottom: var(--corridor-floor);
-  left: 0;
-  height: var(--corridor-height);
-  min-height: 1px;
-  background: color-mix(in srgb, var(--cyan) 9%, transparent);
-  border-top: 1px solid color-mix(in srgb, var(--cyan) 42%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--cyan) 42%, transparent);
-  pointer-events: none;
-}
-
-.evolve-plan-density-mark {
-  position: absolute;
-  z-index: 1;
-  right: 4px;
-  left: 4px;
-  height: 1px;
-  background: var(--text);
-  opacity: 0.65;
-  pointer-events: none;
-}
-
-.evolve-plan-onset-bar {
-  position: relative;
-  z-index: 2;
-  width: 3px;
-  min-height: 2px;
-  background: var(--cyan);
 }
 
 .evolve-plan-trace {

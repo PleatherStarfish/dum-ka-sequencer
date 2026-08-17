@@ -1,7 +1,11 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 
 import type {
-  EvolutionCurve, DirectiveTraceEntry, EvolutionDirective } from "../bridge";
+  EvolutionCurve,
+  DirectiveTraceEntry,
+  EvolutionDirective,
+  PropertyCurve,
+} from "../bridge";
 import {
   EvolvePlanEditor,
   type EvolutionCachedPreview,
@@ -32,8 +36,11 @@ export interface EvolvePlanPanelProps {
   complexityFloor?: number;
   complexityCeiling?: number;
   workingSubdivision?: number;
+  subdivisionPalette?: readonly number[];
   curve?: EvolutionCurve;
   onCurveChange?: (curve: EvolutionCurve) => void;
+  propertyCurves?: readonly PropertyCurve[];
+  onPropertyCurvesChange?: (curves: PropertyCurve[]) => void;
 }
 
 const DIALOG_FOCUSABLE =
@@ -63,8 +70,11 @@ export function EvolvePlanPanel({
   complexityFloor = 0,
   complexityCeiling = 100_000,
   workingSubdivision = 1,
+  subdivisionPalette = [],
   curve,
   onCurveChange,
+  propertyCurves,
+  onPropertyCurvesChange,
 }: EvolvePlanPanelProps) {
   const disabled = playbackStructureLocked || generatorKind !== "dumka";
   const dialogRef = useRef<HTMLDetailsElement | null>(null);
@@ -152,6 +162,8 @@ export function EvolvePlanPanel({
         <EvolvePlanEditor
           curve={curve}
           onCurveChange={onCurveChange}
+          propertyCurves={propertyCurves}
+          onPropertyCurvesChange={onPropertyCurvesChange}
           plan={plan}
           planLengthCycles={planLengthCycles}
           totalBeats={cycleBeats}
@@ -171,6 +183,7 @@ export function EvolvePlanPanel({
           complexityFloor={complexityFloor}
           complexityCeiling={complexityCeiling}
           workingSubdivision={workingSubdivision}
+          subdivisionPalette={subdivisionPalette}
         />
       </div> : null}
     </details>

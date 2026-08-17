@@ -44,16 +44,17 @@ pub use evolve::{evolution_state, EvolutionState, EvolvedOnset};
 pub use perceptual::{
     perceptual_distance, PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance,
     PerceptualDistance, PerceptualError, PerceptualModel, PerceptualModelVersion,
-    PerceptualWeights, PERCEPTUAL_DISTANCE_MAX_MILLI,
+    PerceptualWeights, StateProperties, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use plan::{
-    BeatRange, ComplexityCorridorClamp, ComplexityCorridorLimit, CurvePoint, DensityCorridorClamp,
-    DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectiveOptions, DirectivePacing,
-    DirectiveSkip, DirectiveTraceEntry, EvolutionCurve, EvolutionDirective, PerceptualPacingTrace,
-    RotateDirection, EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS,
-    MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES, MAX_MORPH_ALIGNMENT_WORK,
-    MAX_MORPH_MICROSTEPS, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
-    MAX_PERCEPTUAL_SCORING_WORK,
+    BeatRange, ComplexityCorridorClamp, ComplexityCorridorLimit, CurveMiss, CurvePoint,
+    CurveProperty, CurveRail, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily,
+    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
+    EvolutionCurve, EvolutionDirective, MissReason, PerceptualPacingTrace, PropertyCurve,
+    RotateDirection, SteeringChoice, SteeringTarget, EVOLUTION_CURVE_TRACE_ID,
+    LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES,
+    MAX_EVOLUTION_DIRECTIVES, MAX_MORPH_ALIGNMENT_WORK, MAX_MORPH_MICROSTEPS,
+    MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK,
 };
 
 /// Automation target sampled at each folded cycle's start by both callers.
@@ -165,6 +166,11 @@ pub struct DumkaGeneratorParams {
     /// stochastic layer on directive-free cycles when enabled.
     #[serde(default)]
     pub evolution_curve: plan::EvolutionCurve,
+    /// Drawn per-property level curves (M3.97). Each steers one functional
+    /// toward its band on directive-free cycles. Empty preserves the legacy
+    /// fold byte-for-byte.
+    #[serde(default)]
+    pub property_curves: Vec<plan::PropertyCurve>,
     /// UI canvas extent only. The engine deliberately never reads it.
     #[serde(default)]
     pub plan_length_cycles: u32,
@@ -232,6 +238,7 @@ impl Default for DumkaGeneratorParams {
             plan: Vec::new(),
             plan_length_cycles: 0,
             evolution_curve: plan::EvolutionCurve::default(),
+            property_curves: Vec::new(),
             seed_mode: GeneratorSeedMode::default(),
         }
     }
@@ -310,6 +317,24 @@ impl DumkaGeneratorParams {
             });
         }
         plan::validate_plan(&self.plan, &self.evolution_curve)?;
+        plan::validate_property_curves(
+            &self.property_curves,
+            self.density_floor,
+            self.density_ceiling,
+            self.complexity_floor,
+            self.complexity_ceiling,
+        )?;
+        plan::validate_property_steering_work_through(
+            &self.property_curves,
+            self.evolution_curve.max_operations,
+            u64::MAX,
+        )?;
+        plan::validate_property_pacing_work_through(
+            &self.plan,
+            &self.evolution_curve,
+            &self.property_curves,
+            u64::MAX,
+        )?;
         let seed = self.compile()?;
         let working =
             depth::working_subdivision(seed.required_subdivision, &self.subdivision_palette)
@@ -364,10 +389,11 @@ impl DumkaGeneratorParams {
     ) -> Result<(), GeneratorError> {
         for directive in &self.plan {
             if let Some(level) = directive.options.subdivision_level {
-                if !depth::slot_level_exists(level, working) {
+                if !self.subdivision_palette.contains(&level) {
                     return Err(GeneratorError::DumkaPlanInvalid {
                         message: format!(
-                            "directive {} subdivisionLevel {level} does not exist on working Subdivision {working}", directive.id
+                            "directive {} subdivisionLevel {level} is not an enabled palette prime",
+                            directive.id
                         ),
                     });
                 }
@@ -437,7 +463,7 @@ impl CycleGenerator for DumkaGeneratorParams {
         context: &GeneratorCycleContext<'_>,
     ) -> Result<Vec<GeneratedSpan>, GeneratorError> {
         self.generate_with_trace(context)
-            .map(|(spans, _, _, _, _, _, _, _)| spans)
+            .map(|(spans, _, _, _, _, _, _, _, _, _)| spans)
     }
 }
 
@@ -456,6 +482,8 @@ impl DumkaGeneratorParams {
             super::ComplexityCorridorRange,
             u32,
             u32,
+            Option<StateProperties>,
+            Vec<super::CurveMiss>,
         ),
         GeneratorError,
     > {
@@ -465,6 +493,12 @@ impl DumkaGeneratorParams {
         plan::validate_perceptual_scoring_work_through(
             &self.plan,
             &self.evolution_curve,
+            context.cycle,
+        )?;
+        plan::validate_property_pacing_work_through(
+            &self.plan,
+            &self.evolution_curve,
+            &self.property_curves,
             context.cycle,
         )?;
         let (seed, working_subdivision) = self.working_seed()?;
@@ -485,6 +519,7 @@ impl DumkaGeneratorParams {
             euclid_rest_policy: self.euclid_rest_policy,
             plan: &self.plan,
             curve: &self.evolution_curve,
+            property_curves: &self.property_curves,
             op_weights: self.op_weights(),
             automation: context.automation,
             spans: context.spans,
@@ -511,6 +546,19 @@ impl DumkaGeneratorParams {
                         .to_string(),
                 });
             }
+            if self.property_curves.iter().any(|curve| {
+                curve.is_active()
+                    && curve
+                        .points
+                        .first()
+                        .is_some_and(|first| first.cycle <= context.cycle)
+            }) {
+                return Err(GeneratorError::DumkaPlanInvalid {
+                    message:
+                        "propertyCurve targets require a Barlow-supported beat/subdivision grid"
+                            .to_string(),
+                });
+            }
         }
         let resolved = evolve::evolved_seed_with_trace(&seed, &inputs);
         let (
@@ -521,6 +569,7 @@ impl DumkaGeneratorParams {
             complexity_corridor,
             state_complexity_milli,
             state_depth_diversity_milli,
+            curve_misses,
         ) = match resolved {
             Some(resolved) => (
                 resolved.seed,
@@ -530,6 +579,7 @@ impl DumkaGeneratorParams {
                 resolved.complexity_corridor,
                 resolved.state_complexity_milli,
                 resolved.state_depth_diversity_milli,
+                resolved.curve_misses,
             ),
             None => (
                 seed,
@@ -539,6 +589,7 @@ impl DumkaGeneratorParams {
                 super::DensityCorridorRange {
                     floor: 0,
                     ceiling: 100,
+                    ..Default::default()
                 },
                 None,
                 super::ComplexityCorridorRange {
@@ -547,12 +598,29 @@ impl DumkaGeneratorParams {
                 },
                 0,
                 0,
+                Vec::new(),
             ),
         };
         let spans = tree::resolve_seed_cells(&evolved, context.cycle_beats, context.spans)
             .map_err(|error| GeneratorError::DumkaStructure {
                 message: error.to_string(),
             })?;
+        // The read-only per-state property profile the calibration UI plots
+        // per cycle (M3.97 §1). Whole-beat rotation leaves all six functionals
+        // invariant, so computing on the rotation-applied `evolved` state
+        // matches the corridor metrics; `None` on grids Barlow cannot stratify.
+        let property_profile =
+            barlow::stratification(evolved.total_beats, evolved.required_subdivision)
+                .and_then(|strata| {
+                    PerceptualContext::new(
+                        evolved.total_beats,
+                        evolved.required_subdivision,
+                        barlow::indispensability(&strata),
+                        sioros::metrical_levels(&strata),
+                    )
+                    .ok()
+                })
+                .map(|context| context.state_properties(&evolution_state(&evolved)));
         Ok((
             spans,
             trace,
@@ -562,6 +630,8 @@ impl DumkaGeneratorParams {
             complexity_corridor,
             state_complexity_milli,
             state_depth_diversity_milli,
+            property_profile,
+            curve_misses,
         ))
     }
 }
@@ -822,6 +892,7 @@ mod tests {
             plan: Vec::new(),
             plan_length_cycles: 0,
             evolution_curve: plan::EvolutionCurve::default(),
+            property_curves: Vec::new(),
             seed_mode: GeneratorSeedMode::History {
                 seed: 9_792_447_587_191_451_430,
                 history: vec![9_603_363_527_571_367_637],
@@ -921,6 +992,20 @@ mod tests {
         );
         assert_eq!(resolution.state_complexity_milli, Some(0));
         assert_eq!(resolution.state_depth_diversity_milli, Some(0));
+        // The property profile is present on a supported grid, and its
+        // complexity/diversity must not diverge from the standalone fields
+        // the corridor uses (single source of truth).
+        let profile = resolution.property_profile.expect("supported grid");
+        assert_eq!(profile.complexity_milli, 0);
+        assert_eq!(profile.diversity_milli, 0);
+        assert_eq!(
+            Some(profile.complexity_milli),
+            resolution.state_complexity_milli
+        );
+        assert_eq!(
+            Some(profile.diversity_milli),
+            resolution.state_depth_diversity_milli
+        );
         let cells = &resolution.spans[0].cells;
         assert_eq!(cells.iter().map(|cell| cell.len).sum::<u32>(), 12);
         assert!(!cells[0].rest);
@@ -975,7 +1060,7 @@ mod tests {
                 .validate()
                 .unwrap_err()
                 .to_string(),
-            "dumka plan invalid: directive 91 subdivisionLevel 3 does not exist on working Subdivision 4"
+            "dumka plan invalid: directive 91 subdivisionLevel 3 is not an enabled palette prime"
         );
 
         let mut invalid_palette = params("[x . . .]");
@@ -1068,6 +1153,7 @@ mod tests {
             Some(super::super::DensityCorridorRange {
                 floor: 55,
                 ceiling: 55,
+                ..Default::default()
             }),
             "crossed automation gives the ceiling precedence"
         );
@@ -1096,6 +1182,7 @@ mod tests {
             Some(super::super::DensityCorridorRange {
                 floor: 20,
                 ceiling: 60,
+                ..Default::default()
             })
         );
 
@@ -1119,6 +1206,7 @@ mod tests {
             Some(super::super::DensityCorridorRange {
                 floor: 55,
                 ceiling: 55,
+                ..Default::default()
             }),
             "a later inheriting directive restores the sampled global rail"
         );

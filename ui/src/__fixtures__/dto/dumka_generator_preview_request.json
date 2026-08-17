@@ -309,6 +309,24 @@
       "maxOperations": 4,
       "points": []
     },
+    "propertyCurves": [
+      {
+        "property": "syncopation",
+        "enabled": true,
+        "toleranceMilli": 2500,
+        "weight": 70,
+        "points": [
+          {
+            "cycle": 1,
+            "targetMilli": 20000
+          },
+          {
+            "cycle": 8,
+            "targetMilli": 65000
+          }
+        ]
+      }
+    ],
     "seedMode": {
       "type": "locked",
       "seed": 20260611

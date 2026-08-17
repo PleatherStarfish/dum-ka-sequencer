@@ -15,15 +15,17 @@ use crate::{mix_seed, ResolvedRhythmCell, ResolvedRhythmSpan, SplitMix64};
 
 pub use dumka::{
     evolution_state, perceptual_distance, BeatRange, ComplexityCorridorClamp,
-    ComplexityCorridorLimit, CurvePoint, DirectiveFamily, DirectiveMagnitude, DirectiveOptions,
-    DirectivePacing, DirectiveSkip, DirectiveTraceEntry, DumkaGeneratorParams, EvolutionCurve,
-    EvolutionDirective, EvolutionState, EvolvedOnset, PerceptualBreakdown, PerceptualContext,
-    PerceptualCycleDistance, PerceptualDistance, PerceptualError, PerceptualModel,
-    PerceptualModelVersion, PerceptualPacingTrace, PerceptualWeights, RequiredStructure,
-    RotateDirection, DEFAULT_DUMKA_PATTERN, EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID,
-    MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS, MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES,
-    MAX_MORPH_ALIGNMENT_WORK, MAX_MORPH_MICROSTEPS, MAX_PERCEPTUAL_DISTANCE_MILLI,
-    MAX_PERCEPTUAL_OPERATIONS, MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
+    ComplexityCorridorLimit, CurveMiss, CurvePoint, CurveProperty, CurveRail, DirectiveFamily,
+    DirectiveMagnitude, DirectiveOptions, DirectivePacing, DirectiveSkip, DirectiveTraceEntry,
+    DumkaGeneratorParams, EvolutionCurve, EvolutionDirective, EvolutionState, EvolvedOnset,
+    MissReason, PerceptualBreakdown, PerceptualContext, PerceptualCycleDistance,
+    PerceptualDistance, PerceptualError, PerceptualModel, PerceptualModelVersion,
+    PerceptualPacingTrace, PerceptualWeights, PropertyCurve, RequiredStructure, RotateDirection,
+    StateProperties, SteeringChoice, SteeringTarget, DEFAULT_DUMKA_PATTERN,
+    EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_CURVE_OPERATIONS, MAX_CURVE_POINTS,
+    MAX_CURVE_SPAN_CYCLES, MAX_EVOLUTION_DIRECTIVES, MAX_MORPH_ALIGNMENT_WORK,
+    MAX_MORPH_MICROSTEPS, MAX_PERCEPTUAL_DISTANCE_MILLI, MAX_PERCEPTUAL_OPERATIONS,
+    MAX_PERCEPTUAL_SCORING_WORK, PERCEPTUAL_DISTANCE_MAX_MILLI,
 };
 pub use example::ExampleGeneratorParams;
 
@@ -76,6 +78,12 @@ impl From<&PulseSpan> for GeneratorSpanInput {
     }
 }
 
+// The Dumka params carry the whole authored score (pattern, plan, curves), so
+// this variant is intentionally much larger than Example. GeneratorConfig is a
+// per-track config held once and cloned rarely — never allocated in a hot loop
+// — so boxing it to equalize the variants would only churn every construction
+// site across the seam for no runtime benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum GeneratorConfig {
@@ -278,11 +286,17 @@ pub fn resolve_generator_cycle(
 /// Generic generator output plus optional authoring trace. Transport keeps
 /// calling [`resolve_generator_cycle`] and therefore receives the identical
 /// span type; stopped preview may opt into this trace-capable view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DensityCorridorRange {
     pub floor: u32,
     pub ceiling: u32,
+    /// Exact milliunit rail when a property curve supplies sub-percent bounds.
+    /// Legacy/global percent corridors omit these additive fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor_milli: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling_milli: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +323,14 @@ pub struct GeneratorCycleResolution {
     pub state_complexity_milli: Option<u32>,
     /// Insight-only normalized entropy of attack-point denominator classes.
     pub state_depth_diversity_milli: Option<u32>,
+    /// The six read-only per-state property functionals (density, complexity,
+    /// syncopation, evenness, occupancy, diversity) the calibration UI plots
+    /// per cycle. `None` for non-Dum-Ka generators and unsupported grids.
+    pub property_profile: Option<dumka::StateProperties>,
+    /// Per-property steering misses for a Dum-Ka steered cycle (M3.97 §5):
+    /// which drawn bands were not reached this cycle and why. Empty for
+    /// non-steered cycles and non-Dum-Ka generators.
+    pub curve_misses: Vec<dumka::CurveMiss>,
 }
 
 pub fn resolve_generator_cycle_with_trace(
@@ -325,6 +347,8 @@ pub fn resolve_generator_cycle_with_trace(
         complexity_corridor,
         state_complexity_milli,
         state_depth_diversity_milli,
+        property_profile,
+        curve_misses,
     ) = match config {
         GeneratorConfig::Example(params) => (
             params.generate(context)?,
@@ -335,6 +359,8 @@ pub fn resolve_generator_cycle_with_trace(
             None,
             None,
             None,
+            None,
+            Vec::new(),
         ),
         GeneratorConfig::Dumka(params) => {
             let (
@@ -346,6 +372,8 @@ pub fn resolve_generator_cycle_with_trace(
                 complexity_corridor,
                 state_complexity_milli,
                 state_depth_diversity_milli,
+                property_profile,
+                curve_misses,
             ) = params.generate_with_trace(context)?;
             (
                 spans,
@@ -356,6 +384,8 @@ pub fn resolve_generator_cycle_with_trace(
                 Some(complexity_corridor),
                 Some(state_complexity_milli),
                 Some(state_depth_diversity_milli),
+                property_profile,
+                curve_misses,
             )
         }
     };
@@ -369,6 +399,8 @@ pub fn resolve_generator_cycle_with_trace(
         complexity_corridor,
         state_complexity_milli,
         state_depth_diversity_milli,
+        property_profile,
+        curve_misses,
     })
 }
 

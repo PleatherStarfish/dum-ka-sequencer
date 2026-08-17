@@ -1124,6 +1124,16 @@ struct GeneratorPreviewDto {
     state_complexity_milli: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_depth_diversity_milli: Option<u32>,
+    /// The six read-only per-state property functionals (density, complexity,
+    /// syncopation, evenness, occupancy, diversity) the calibration UI plots
+    /// per cycle. Absent for other generators, disabled resolution, and
+    /// grids without published Barlow tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    property_profile: Option<cseq_rhythm::StateProperties>,
+    /// Per-property steering misses (M3.97 §5): which drawn bands a steered
+    /// cycle could not reach and why. Absent (empty) on non-steered cycles.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    curve_misses: Vec<cseq_rhythm::CurveMiss>,
 }
 
 const MAX_STOPPED_PREVIEW_CYCLE: u64 = 10_000;
@@ -2458,6 +2468,8 @@ fn resolve_generator_preview(
         complexity_corridor,
         state_complexity_milli,
         state_depth_diversity_milli,
+        property_profile,
+        curve_misses,
     ) = if request.enabled {
         let automation = |target: &str, sample_cycle: u64, default: f64| {
             let automation = request.automation.as_ref()?;
@@ -2503,9 +2515,22 @@ fn resolve_generator_preview(
             resolution.complexity_corridor,
             resolution.state_complexity_milli,
             resolution.state_depth_diversity_milli,
+            resolution.property_profile,
+            resolution.curve_misses,
         )
     } else {
-        (Vec::new(), Vec::new(), None, None, None, None, None, None)
+        (
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
     };
     stamp_preview_cell_velocities(&mut spans, &request.span_velocities);
     Ok(GeneratorPreviewDto {
@@ -2518,6 +2543,8 @@ fn resolve_generator_preview(
         complexity_corridor,
         state_complexity_milli,
         state_depth_diversity_milli,
+        property_profile,
+        curve_misses,
     })
 }
 
@@ -3404,6 +3431,7 @@ const EVOLUTION_CURVE_KEYS: &[&str] = &[
     "points",
 ];
 const EVOLUTION_CURVE_POINT_KEYS: &[&str] = &["cycle", "targetMilli"];
+const PROPERTY_CURVE_KEYS: &[&str] = &["property", "enabled", "toleranceMilli", "weight", "points"];
 const EVOLUTION_MAGNITUDE_KEYS: &[&str] = &[
     "mode",
     "modelVersion",
@@ -3542,6 +3570,44 @@ fn validate_v1_evolution_plan_shape(
                     &format!("{curve_path}.points[{index}]"),
                     "curve point",
                 )?;
+            }
+        }
+    }
+
+    if let Some(curves) = generator
+        .get("propertyCurves")
+        .and_then(serde_json::Value::as_array)
+    {
+        for (index, curve) in curves.iter().enumerate() {
+            let Some(curve) = curve.as_object() else {
+                continue;
+            };
+            let curve_path = format!("{path}.propertyCurves[{index}]");
+            validate_evolution_object_keys(
+                curve,
+                PROPERTY_CURVE_KEYS,
+                &curve_path,
+                "property curve",
+            )?;
+            if let Some(points) = curve.get("points").and_then(serde_json::Value::as_array) {
+                if points.len() > cseq_rhythm::MAX_CURVE_POINTS {
+                    return Err(format!(
+                        "dumka property curve in v1 document supports at most {} points, got {}: {curve_path}.points",
+                        cseq_rhythm::MAX_CURVE_POINTS,
+                        points.len()
+                    ));
+                }
+                for (point_index, point) in points.iter().enumerate() {
+                    let Some(point) = point.as_object() else {
+                        continue;
+                    };
+                    validate_evolution_object_keys(
+                        point,
+                        EVOLUTION_CURVE_POINT_KEYS,
+                        &format!("{curve_path}.points[{point_index}]"),
+                        "property curve point",
+                    )?;
+                }
             }
         }
     }
@@ -4376,6 +4442,8 @@ mod tests {
             complexity_corridor: None,
             state_complexity_milli: None,
             state_depth_diversity_milli: None,
+            property_profile: None,
+            curve_misses: vec![],
         };
         let generator_wire =
             serde_json::to_value(generator).expect("generator preview must serialize");
@@ -5738,6 +5806,13 @@ mod tests {
                     "euclidRestPolicy": null,
                     "rotateDirection": "earlier"
                 }
+            }],
+            "propertyCurves": [{
+                "property": "density",
+                "enabled": true,
+                "toleranceMilli": 5_000,
+                "weight": 50,
+                "points": [{ "cycle": 1, "targetMilli": 40_000 }]
             }]
         })
     }
@@ -5830,6 +5905,12 @@ mod tests {
             "euclidInvert",
             "euclidRestPolicy",
             "rotateDirection",
+            "evolutionCurve",
+            "propertyCurves",
+            "property",
+            "weight",
+            "points",
+            "cycle",
         ];
         for key in plan_keys {
             assert!(
@@ -6510,6 +6591,7 @@ mod dto_fixtures {
             Some(cseq_rhythm::DensityCorridorRange {
                 floor: 20,
                 ceiling: 60,
+                ..Default::default()
             })
         );
         assert_eq!(preview.working_subdivision, Some(20));
@@ -6547,6 +6629,7 @@ mod dto_fixtures {
         legacy_params.complexity_ceiling = 100_000;
         legacy_params.placement_bias = 0;
         legacy_params.subdivision_palette.clear();
+        legacy_params.property_curves.clear();
         for directive in &mut legacy_params.plan {
             directive.options.density_floor = None;
             directive.options.density_ceiling = None;
@@ -6567,6 +6650,7 @@ mod dto_fixtures {
             Some(cseq_rhythm::DensityCorridorRange {
                 floor: 0,
                 ceiling: 100,
+                ..Default::default()
             })
         );
         assert_eq!(legacy_preview.working_subdivision, Some(20));
@@ -6623,10 +6707,32 @@ mod dto_fixtures {
                 complexity_floor: 0,
                 complexity_ceiling: 100_000,
                 placement_bias: 50,
+                property_curves: vec![
+                    cseq_rhythm::PropertyCurve {
+                        property: cseq_rhythm::CurveProperty::Density,
+                        enabled: true,
+                        tolerance_milli: 0,
+                        weight: 50,
+                        points: vec![cseq_rhythm::CurvePoint {
+                            cycle: 1,
+                            target_milli: 50_000,
+                        }],
+                    },
+                    cseq_rhythm::PropertyCurve {
+                        property: cseq_rhythm::CurveProperty::Syncopation,
+                        enabled: true,
+                        tolerance_milli: 0,
+                        weight: 50,
+                        points: vec![cseq_rhythm::CurvePoint {
+                            cycle: 1,
+                            target_milli: 12_345,
+                        }],
+                    },
+                ],
                 seed_mode: cseq_rhythm::GeneratorSeedMode::Locked { seed: 20260812 },
                 ..Default::default()
             }),
-            cycle: 0,
+            cycle: 1,
             cycle_beats: 4,
             automation: None,
             track_id: Some("depth-fixture".to_string()),
@@ -6635,8 +6741,19 @@ mod dto_fixtures {
         let depth_preview = resolve_generator_preview(depth_request, &[])
             .expect("non-empty palette fixture must resolve on its working grid");
         assert_eq!(depth_preview.working_subdivision, Some(3));
-        assert_eq!(depth_preview.state_complexity_milli, Some(0));
-        assert_eq!(depth_preview.state_depth_diversity_milli, Some(0));
+        assert_eq!(depth_preview.state_complexity_milli, Some(50_000));
+        assert_eq!(depth_preview.state_depth_diversity_milli, Some(100_000));
+        assert!(depth_preview
+            .curve_misses
+            .iter()
+            .any(|miss| { miss.property == cseq_rhythm::CurveProperty::Syncopation }));
+        assert_eq!(
+            depth_preview
+                .density_corridor
+                .as_ref()
+                .and_then(|corridor| corridor.floor_milli),
+            Some(50_000)
+        );
         let depth_json = serde_json::to_string_pretty(&depth_preview)
             .expect("serialize depth-enabled Dum-Ka preview DTO");
         check_or_update(
@@ -6674,6 +6791,7 @@ mod dto_fixtures {
             directive.options.placement_bias = None;
             directive.options.subdivision_level = None;
         }
+        perceptual_params.property_curves.clear();
         perceptual_params.plan[3].enabled = true;
         let perceptual_preview = resolve_generator_preview(perceptual_request, &[])
             .expect("perceptual fixture row must resolve through preview");

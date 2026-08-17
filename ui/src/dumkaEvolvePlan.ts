@@ -1,6 +1,8 @@
 import type {
   CurvePoint,
+  CurveProperty,
   EvolutionCurve,
+  PropertyCurve,
   DirectiveBeatRange,
   DirectiveEuclidRestPolicy,
   DirectiveFamily,
@@ -13,6 +15,7 @@ import type {
 } from "./bridge";
 import {
   compileDumkaPattern,
+  DUMKA_SUBDIVISION_LEVELS,
   MAX_DUMKA_PATTERN_LENGTH,
   normalizeDumkaSubdivisionPalette,
 } from "./dumkaPattern";
@@ -50,7 +53,6 @@ export const MAX_PERCEPTUAL_OPERATIONS = 256;
 /** Mirrors the engine's cumulative, lifetime prefix-scoring admission bound. */
 export const MAX_PERCEPTUAL_SCORING_WORK = 4_096;
 export const MAX_COMPLEXITY_MILLI = 100_000;
-export const MAX_SUBDIVISION_LEVEL_INDEX = 0xffff_ffff;
 
 export const DEFAULT_SUBDIVISION_PALETTE: readonly number[] = [];
 
@@ -60,8 +62,10 @@ export function normalizeSubdivisionPalette(value: unknown): number[] {
 
 /** Mirrors plan.rs curve caps. */
 export const MAX_CURVE_POINTS = 64;
-export const MAX_CURVE_SPAN_CYCLES = 512;
+export const MAX_CURVE_SPAN_CYCLES = 511;
 export const MAX_CURVE_OPERATIONS = 8;
+export const PROPERTY_EVAL_BUDGET = 32_768;
+export const STEERING_FAMILY_COUNT = 8;
 
 export const DEFAULT_EVOLUTION_CURVE: EvolutionCurve = {
   enabled: false,
@@ -100,6 +104,19 @@ export function curveTargetMilliAt(curve: EvolutionCurve, cycle: number): number
     previous = point;
   }
   return 0;
+}
+
+/** Drawn curve value with absence preserved. A real zero inside the authored
+ * span returns 0; a cycle outside the span returns null. */
+export function curveTargetMilliInSpan(
+  curve: EvolutionCurve,
+  cycle: number
+): number | null {
+  if (!curve.enabled || curve.points.length === 0) return null;
+  const first = curve.points[0]!;
+  const last = curve.points[curve.points.length - 1]!;
+  if (cycle < first.cycle || cycle > last.cycle) return null;
+  return curveTargetMilliAt(curve, cycle);
 }
 
 /** Mirrors EvolutionCurve::scoring_work_through(u64::MAX): every covered
@@ -274,6 +291,463 @@ export function normalizeEvolutionCurve(value: unknown): {
   return { curve, droppedPoints: dropped };
 }
 
+/** The six steerable functionals, in the fixed lane / tie-break order. */
+export const CURVE_PROPERTIES: readonly CurveProperty[] = [
+  "density",
+  "complexity",
+  "syncopation",
+  "evenness",
+  "occupancy",
+  "diversity",
+];
+
+export const DEFAULT_PROPERTY_CURVE_WEIGHT = 50;
+
+export function propertyCurveIsActive(curve: PropertyCurve): boolean {
+  return curve.enabled && curve.points.length > 0;
+}
+
+/** Mirror of plan.rs `PropertyCurve::target_milli_at`: the interpolated center
+ * level, or null outside the drawn span (absent, not zero). */
+export function propertyCurveTargetMilliAt(
+  curve: PropertyCurve,
+  cycle: number
+): number | null {
+  if (!curve.enabled || curve.points.length === 0) return null;
+  const first = curve.points[0]!;
+  const last = curve.points[curve.points.length - 1]!;
+  if (cycle < first.cycle || cycle > last.cycle) return null;
+  let previous = first;
+  for (const point of curve.points) {
+    if (point.cycle === cycle) return point.targetMilli;
+    if (point.cycle > cycle) {
+      const span = point.cycle - previous.cycle;
+      const offset = cycle - previous.cycle;
+      const delta = point.targetMilli - previous.targetMilli;
+      const numerator = delta * offset;
+      const half = Math.trunc(span / 2);
+      const rounded =
+        numerator >= 0
+          ? Math.trunc((numerator + half) / span)
+          : Math.trunc((numerator - half) / span);
+      return Math.min(100_000, Math.max(0, previous.targetMilli + rounded));
+    }
+    previous = point;
+  }
+  return null;
+}
+
+/** Mirror of plan.rs `PropertyCurve::band_at`: `[center - tol, center + tol]`
+ * clamped to 0..=100000, or null outside the span. */
+export function propertyCurveBandAt(
+  curve: PropertyCurve,
+  cycle: number
+): [number, number] | null {
+  const center = propertyCurveTargetMilliAt(curve, cycle);
+  if (center === null) return null;
+  const floor = Math.max(0, center - curve.toleranceMilli);
+  const ceiling = Math.min(100_000, center + curve.toleranceMilli);
+  return [floor, ceiling];
+}
+
+/** Default half-width for a freshly drawn property band (5%). The engine's
+ * serde default is 0, but a drawable lane needs a visible band to steer into. */
+export const DEFAULT_PROPERTY_CURVE_TOLERANCE = 5_000;
+
+function orderedPropertyCurves(curves: readonly PropertyCurve[]): PropertyCurve[] {
+  return [...curves].sort(
+    (a, b) =>
+      CURVE_PROPERTIES.indexOf(a.property) - CURVE_PROPERTIES.indexOf(b.property)
+  );
+}
+
+function replacePropertyCurve(
+  curves: readonly PropertyCurve[],
+  updated: PropertyCurve
+): PropertyCurve[] {
+  return orderedPropertyCurves([
+    ...curves.filter((curve) => curve.property !== updated.property),
+    updated,
+  ]);
+}
+
+/** Place or move a point on `property`'s curve, creating the curve (enabled,
+ * default tolerance/weight) if it does not exist. Points stay sorted and
+ * deduped by cycle; drawing a point activates the lane. */
+export function upsertPropertyCurvePoint(
+  curves: readonly PropertyCurve[],
+  property: CurveProperty,
+  cycle: number,
+  targetMilli: number
+): PropertyCurve[] {
+  const existing = curves.find((curve) => curve.property === property);
+  const base: PropertyCurve = existing ?? {
+    property,
+    enabled: true,
+    toleranceMilli: DEFAULT_PROPERTY_CURVE_TOLERANCE,
+    weight: DEFAULT_PROPERTY_CURVE_WEIGHT,
+    points: [],
+  };
+  const sourcePoints = [...base.points]
+    .sort((a, b) => a.cycle - b.cycle)
+    .slice(0, MAX_CURVE_POINTS);
+  let clampedCycle = Math.max(1, Math.round(cycle));
+  const clampedTarget = Math.min(100_000, Math.max(0, Math.round(targetMilli)));
+  const withoutRequested = sourcePoints.filter(
+    (point) => point.cycle !== clampedCycle
+  );
+  if (withoutRequested.length > 0) {
+    const first = withoutRequested[0]!.cycle;
+    const last = withoutRequested[withoutRequested.length - 1]!.cycle;
+    clampedCycle = Math.min(
+      first + MAX_CURVE_SPAN_CYCLES,
+      Math.max(Math.max(1, last - MAX_CURVE_SPAN_CYCLES), clampedCycle)
+    );
+  }
+  let points = sourcePoints.filter((point) => point.cycle !== clampedCycle);
+  if (points.length >= MAX_CURVE_POINTS) {
+    const nearest = points.reduce((best, point) => {
+      const distance = Math.abs(point.cycle - clampedCycle);
+      const bestDistance = Math.abs(best.cycle - clampedCycle);
+      return distance < bestDistance ||
+        (distance === bestDistance && point.cycle < best.cycle)
+        ? point
+        : best;
+    });
+    points = points.filter((point) => point.cycle !== nearest.cycle);
+    clampedCycle = nearest.cycle;
+  }
+  points.push({ cycle: clampedCycle, targetMilli: clampedTarget });
+  points.sort((a, b) => a.cycle - b.cycle);
+  return replacePropertyCurve(curves, { ...base, enabled: true, points });
+}
+
+/** Remove a point; drop the whole curve when its last point goes. */
+export function removePropertyCurvePoint(
+  curves: readonly PropertyCurve[],
+  property: CurveProperty,
+  cycle: number
+): PropertyCurve[] {
+  const existing = curves.find((curve) => curve.property === property);
+  if (!existing) return [...curves];
+  const clampedCycle = Math.round(cycle);
+  const points = existing.points.filter((point) => point.cycle !== clampedCycle);
+  if (points.length === 0) {
+    return orderedPropertyCurves(
+      curves.filter((curve) => curve.property !== property)
+    );
+  }
+  return replacePropertyCurve(curves, { ...existing, points });
+}
+
+/** Update a lane's enable/tolerance/weight, creating a disabled empty curve if
+ * needed so the inspector can pre-set a lane before any point is drawn. */
+export function setPropertyCurveSettings(
+  curves: readonly PropertyCurve[],
+  property: CurveProperty,
+  settings: Partial<Pick<PropertyCurve, "enabled" | "toleranceMilli" | "weight">>
+): PropertyCurve[] {
+  const existing = curves.find((curve) => curve.property === property);
+  const base: PropertyCurve = existing ?? {
+    property,
+    enabled: false,
+    toleranceMilli: DEFAULT_PROPERTY_CURVE_TOLERANCE,
+    weight: DEFAULT_PROPERTY_CURVE_WEIGHT,
+    points: [],
+  };
+  return replacePropertyCurve(curves, {
+    ...base,
+    ...settings,
+    toleranceMilli:
+      settings.toleranceMilli === undefined
+        ? base.toleranceMilli
+        : Math.min(100_000, Math.max(0, Math.round(settings.toleranceMilli))),
+    weight:
+      settings.weight === undefined
+        ? base.weight
+        : Math.min(100, Math.max(1, Math.round(settings.weight))),
+  });
+}
+
+/** Number of distinct cycles covered by at least one enabled property curve. */
+export function propertySteeringActiveCycles(
+  curves: readonly PropertyCurve[]
+): bigint {
+  const spans = curves
+    .filter(propertyCurveIsActive)
+    .map(
+      (curve) =>
+        [
+          curve.points[0]!.cycle,
+          curve.points[curve.points.length - 1]!.cycle,
+        ] as const
+    )
+    .sort((left, right) => left[0] - right[0]);
+  let total = 0n;
+  let open: number | null = null;
+  let close = 0;
+  for (const [start, end] of spans) {
+    if (open !== null && start <= close + 1) {
+      close = Math.max(close, end);
+      continue;
+    }
+    if (open !== null) total += BigInt(close - open + 1);
+    open = start;
+    close = end;
+  }
+  if (open !== null) total += BigInt(close - open + 1);
+  return total;
+}
+
+export function propertySteeringWork(
+  curves: readonly PropertyCurve[],
+  maxOperations: number
+): bigint {
+  return (
+    propertySteeringActiveCycles(curves) *
+    BigInt(STEERING_FAMILY_COUNT) *
+    BigInt(Math.max(0, Math.round(maxOperations)))
+  );
+}
+
+export function propertySteeringWorkError(
+  curves: readonly PropertyCurve[],
+  maxOperations: number
+): string | null {
+  const activeCycles = propertySteeringActiveCycles(curves);
+  const requested = propertySteeringWork(curves, maxOperations);
+  return requested > BigInt(PROPERTY_EVAL_BUDGET)
+    ? `dumka plan invalid: propertyCurve steering needs ${requested.toString()} functional evaluations across ${activeCycles.toString()} cycles, the maximum is ${PROPERTY_EVAL_BUDGET}`
+    : null;
+}
+
+/** Mirrors the engine's shared v1-distance reservation when aggregate pacing
+ * and property steering overlap. A drawn zero still reserves a steered hold. */
+export function propertyPacingScoringWork(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve,
+  propertyCurves: readonly PropertyCurve[]
+): bigint {
+  let requested = perceptualScoringWork(plan);
+  if (!curve.enabled || curve.points.length === 0) return requested;
+  const first = Math.max(1, curve.points[0]!.cycle);
+  const last = curve.points[curve.points.length - 1]!.cycle;
+  for (let cycle = first; cycle <= last; cycle += 1) {
+    if (
+      plan.some(
+        (directive) =>
+          directive.enabled &&
+          cycle >= directive.fromCycle &&
+          cycle <= directive.toCycle
+      )
+    ) {
+      continue;
+    }
+    const steered = propertyCurves.some(
+      (propertyCurve) => propertyCurveBandAt(propertyCurve, cycle) !== null
+    );
+    requested += steered
+      ? BigInt(STEERING_FAMILY_COUNT * curve.maxOperations + 1)
+      : curveTargetMilliAt(curve, cycle) > 0
+        ? BigInt(curve.maxOperations + 1)
+        : 0n;
+  }
+  return requested;
+}
+
+export function propertyPacingScoringWorkError(
+  plan: readonly EvolutionDirective[],
+  curve: EvolutionCurve,
+  propertyCurves: readonly PropertyCurve[]
+): string | null {
+  const requested = propertyPacingScoringWork(plan, curve, propertyCurves);
+  return requested > BigInt(MAX_PERCEPTUAL_SCORING_WORK)
+    ? `dumka perceptual plan reserves ${requested.toString()} scoring operations, exceeding the limit of ${MAX_PERCEPTUAL_SCORING_WORK}`
+    : null;
+}
+
+/** Mirrors plan.rs `validate_property_curves` messages byte-for-byte, in the
+ * same order, so the mock and engine reject identically. Density corridor is
+ * in percent (milli = 1000 × percent); complexity corridor is in milli. */
+export function validatePropertyCurves(
+  curves: readonly PropertyCurve[],
+  densityFloor: number,
+  densityCeiling: number,
+  complexityFloor: number,
+  complexityCeiling: number
+): string | null {
+  const seen = new Set<CurveProperty>();
+  for (const curve of curves) {
+    const property = curve.property;
+    if (seen.has(property)) {
+      return `dumka plan invalid: propertyCurve supports at most one curve per property, got a second ${property}`;
+    }
+    seen.add(property);
+    if (curve.points.length > MAX_CURVE_POINTS) {
+      return `dumka plan invalid: propertyCurve ${property} supports at most ${MAX_CURVE_POINTS} points, got ${curve.points.length}`;
+    }
+    if (curve.weight < 1 || curve.weight > 100) {
+      return `dumka plan invalid: propertyCurve ${property} weight must be 1-100, got ${curve.weight}`;
+    }
+    if (curve.toleranceMilli > 100_000) {
+      return `dumka plan invalid: propertyCurve ${property} toleranceMilli must be 0-100000, got ${curve.toleranceMilli}`;
+    }
+    let previous: number | null = null;
+    for (const point of curve.points) {
+      if (point.cycle < 1) {
+        return `dumka plan invalid: propertyCurve ${property} point cycles must be ≥ 1`;
+      }
+      if (previous !== null && point.cycle <= previous) {
+        return `dumka plan invalid: propertyCurve ${property} points must have strictly ascending cycles`;
+      }
+      if (point.targetMilli > 100_000) {
+        return `dumka plan invalid: propertyCurve ${property} targetMilli must be 0-100000, got ${point.targetMilli}`;
+      }
+      previous = point.cycle;
+    }
+    if (curve.points.length > 0) {
+      const span =
+        curve.points[curve.points.length - 1]!.cycle - curve.points[0]!.cycle;
+      if (span > MAX_CURVE_SPAN_CYCLES) {
+        return `dumka plan invalid: propertyCurve ${property} spans ${span} cycles between its first and last points, the maximum is ${MAX_CURVE_SPAN_CYCLES}`;
+      }
+    }
+    const rail =
+      property === "density"
+        ? {
+            name: "density corridor",
+            floor: densityFloor * 1_000,
+            ceiling: densityCeiling * 1_000,
+          }
+        : property === "complexity"
+          ? {
+              name: "complexity corridor",
+              floor: complexityFloor,
+              ceiling: complexityCeiling,
+            }
+          : null;
+    if (rail !== null && curve.points.length > 0) {
+      const first = curve.points[0]!.cycle;
+      const last = curve.points[curve.points.length - 1]!.cycle;
+      for (let cycle = first; cycle <= last; cycle += 1) {
+        const band = propertyCurveBandAt(curve, cycle);
+        if (band === null) continue;
+        if (band[0] > rail.ceiling || band[1] < rail.floor) {
+          return `dumka plan invalid: propertyCurve ${property} conflicts with the ${rail.name} at cycle ${cycle}`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Complete authoring admission for property curves: shape/rails, functional
+ * work, then the shared aggregate-pacing/property v1-distance reservation. */
+export function validatePropertyCurveConfiguration(
+  curves: readonly PropertyCurve[],
+  densityFloor: number,
+  densityCeiling: number,
+  complexityFloor: number,
+  complexityCeiling: number,
+  plan: readonly EvolutionDirective[],
+  evolutionCurve: EvolutionCurve
+): string | null {
+  return (
+    validatePropertyCurves(
+      curves,
+      densityFloor,
+      densityCeiling,
+      complexityFloor,
+      complexityCeiling
+    ) ??
+    propertySteeringWorkError(curves, evolutionCurve.maxOperations) ??
+    propertyPacingScoringWorkError(plan, evolutionCurve, curves)
+  );
+}
+
+/** Tolerant patch-reader normalization for the property-curve array: repairs
+ * points, drops what it must, dedupes one curve per property. */
+export function normalizePropertyCurves(value: unknown): {
+  curves: PropertyCurve[];
+  droppedPoints: number;
+  droppedCurves: number;
+} {
+  let droppedPoints = 0;
+  let droppedCurves = 0;
+  const curves: PropertyCurve[] = [];
+  if (!Array.isArray(value)) {
+    return { curves, droppedPoints, droppedCurves };
+  }
+  const seen = new Set<CurveProperty>();
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) {
+      droppedCurves += 1;
+      continue;
+    }
+    const source = raw as Partial<PropertyCurve> & { points?: unknown };
+    if (
+      typeof source.property !== "string" ||
+      !CURVE_PROPERTIES.includes(source.property as CurveProperty) ||
+      seen.has(source.property as CurveProperty)
+    ) {
+      droppedCurves += 1;
+      continue;
+    }
+    const property = source.property as CurveProperty;
+    const points: CurvePoint[] = [];
+    if (Array.isArray(source.points)) {
+      for (const rawPoint of source.points) {
+        if (typeof rawPoint !== "object" || rawPoint === null) {
+          droppedPoints += 1;
+          continue;
+        }
+        const candidate = rawPoint as Partial<CurvePoint>;
+        const cycle = Number(candidate.cycle);
+        const target = Number(candidate.targetMilli);
+        if (
+          !Number.isInteger(cycle) ||
+          cycle < 1 ||
+          !Number.isInteger(target) ||
+          target < 0 ||
+          target > 100_000 ||
+          points.some((point) => point.cycle === cycle)
+        ) {
+          droppedPoints += 1;
+          continue;
+        }
+        points.push({ cycle, targetMilli: target });
+      }
+    }
+    points.sort((a, b) => a.cycle - b.cycle);
+    while (points.length > MAX_CURVE_POINTS) {
+      points.pop();
+      droppedPoints += 1;
+    }
+    while (
+      points.length > 1 &&
+      points[points.length - 1]!.cycle - points[0]!.cycle > MAX_CURVE_SPAN_CYCLES
+    ) {
+      points.pop();
+      droppedPoints += 1;
+    }
+    const weightRaw = Number(source.weight);
+    const toleranceRaw = Number(source.toleranceMilli);
+    seen.add(property);
+    curves.push({
+      property,
+      enabled: source.enabled === true,
+      toleranceMilli: Number.isInteger(toleranceRaw)
+        ? Math.min(100_000, Math.max(0, toleranceRaw))
+        : 0,
+      weight: Number.isInteger(weightRaw)
+        ? Math.min(100, Math.max(1, weightRaw))
+        : DEFAULT_PROPERTY_CURVE_WEIGHT,
+      points,
+    });
+  }
+  return { curves, droppedPoints, droppedCurves };
+}
+
 const U64_MAX = (1n << 64n) - 1n;
 
 export const DEFAULT_PERCEPTUAL_MAGNITUDE: Readonly<
@@ -443,11 +917,11 @@ export function normalizeDirectiveOptions(
   );
   const complexityPaired =
     complexityFloor !== null && complexityCeiling !== null;
+  // subdivisionLevel names a palette prime (2/3/5/7). Shape-normalize to that
+  // set; palette-membership is a validation concern (needs the config palette).
   const subdivisionLevel =
     typeof source.subdivisionLevel === "number" &&
-    Number.isInteger(source.subdivisionLevel) &&
-    source.subdivisionLevel >= 0 &&
-    source.subdivisionLevel <= MAX_SUBDIVISION_LEVEL_INDEX
+    DUMKA_SUBDIVISION_LEVELS.includes(source.subdivisionLevel as never)
       ? source.subdivisionLevel
       : null;
   return {
@@ -619,24 +1093,24 @@ function overlapCycle(
 
 export function subdivisionLevelValidationError(
   plan: readonly EvolutionDirective[],
-  workingSubdivision: number
+  subdivisionPalette: readonly number[]
 ): string | null {
   const invalid = plan.find(
     (row) =>
       row.options.subdivisionLevel !== null &&
       !dumkaSubdivisionLevelExists(
         row.options.subdivisionLevel,
-        workingSubdivision
+        subdivisionPalette
       )
   );
   return invalid
-    ? `dumka plan invalid: directive ${invalid.id} subdivisionLevel ${invalid.options.subdivisionLevel} does not exist on working Subdivision ${workingSubdivision}`
+    ? `dumka plan invalid: directive ${invalid.id} subdivisionLevel ${invalid.options.subdivisionLevel} is not an enabled palette prime`
     : null;
 }
 
 export function validateEvolutionPlan(
   plan: readonly EvolutionDirective[],
-  workingSubdivision?: number
+  subdivisionPalette?: readonly number[]
 ): PlanEditResult {
   if (plan.length > MAX_EVOLUTION_DIRECTIVES) {
     return {
@@ -669,10 +1143,10 @@ export function validateEvolutionPlan(
   if (workError !== null) {
     return { ok: false, message: workError };
   }
-  if (workingSubdivision !== undefined) {
+  if (subdivisionPalette !== undefined) {
     const levelError = subdivisionLevelValidationError(
       normalized,
-      workingSubdivision
+      subdivisionPalette
     );
     if (levelError !== null) return { ok: false, message: levelError };
   }

@@ -278,6 +278,8 @@ Important pure/frontend boundaries:
 - `playbackRequests.ts`: build transport requests and content fingerprints.
 - `patchIo.ts`: normalize in-memory state and project version-1 disk shapes.
 - `timelineModel.ts` / `playbackLayers.ts`: select preview vs playback truth.
+- `dumkaEvolvePlan.ts` / `components/EvolvePlanEditor.tsx`: mirror evolution
+  and property-curve validation/budgets, then author the bounded cycle canvas.
 - `channelLogic.ts`, `trackFlowBoxes.ts`, `triggerUi.ts`: project reducers and
   request projections.
 - `appInteractionPerformance.ts`: latest-wins queues and transition helpers.
@@ -321,6 +323,14 @@ Enabled perceptual rows also reserve a saturating plan-wide lifetime scoring
 budget. The Rust boundary and TypeScript model use the same 4,096-evaluation
 formula (`inclusive cycles × (maxOperations + 1)`); tolerant patch import keeps
 but disables later rows that would exceed it, with a visible load warning.
+Property curves are additive v1 generator data. Each enabled lane reserves the
+same merged cycle union against a separate 32,768 functional-evaluation budget,
+and aggregate pacing plus property steering shares the 4,096 v1-distance
+budget. Tolerant import drops malformed points, preserves-but-disables later
+over-budget or corridor-conflicting curves, and reports each repair. Preview
+DTOs carry exact density milli-corridor endpoints, realized property profiles,
+per-property misses with optional rail attribution, and the selected steering
+family/objective; none of those observability fields enter the disk envelope.
 
 ## Verification architecture
 

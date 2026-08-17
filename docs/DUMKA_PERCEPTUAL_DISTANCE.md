@@ -63,7 +63,7 @@ against the state the fold carried out of the previous cycle and returns
 it as `cycleDistance { modelVersion, distanceMilli }` on the preview DTO
 (absent at cycle 0, for non-Dum-Ka generators, for disabled resolution,
 and on grids without published Barlow tables; a verbatim repeat scores an
-honest 0). The Evolve editor's **Step size lane** plots this value per
+honest 0). The Evolve editor's **Pacing lane** plots this value per
 cycle, overlays every enabled perceptual row's target ± tolerance as a
 band (stacked rows sum), and colors the realized bar by verdict. The
 readout is preview/authoring observability only — playback consumes the

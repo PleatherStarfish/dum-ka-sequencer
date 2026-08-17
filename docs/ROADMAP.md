@@ -131,6 +131,18 @@ placement is deliberately distinct from Bjorklund/Euclid and its agreement and
 divergence fingerprints are pinned separately. Full implementation reference:
 [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md).
 
+## M3.97 — Property curves: drawable per-property automation (architecture ready)
+
+DAW-style lanes over the cycle axis, one per perceptual property
+(density, complexity, syncopation, evenness, occupancy, diversity):
+draw the level curve, see the realized trajectory overlaid, misses
+traced and rendered red — replacing the Composition/Step-size/Complexity
+bar rows. Levels + the one aggregate pacing curve, enforced as
+time-varying corridor bands through the existing rail machinery; a
+deterministic error-vector steering search replaces family weights on
+curve-governed cycles. Phase 0 is the queued #17/#22 defect batches.
+Full specification: [DUMKA_PROPERTY_CURVES.md](DUMKA_PROPERTY_CURVES.md).
+
 ## M4 — Bass payload (the one platform extension)
 
 Optional per-cell `accent_class`/`pitch_degree` honored through

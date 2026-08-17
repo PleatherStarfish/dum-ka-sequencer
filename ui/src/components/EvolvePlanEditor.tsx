@@ -11,7 +11,14 @@ import {
   type WheelEvent,
 } from "react";
 
-import type { EvolutionCurve, GeneratorPreview } from "../bridge";
+import type {
+  CurveProperty,
+  DumkaPropertyProfile,
+  EvolutionCurve,
+  GeneratorPreview,
+  MissReason,
+  PropertyCurve,
+} from "../bridge";
 import { analyzeDumkaPattern, compileDumkaPattern } from "../dumkaPattern";
 import {
   dumkaSubdivisionLevels,
@@ -23,6 +30,12 @@ import {
   setCurveSettings,
   removeCurvePoint,
   curveTargetMilliAt,
+  propertyCurveTargetMilliAt,
+  propertyCurveBandAt,
+  upsertPropertyCurvePoint,
+  removePropertyCurvePoint,
+  setPropertyCurveSettings,
+  validatePropertyCurveConfiguration,
   DEFAULT_EVOLUTION_CURVE,
   DIRECTIVE_FAMILIES,
   DIRECTIVE_FAMILY_LABELS,
@@ -68,6 +81,76 @@ const MIN_VIEW_CYCLES = 16;
 const TRAILING_CYCLES = 4;
 const VIEWPORT_OVERSCAN = 3;
 
+/**
+ * The property lanes (M3.97), rendered top-to-bottom under the pacing lane.
+ * Each plots its functional's realized trajectory (0..=100_000 milliunits) per
+ * cycle from the preview's `propertyProfile`, and — when the curve is enabled —
+ * lets the user DRAW a target level: click a cell to place a point, shift-click
+ * to remove one. Density and Complexity also shade their effective corridor
+ * rail. `property` is the wire enum a drawn curve is keyed by; `key` is the
+ * realized functional field on the profile.
+ */
+const PROPERTY_LANES: ReadonlyArray<{
+  property: CurveProperty;
+  key: keyof DumkaPropertyProfile;
+  label: string;
+  modifier: string;
+  band: "density" | "complexity" | null;
+}> = [
+  {
+    property: "density",
+    key: "densityMilli",
+    label: "Density",
+    modifier: "is-density",
+    band: "density",
+  },
+  {
+    property: "complexity",
+    key: "complexityMilli",
+    label: "Complexity",
+    modifier: "is-complexity",
+    band: "complexity",
+  },
+  {
+    property: "syncopation",
+    key: "syncopationMilli",
+    label: "Syncopation",
+    modifier: "is-syncopation",
+    band: null,
+  },
+  {
+    property: "evenness",
+    key: "evennessMilli",
+    label: "Evenness",
+    modifier: "is-evenness",
+    band: null,
+  },
+  {
+    property: "occupancy",
+    key: "occupancyMilli",
+    label: "Occupancy",
+    modifier: "is-occupancy",
+    band: null,
+  },
+  {
+    property: "diversity",
+    key: "diversityMilli",
+    label: "Diversity",
+    modifier: "is-diversity",
+    band: null,
+  },
+];
+
+/** Short human labels for the engine's steering-miss reasons (M3.97 §5),
+ * surfaced in a lane cell's tooltip when its realized line misses a drawn band. */
+const MISS_REASON_LABELS: Record<MissReason, string> = {
+  noReducingCandidate: "no operator helped",
+  pacingCapped: "pacing capped",
+  budgetCapped: "budget spent",
+  projection: "structurally blocked",
+  railBlocked: "hard rail blocked",
+};
+
 export interface EvolutionCachedPreview {
   cycle: number;
   preview: Pick<
@@ -79,6 +162,8 @@ export interface EvolutionCachedPreview {
     | "stateComplexityMilli"
     | "stateDepthDiversityMilli"
     | "complexityCorridor"
+    | "propertyProfile"
+    | "curveMisses"
   >;
 }
 
@@ -123,10 +208,16 @@ export interface EvolvePlanEditorProps {
   complexityFloor?: number;
   complexityCeiling?: number;
   workingSubdivision?: number;
+  /** Enabled palette primes; the only valid subdivisionLevel filter values. */
+  subdivisionPalette?: readonly number[];
   /** Composition-level evolution curve; edited via the Curve card and by
    * clicking in the step-size lane while the curve is enabled. */
   curve?: EvolutionCurve;
   onCurveChange?: (curve: EvolutionCurve) => void;
+  /** Drawn per-property level curves (M3.97 §2), edited by clicking a property
+   * lane. Empty means no steering — the lanes stay read-only realized plots. */
+  propertyCurves?: readonly PropertyCurve[];
+  onPropertyCurvesChange?: (curves: PropertyCurve[]) => void;
 }
 
 type DragMode = "move" | "resize-start" | "resize-end";
@@ -230,6 +321,20 @@ function firstAvailableCycle(
   return extent + 1;
 }
 
+function directiveOwnsCycle(
+  row: EvolutionDirective,
+  cycle: number,
+  seedBeats: number
+): boolean {
+  if (!row.enabled || cycle < row.fromCycle || cycle > row.toCycle) return false;
+  if (row.scope === null) return true;
+  return (
+    row.scope.startBeat >= 0 &&
+    row.scope.lenBeats > 0 &&
+    row.scope.startBeat + row.scope.lenBeats <= seedBeats
+  );
+}
+
 function firstAvailableSpan(
   plan: readonly EvolutionDirective[],
   family: DirectiveFamily,
@@ -286,7 +391,15 @@ function traceEntryLabel(
   const perceptual = entry.perceptual
     ? `, realized ${formatPerceptualScore(entry.perceptual.actualMilli)} vs target ${formatPerceptualScore(entry.perceptual.targetMilli)} ±${formatPerceptualScore(entry.perceptual.toleranceMilli)}${entry.perceptual.reached ? ", within tolerance" : entry.perceptual.exhausted ? ", nearest legal step" : ""}`
     : "";
-  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${complexityCorridor}${perceptual}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
+  const choices = entry.steeringChoices?.length
+    ? `, chose ${entry.steeringChoices
+        .map(
+          (choice) =>
+            `${DIRECTIVE_FAMILY_LABELS[choice.family]} for ${choice.chosenFor}`
+        )
+        .join("; ")}`
+    : "";
+  const result = `${DIRECTIVE_FAMILY_LABELS[entry.family]}: ${entry.applied}/${entry.requested}${corridor}${complexityCorridor}${perceptual}${choices}${entry.skipped === "none" ? "" : `, ${entry.skipped}`}`;
   if (
     !directive ||
     directive.pacing === "perCycle" ||
@@ -361,9 +474,7 @@ function morphTargetStatus(
 function subdivisionLevelLabel(
   level: DumkaSubdivisionLevelDescriptor
 ): string {
-  return level.denominator === 1
-    ? `Level ${level.index} · beat starts`
-    : `Level ${level.index} · 1/${level.denominator}-beat positions`;
+  return `Prime ${level.prime} · 1/${level.prime}-family positions`;
 }
 
 function ScopeGlyph({ row, totalBeats }: { row: EvolutionDirective; totalBeats: number }) {
@@ -459,13 +570,16 @@ export function EvolvePlanEditor({
   complexityFloor = 0,
   complexityCeiling = 100_000,
   workingSubdivision = 1,
+  subdivisionPalette = [],
   curve = DEFAULT_EVOLUTION_CURVE,
   onCurveChange,
+  propertyCurves = [],
+  onPropertyCurvesChange,
 }: EvolvePlanEditorProps) {
   const morphSeedBeats = seedTotalBeats ?? totalBeats;
   const subdivisionLevels = useMemo(
-    () => dumkaSubdivisionLevels(workingSubdivision),
-    [workingSubdivision]
+    () => dumkaSubdivisionLevels(subdivisionPalette),
+    [subdivisionPalette]
   );
   const [selectedId, setSelectedId] = useState<number | null>(initialSelectedId);
   const [usedOnly, setUsedOnly] = useState(false);
@@ -477,10 +591,59 @@ export function EvolvePlanEditor({
       setCurveError(result.message);
       return;
     }
+    const combined = validatePropertyCurveConfiguration(
+      propertyCurves,
+      densityFloor,
+      densityCeiling,
+      complexityFloor,
+      complexityCeiling,
+      plan,
+      result.curve
+    );
+    if (combined) {
+      setCurveError(combined);
+      return;
+    }
     setCurveError(null);
     onCurveChange(result.curve);
   };
+  const [propertyCurveError, setPropertyCurveError] = useState<string | null>(
+    null
+  );
+  // Commit a drawn property-curve edit, but only if the whole set still passes
+  // the engine's validation (uniqueness, bounds, and the static corridor
+  // intersection) — a rejected edit surfaces the pinned message, unchanged.
+  const applyPropertyCurves = (next: PropertyCurve[]) => {
+    if (!onPropertyCurvesChange) return false;
+    const message = validatePropertyCurveConfiguration(
+      next,
+      densityFloor,
+      densityCeiling,
+      complexityFloor,
+      complexityCeiling,
+      plan,
+      curve
+    );
+    if (message) {
+      setPropertyCurveError(message);
+      return false;
+    }
+    setPropertyCurveError(null);
+    onPropertyCurvesChange(next);
+    return true;
+  };
+  const propertyCurveByProperty = useMemo(
+    () => new Map(propertyCurves.map((entry) => [entry.property, entry])),
+    [propertyCurves]
+  );
   const [comparison, setComparison] = useState<"before" | "after">("after");
+  const [selectedProperty, setSelectedProperty] =
+    useState<CurveProperty>("density");
+  const selectedPropertyCurve =
+    propertyCurveByProperty.get(selectedProperty) ?? null;
+  const selectedPropertyLabel =
+    PROPERTY_LANES.find((lane) => lane.property === selectedProperty)?.label ??
+    selectedProperty;
   const [drag, setDrag] = useState<DragState | null>(null);
   const [cellWidth, setCellWidth] = useState(CELL_WIDTH);
   const [visibleRange, setVisibleRange] = useState<VisibleCycleRange>({
@@ -489,6 +652,31 @@ export function EvolvePlanEditor({
   });
   const [rulerPanning, setRulerPanning] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  // In-progress freehand automation draw on a property lane. The draft
+  // accumulates points across the drag so each pointermove commits the latest
+  // line (not a stale render-time snapshot); bottom/height come from the
+  // captured cell, whose row bounds match the whole lane.
+  const propertyDrawRef = useRef<{
+    property: CurveProperty;
+    pointerId: number;
+    bottom: number;
+    height: number;
+    draft: readonly PropertyCurve[];
+  } | null>(null);
+  // An in-progress drag of a single existing point handle. `moved` gates the
+  // click-vs-drag decision: a release without crossing the threshold is a
+  // click (delete); a drag repositions the point's level.
+  const handleDragRef = useRef<{
+    property: CurveProperty;
+    cycle: number;
+    pointerId: number;
+    bottom: number;
+    height: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    draft: readonly PropertyCurve[];
+  } | null>(null);
   const rulerPanRef = useRef<RulerPanState | null>(null);
   const pendingZoomScrollLeftRef = useRef<number | null>(null);
   const pendingTransitionFocusIdRef = useRef<number | null>(null);
@@ -514,18 +702,29 @@ export function EvolvePlanEditor({
     (max, row) => Math.max(max, Math.min(MAX_STOPPED_PREVIEW_CYCLE, row.toCycle)),
     0
   );
+  const lastPropertyCurveCycle = propertyCurves.reduce(
+    (max, propertyCurve) =>
+      Math.max(max, propertyCurve.points.at(-1)?.cycle ?? 0),
+    0
+  );
   const requestedExtent = Math.max(
     MIN_VIEW_CYCLES,
     Math.round(planLengthCycles),
     Math.min(
       MAX_STOPPED_PREVIEW_CYCLE,
-      lastPreviewableCycle + TRAILING_CYCLES
+      Math.max(lastPreviewableCycle, lastPropertyCurveCycle) + TRAILING_CYCLES
     )
   );
   const extent = Math.min(MAX_STOPPED_PREVIEW_CYCLE, requestedExtent);
   const outOfWindowDirectiveCount = plan.filter(
     (row) => row.fromCycle > extent || row.toCycle > extent
   ).length;
+  const outOfWindowPropertyPointCount = propertyCurves.reduce(
+    (count, propertyCurve) =>
+      count +
+      propertyCurve.points.filter((point) => point.cycle > extent).length,
+    0
+  );
   const renderFromCycle = Math.max(
     0,
     Math.min(extent, visibleRange.fromCycle - VIEWPORT_OVERSCAN)
@@ -558,6 +757,8 @@ export function EvolvePlanEditor({
             depthDiversityMilli:
               entry.preview.stateDepthDiversityMilli ?? null,
             complexityCorridor: entry.preview.complexityCorridor ?? null,
+            propertyProfile: entry.preview.propertyProfile ?? null,
+            curveMisses: entry.preview.curveMisses ?? [],
             workingSubdivision:
               entry.preview.workingSubdivision ?? workingSubdivision,
           },
@@ -588,9 +789,10 @@ export function EvolvePlanEditor({
     // interpolated target is the band.
     const directiveCoveredCycles = new Set<number>();
     for (const row of plan) {
-      if (!row.enabled) continue;
       for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
-        directiveCoveredCycles.add(cycle);
+        if (directiveOwnsCycle(row, cycle, morphSeedBeats)) {
+          directiveCoveredCycles.add(cycle);
+        }
       }
     }
     if (curve.enabled && curve.points.length > 0) {
@@ -599,18 +801,17 @@ export function EvolvePlanEditor({
       for (let cycle = first; cycle <= last; cycle += 1) {
         if (directiveCoveredCycles.has(cycle)) continue;
         const target = curveTargetMilliAt(curve, cycle);
-        if (target > 0) {
-          map.set(cycle, {
-            targetMilli: target,
-            toleranceMilli: curve.toleranceMilli,
-            rows: 0,
-          });
-        }
+        map.set(cycle, {
+          targetMilli: target,
+          toleranceMilli: curve.toleranceMilli,
+          rows: 0,
+        });
       }
     }
     for (const row of plan) {
       if (!row.enabled || row.magnitude?.mode !== "perceptual") continue;
       for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
+        if (!directiveOwnsCycle(row, cycle, morphSeedBeats)) continue;
         const current = map.get(cycle) ?? {
           targetMilli: 0,
           toleranceMilli: 0,
@@ -623,7 +824,7 @@ export function EvolvePlanEditor({
       }
     }
     return map;
-  }, [curve, plan]);
+  }, [curve, morphSeedBeats, plan]);
   const maxVisibleStepMilli = useMemo(() => {
     let max = 1;
     for (const [cycle, metrics] of previewByCycle) {
@@ -647,22 +848,6 @@ export function EvolvePlanEditor({
     visibleRange.fromCycle,
     visibleRange.toCycle,
   ]);
-
-  const maxVisibleOnsets = useMemo(
-    () => {
-      let max = 1;
-      for (const [cycle, metrics] of previewByCycle) {
-        if (
-          cycle >= visibleRange.fromCycle &&
-          cycle <= visibleRange.toCycle
-        ) {
-          max = Math.max(max, metrics.onsets);
-        }
-      }
-      return max;
-    },
-    [previewByCycle, visibleRange.fromCycle, visibleRange.toCycle]
-  );
 
   useEffect(() => {
     if (selectedId !== null && !plan.some((row) => row.id === selectedId)) {
@@ -750,7 +935,7 @@ export function EvolvePlanEditor({
       setError(result.message);
       return false;
     }
-    const contextual = validateEvolutionPlan(result.plan, workingSubdivision);
+    const contextual = validateEvolutionPlan(result.plan, subdivisionPalette);
     if (!contextual.ok) {
       setError(contextual.message);
       return false;
@@ -990,7 +1175,7 @@ export function EvolvePlanEditor({
       : null;
   const currentSubdivisionLevelError = subdivisionLevelValidationError(
     plan,
-    workingSubdivision
+    subdivisionPalette
   );
 
   return (
@@ -1046,6 +1231,14 @@ export function EvolvePlanEditor({
           They remain authored and will run during playback.
         </p>
       ) : null}
+      {outOfWindowPropertyPointCount > 0 ? (
+        <p className="evolve-plan-window-note" role="note">
+          {outOfWindowPropertyPointCount} property-curve point
+          {outOfWindowPropertyPointCount === 1 ? "" : "s"} continue beyond the
+          preview window at cycle {MAX_STOPPED_PREVIEW_CYCLE.toLocaleString()}.
+          They remain authored and will run during playback.
+        </p>
+      ) : null}
       {planAtCapacity ? (
         <p className="evolve-plan-capacity-note" role="status">
           Plan limit reached · {MAX_EVOLUTION_DIRECTIVES} directives. Move,
@@ -1087,202 +1280,8 @@ export function EvolvePlanEditor({
             ))}
           </div>
 
-          {families.length === 0 ? (
-            <div className="evolve-plan-empty">No used lanes. Show all lanes to add a pin.</div>
-          ) : null}
-
-          {families.map((family) => (
-            <div
-              className={`evolve-plan-lane is-${family}`}
-              key={family}
-              aria-label={`${DIRECTIVE_FAMILY_LABELS[family]} lane`}
-            >
-              <span className="evolve-plan-lane-name">
-                {DIRECTIVE_FAMILY_LABELS[family]}
-              </span>
-              <span className="evolve-plan-seed-lock" title="Cycle 0 is the locked seed">
-                lock
-              </span>
-              <button
-                type="button"
-                className="evolve-plan-lane-add"
-                aria-label={`Add ${DIRECTIVE_FAMILY_LABELS[family]} pin`}
-                disabled={disabled || planAtCapacity}
-                onPointerDown={(event) => {
-                  if (!scrollerRef.current) return;
-                  const cycle = cycleFromPointer(
-                    event,
-                    scrollerRef.current,
-                    cellWidth
-                  );
-                  add(family, cycle);
-                }}
-                onClick={(event) => {
-                  if (event.detail === 0) {
-                    add(family, firstAvailableCycle(plan, family, extent));
-                  }
-                }}
-              />
-              {plan
-                .filter(
-                  (row) =>
-                    row.family === family &&
-                    row.fromCycle <= extent &&
-                    row.toCycle >= 1
-                )
-                .map((row) => {
-                  const visibleFrom = Math.max(1, row.fromCycle);
-                  const visibleTo = Math.min(extent, row.toCycle);
-                  const width = (visibleTo - visibleFrom + 1) * cellWidth;
-                  const pin = row.fromCycle === row.toCycle;
-                  return (
-                    <button
-                      type="button"
-                      key={row.id}
-                      className={`evolve-plan-directive${pin ? " is-pin" : " is-range"} is-pacing-${row.pacing}${row.enabled ? "" : " is-disabled"}${selectedId === row.id ? " is-selected" : ""}`}
-                      style={{
-                        left: LANE_LABEL_WIDTH + visibleFrom * cellWidth,
-                        width,
-                      }}
-                      aria-label={directiveTitle(row)}
-                      aria-pressed={selectedId === row.id}
-                      disabled={disabled}
-                      title={`${directiveTitle(row)}. Drag to move; drag the handles to resize.`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (event.detail === 0) select(row);
-                      }}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        beginDrag(event, row, "move");
-                      }}
-                      onPointerUp={endDrag}
-                      onPointerCancel={() => setDrag(null)}
-                      onKeyDown={(event) => {
-                        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          nudgeDirective(row, event.key === "ArrowLeft" ? -1 : 1, event.shiftKey);
-                        } else if (event.key === "Delete" || event.key === "Backspace") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          removeById(row.id);
-                        }
-                      }}
-                    >
-                      <i
-                        className="evolve-plan-resize is-start"
-                        aria-hidden="true"
-                        onPointerDown={(event) => beginDrag(event as unknown as PointerEvent<HTMLButtonElement>, row, "resize-start")}
-                      />
-                      <b>
-                        {row.magnitude?.mode === "perceptual"
-                          ? formatPerceptualScore(row.magnitude.targetMilli)
-                          : `${row.intensity}%`}
-                      </b>
-                      <ScopeGlyph row={row} totalBeats={totalBeats} />
-                      <i
-                        className="evolve-plan-resize is-end"
-                        aria-hidden="true"
-                        onPointerDown={(event) => beginDrag(event as unknown as PointerEvent<HTMLButtonElement>, row, "resize-end")}
-                      />
-                    </button>
-                  );
-                })}
-            </div>
-          ))}
-
-          <div className="evolve-plan-composition" aria-label="Composition strip">
-            <span className="evolve-plan-lane-name">Composition</span>
-            {cycles.map((cycle) => {
-              const metrics = previewByCycle.get(cycle);
-              const cycleTrace = traceByCycle.get(cycle) ?? [];
-              const traceTitle = cycleTrace
-                .map((entry) => traceEntryLabel(entry, directiveById.get(entry.directiveId)))
-                .join("; ");
-              const densityPercent = Math.round((metrics?.density ?? 0) * 100);
-              const effectiveFloor = metrics?.corridor?.floor ?? densityFloor;
-              const effectiveCeiling =
-                metrics?.corridor?.ceiling ?? densityCeiling;
-              const compositionLabel = metrics
-                ? `Cycle ${cycle} composition: ${metrics.onsets} ${metrics.onsets === 1 ? "onset" : "onsets"}, ${densityPercent}% density; corridor ${effectiveFloor}% through ${effectiveCeiling}%${traceTitle ? `. ${traceTitle}` : ""}`
-                : `Cycle ${cycle} composition not cached${traceTitle ? `. ${traceTitle}` : ""}`;
-              return (
-                <span
-                  key={cycle}
-                  className="evolve-plan-composition-cell"
-                  role="group"
-                  aria-label={compositionLabel}
-                  style={{
-                    gridColumn: cycle + 2,
-                    "--density-percent": `${densityPercent}%`,
-                    "--corridor-floor": `${effectiveFloor}%`,
-                    "--corridor-height": `${Math.max(0, effectiveCeiling - effectiveFloor)}%`,
-                  } as CSSProperties}
-                  title={traceTitle || (metrics ? `${metrics.onsets} onsets` : `Cycle ${cycle} not cached`)}
-                >
-                  <i className="evolve-plan-corridor-band" aria-hidden="true" />
-                  {metrics ? (
-                    <i
-                      className="evolve-plan-density-mark"
-                      aria-hidden="true"
-                      style={{ bottom: `${densityPercent}%` }}
-                    />
-                  ) : null}
-                  {metrics ? (
-                    <i
-                      className="evolve-plan-onset-bar"
-                      title={`${metrics.onsets} onsets`}
-                      style={{
-                        height: `${Math.round(
-                          Math.min(1, metrics.onsets / maxVisibleOnsets) * 100
-                        )}%`,
-                      }}
-                    />
-                  ) : null}
-                  {cycleTrace.length > 0 ? (
-                    <span className="evolve-plan-trace-stack">
-                      {cycleTrace.map((entry, index) => {
-                        const label = traceEntryLabel(
-                          entry,
-                          directiveById.get(entry.directiveId)
-                        );
-                        const traceState = [
-                          entry.applied > 0 ? "is-applied" : "",
-                          entry.applied === 0 && entry.skipped !== "none"
-                            ? "is-skipped"
-                            : "",
-                          entry.applied > 0 && entry.skipped !== "none"
-                            ? "is-partial"
-                            : "",
-                          entry.corridorClamp ? "is-corridor-clamped" : "",
-                          entry.complexityCorridorClamp
-                            ? "is-complexity-clamped"
-                            : "",
-                        ]
-                          .filter(Boolean)
-                          .map((state) => ` ${state}`)
-                          .join("");
-                        return (
-                          <i
-                            key={`${entry.directiveId}-${entry.family}-${index}`}
-                            className={`evolve-plan-trace${traceState}`}
-                            role="img"
-                            tabIndex={0}
-                            aria-label={label}
-                            title={label}
-                          />
-                        );
-                      })}
-                    </span>
-                  ) : null}
-                </span>
-              );
-            })}
-          </div>
-
-          <div className="evolve-plan-step-lane" aria-label="Step size lane">
-            <span className="evolve-plan-lane-name">Step size</span>
+          <div className="evolve-plan-step-lane" aria-label="Pacing lane">
+            <span className="evolve-plan-lane-name">Pacing</span>
             {cycles.map((cycle) => {
               const metrics = previewByCycle.get(cycle);
               const realized = metrics?.distanceMilli ?? null;
@@ -1392,62 +1391,852 @@ export function EvolvePlanEditor({
             })}
           </div>
 
-          <div
-            className="evolve-plan-complexity-lane"
-            aria-label="Complexity lane"
-          >
-            <span className="evolve-plan-lane-name">Complexity</span>
+          {PROPERTY_LANES.map((lane) => {
+            const laneCurve = propertyCurveByProperty.get(lane.property) ?? null;
+            const editable = Boolean(onPropertyCurvesChange) && !disabled;
+            return (
+              <div
+                key={lane.key}
+                className={`evolve-plan-property-lane ${lane.modifier}${
+                  editable ? " is-editable" : ""
+                }${laneCurve?.enabled ? " is-drawn" : ""}`}
+                aria-label={`${lane.label} lane`}
+                onPointerDownCapture={() => setSelectedProperty(lane.property)}
+                onFocusCapture={() => setSelectedProperty(lane.property)}
+              >
+                <span className="evolve-plan-lane-name">{lane.label}</span>
+                {cycles.map((cycle) => {
+                  const metrics = previewByCycle.get(cycle);
+                  const profile = metrics?.propertyProfile ?? null;
+                  // Realized functional in milliunits. Density, complexity, and
+                  // diversity fall back to the standalone preview fields on
+                  // grids whose primes exceed the published tables.
+                  let realized: number | null = profile
+                    ? profile[lane.key]
+                    : null;
+                  if (realized === null) {
+                    if (lane.key === "complexityMilli") {
+                      realized = metrics?.complexityMilli ?? null;
+                    } else if (lane.key === "diversityMilli") {
+                      realized = metrics?.depthDiversityMilli ?? null;
+                    } else if (
+                      lane.key === "densityMilli" &&
+                      metrics?.density != null
+                    ) {
+                      realized = Math.round(metrics.density * 100_000);
+                    }
+                  }
+                  // The global corridor rail (Density/Complexity only).
+                  let railFloor: number | null = null;
+                  let railCeil: number | null = null;
+                  if (lane.band === "density") {
+                    railFloor =
+                      metrics?.corridor?.floorMilli ??
+                      (metrics?.corridor?.floor ?? densityFloor) * 1_000;
+                    railCeil =
+                      metrics?.corridor?.ceilingMilli ??
+                      (metrics?.corridor?.ceiling ?? densityCeiling) * 1_000;
+                  } else if (lane.band === "complexity") {
+                    const corridor = metrics?.complexityCorridor ?? {
+                      floor: complexityFloor,
+                      ceiling: complexityCeiling,
+                    };
+                    railFloor = corridor.floor;
+                    railCeil = corridor.ceiling;
+                  }
+                  // The drawn target + tolerance band this cycle (absent outside
+                  // the drawn span). The authored intent judges the realized
+                  // line; the corridor rail applies only where nothing is drawn.
+                  const drawnTarget = laneCurve
+                    ? propertyCurveTargetMilliAt(laneCurve, cycle)
+                    : null;
+                  // The previous cycle's level, so this cell can draw the
+                  // connecting segment of a continuous automation line.
+                  const drawnTargetPrev =
+                    laneCurve && cycle > 0
+                      ? propertyCurveTargetMilliAt(laneCurve, cycle - 1)
+                      : null;
+                  const drawnBand = laneCurve
+                    ? propertyCurveBandAt(laneCurve, cycle)
+                    : null;
+                  const drawnPointHere =
+                    laneCurve?.points.some((point) => point.cycle === cycle) ??
+                    false;
+                  const bandFloor = drawnBand ? drawnBand[0] : railFloor;
+                  const bandCeil = drawnBand ? drawnBand[1] : railCeil;
+                  const hasBand = bandFloor !== null && bandCeil !== null;
+                  const directiveOwned =
+                    drawnBand !== null &&
+                    plan.some((row) =>
+                      directiveOwnsCycle(row, cycle, morphSeedBeats)
+                    );
+                  const within =
+                    !directiveOwned &&
+                    hasBand &&
+                    realized !== null &&
+                    realized >= bandFloor! &&
+                    realized <= bandCeil!;
+                  // The engine's stall reason for a missed drawn band, if it
+                  // reported one — knowledge the client cannot infer itself.
+                  const missReason =
+                    drawnBand && !directiveOwned && !within && realized !== null
+                      ? metrics?.curveMisses?.find(
+                          (miss) => miss.property === lane.property
+                        )?.reason ?? null
+                      : null;
+                  const ariaName = lane.label.toLowerCase();
+                  let label: string;
+                  if (realized === null) {
+                    label = `Cycle ${cycle} ${ariaName} not cached`;
+                  } else if (drawnBand && directiveOwned) {
+                    label = `Cycle ${cycle} ${ariaName} ${formatPerceptualScore(
+                      realized
+                    )}, target band overridden by directive`;
+                  } else if (drawnBand) {
+                    label = `Cycle ${cycle} ${ariaName} ${formatPerceptualScore(
+                      realized
+                    )}, target ${formatPerceptualScore(
+                      drawnTarget ?? 0
+                    )} band ${formatPerceptualScore(
+                      drawnBand[0]
+                    )} through ${formatPerceptualScore(drawnBand[1])}, ${
+                      within ? "inside band" : "outside band"
+                    }${missReason ? ` (${MISS_REASON_LABELS[missReason]})` : ""}`;
+                  } else if (lane.band === "density") {
+                    const onsets = metrics?.onsets ?? 0;
+                    label = `Cycle ${cycle} density ${Math.round(
+                      realized / 1_000
+                    )}%, ${onsets} ${onsets === 1 ? "onset" : "onsets"}, corridor ${Math.round(
+                      railFloor! / 1_000
+                    )}% through ${Math.round(railCeil! / 1_000)}%, ${
+                      within ? "inside" : "outside"
+                    } corridor`;
+                  } else if (lane.band === "complexity") {
+                    label = `Cycle ${cycle} complexity ${formatPerceptualScore(
+                      realized
+                    )}, corridor ${formatPerceptualScore(
+                      railFloor!
+                    )} through ${formatPerceptualScore(railCeil!)}${
+                      within ? ", inside corridor" : ", outside corridor"
+                    }`;
+                  } else {
+                    label = `Cycle ${cycle} ${ariaName} ${formatPerceptualScore(
+                      realized
+                    )}`;
+                  }
+                  return (
+                    <span
+                      key={cycle}
+                      className={`evolve-plan-property-cell${
+                        directiveOwned
+                          ? " is-overridden"
+                          : hasBand
+                          ? within
+                            ? " is-within-corridor"
+                            : realized !== null
+                              ? " is-outside-corridor"
+                              : ""
+                          : ""
+                      }${drawnBand ? " is-drawn" : ""}${
+                        drawnPointHere ? " has-point" : ""
+                      }`}
+                      role="group"
+                      tabIndex={editable && cycle >= 1 ? 0 : undefined}
+                      aria-label={label}
+                      title={label}
+                      style={{ gridColumn: cycle + 2 }}
+                      onKeyDown={
+                        editable && cycle >= 1
+                          ? (event) => {
+                              const pointTarget =
+                                drawnTarget ?? realized ?? 50_000;
+                              if (
+                                event.key === "Enter" ||
+                                event.key === " " ||
+                                event.key === "ArrowUp" ||
+                                event.key === "ArrowDown"
+                              ) {
+                                event.preventDefault();
+                                const delta = event.shiftKey ? 100 : 1_000;
+                                const nextTarget =
+                                  event.key === "ArrowUp"
+                                    ? pointTarget + delta
+                                    : event.key === "ArrowDown"
+                                      ? pointTarget - delta
+                                      : pointTarget;
+                                applyPropertyCurves(
+                                  upsertPropertyCurvePoint(
+                                    propertyCurves,
+                                    lane.property,
+                                    cycle,
+                                    nextTarget
+                                  )
+                                );
+                              } else if (
+                                drawnPointHere &&
+                                (event.key === "ArrowLeft" ||
+                                  event.key === "ArrowRight")
+                              ) {
+                                event.preventDefault();
+                                const nextCycle = Math.min(
+                                  extent,
+                                  Math.max(
+                                    1,
+                                    cycle +
+                                      (event.key === "ArrowLeft" ? -1 : 1)
+                                  )
+                                );
+                                const without = removePropertyCurvePoint(
+                                  propertyCurves,
+                                  lane.property,
+                                  cycle
+                                );
+                                applyPropertyCurves(
+                                  upsertPropertyCurvePoint(
+                                    without,
+                                    lane.property,
+                                    nextCycle,
+                                    pointTarget
+                                  )
+                                );
+                              } else if (
+                                drawnPointHere &&
+                                (event.key === "Delete" ||
+                                  event.key === "Backspace")
+                              ) {
+                                event.preventDefault();
+                                applyPropertyCurves(
+                                  removePropertyCurvePoint(
+                                    propertyCurves,
+                                    lane.property,
+                                    cycle
+                                  )
+                                );
+                              }
+                            }
+                          : undefined
+                      }
+                      onPointerDown={
+                        editable && cycle >= 1
+                          ? (event) => {
+                              if (event.button !== 0) return;
+                              if (event.shiftKey) {
+                                if (drawnPointHere) {
+                                  applyPropertyCurves(
+                                    removePropertyCurvePoint(
+                                      propertyCurves,
+                                      lane.property,
+                                      cycle
+                                    )
+                                  );
+                                }
+                                return;
+                              }
+                              // Begin a freehand automation draw: capture the
+                              // pointer so a drag across cells keeps routing
+                              // here, and seed the accumulating draft.
+                              const bounds =
+                                event.currentTarget.getBoundingClientRect();
+                              event.currentTarget.setPointerCapture?.(
+                                event.pointerId
+                              );
+                              const fraction =
+                                bounds.height <= 0
+                                  ? 0
+                                  : Math.min(
+                                      1,
+                                      Math.max(
+                                        0,
+                                        (bounds.bottom - event.clientY) /
+                                          bounds.height
+                                      )
+                                    );
+                              const draft = upsertPropertyCurvePoint(
+                                propertyCurves,
+                                lane.property,
+                                cycle,
+                                Math.round(fraction * 100_000)
+                              );
+                              if (applyPropertyCurves(draft)) {
+                                propertyDrawRef.current = {
+                                  property: lane.property,
+                                  pointerId: event.pointerId,
+                                  bottom: bounds.bottom,
+                                  height: bounds.height,
+                                  draft,
+                                };
+                              }
+                            }
+                          : undefined
+                      }
+                      onPointerMove={
+                        editable
+                          ? (event) => {
+                              const draw = propertyDrawRef.current;
+                              if (
+                                !draw ||
+                                draw.pointerId !== event.pointerId ||
+                                draw.property !== lane.property ||
+                                !scrollerRef.current
+                              ) {
+                                return;
+                              }
+                              // Follow the drag: the cycle comes from the
+                              // cursor's X across the lane, the level from its Y
+                              // in the captured row.
+                              const moveCycle = Math.min(
+                                extent,
+                                cycleFromPointer(
+                                  event,
+                                  scrollerRef.current,
+                                  cellWidth
+                                )
+                              );
+                              const fraction =
+                                draw.height <= 0
+                                  ? 0
+                                  : Math.min(
+                                      1,
+                                      Math.max(
+                                        0,
+                                        (draw.bottom - event.clientY) /
+                                          draw.height
+                                      )
+                                    );
+                              const next = upsertPropertyCurvePoint(
+                                draw.draft,
+                                lane.property,
+                                moveCycle,
+                                Math.round(fraction * 100_000)
+                              );
+                              if (applyPropertyCurves(next)) {
+                                draw.draft = next;
+                              }
+                            }
+                          : undefined
+                      }
+                      onPointerUp={
+                        editable
+                          ? (event) => {
+                              if (
+                                propertyDrawRef.current?.pointerId ===
+                                event.pointerId
+                              ) {
+                                propertyDrawRef.current = null;
+                              }
+                            }
+                          : undefined
+                      }
+                      onLostPointerCapture={
+                        editable
+                          ? (event) => {
+                              if (
+                                propertyDrawRef.current?.pointerId ===
+                                event.pointerId
+                              ) {
+                                propertyDrawRef.current = null;
+                              }
+                            }
+                          : undefined
+                      }
+                    >
+                      {hasBand ? (
+                        <i
+                          className="evolve-plan-property-band"
+                          aria-hidden="true"
+                          style={{
+                            bottom: `${bandFloor! / 1_000}%`,
+                            height: `${Math.max(
+                              1,
+                              (bandCeil! - bandFloor!) / 1_000
+                            )}%`,
+                          }}
+                        />
+                      ) : null}
+                      {drawnTarget !== null && drawnTargetPrev !== null ? (
+                        <svg
+                          className="evolve-plan-property-line"
+                          viewBox="0 0 200 100"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <line
+                            x1="50"
+                            y1={100 - drawnTargetPrev / 1_000}
+                            x2="150"
+                            y2={100 - drawnTarget / 1_000}
+                          />
+                        </svg>
+                      ) : null}
+                      {drawnPointHere && drawnTarget !== null ? (
+                        <button
+                          type="button"
+                          className="evolve-plan-property-handle"
+                          aria-label={`Move or remove ${ariaName} point at cycle ${cycle}`}
+                          style={{ bottom: `${drawnTarget / 1_000}%` }}
+                          disabled={!editable}
+                          onPointerDown={(event) => {
+                            // Grab the point. stopPropagation keeps the lane
+                            // beneath from starting a fresh draw; the drag below
+                            // moves this point, a release-in-place deletes it.
+                            event.stopPropagation();
+                            if (event.button !== 0 || !editable) return;
+                            const cellRect = (
+                              event.currentTarget.parentElement as HTMLElement | null
+                            )?.getBoundingClientRect();
+                            if (!cellRect) return;
+                            event.currentTarget.setPointerCapture?.(
+                              event.pointerId
+                            );
+                            handleDragRef.current = {
+                              property: lane.property,
+                              cycle,
+                              pointerId: event.pointerId,
+                              bottom: cellRect.bottom,
+                              height: cellRect.height,
+                              startX: event.clientX,
+                              startY: event.clientY,
+                              moved: false,
+                              draft: propertyCurves,
+                            };
+                          }}
+                          onPointerMove={(event) => {
+                            const drag = handleDragRef.current;
+                            if (!drag || drag.pointerId !== event.pointerId) {
+                              return;
+                            }
+                            // Ignore sub-threshold jitter so a plain click still
+                            // reads as a click, not a tiny move.
+                            if (
+                              !drag.moved &&
+                              Math.abs(event.clientX - drag.startX) < 4 &&
+                              Math.abs(event.clientY - drag.startY) < 4
+                            ) {
+                              return;
+                            }
+                            drag.moved = true;
+                            const fraction =
+                              drag.height <= 0
+                                ? 0
+                                : Math.min(
+                                    1,
+                                    Math.max(
+                                      0,
+                                      (drag.bottom - event.clientY) /
+                                        drag.height
+                                    )
+                                  );
+                            const next = upsertPropertyCurvePoint(
+                              drag.draft,
+                              drag.property,
+                              drag.cycle,
+                              Math.round(fraction * 100_000)
+                            );
+                            if (applyPropertyCurves(next)) {
+                              drag.draft = next;
+                            }
+                          }}
+                          onPointerUp={(event) => {
+                            const drag = handleDragRef.current;
+                            if (!drag || drag.pointerId !== event.pointerId) {
+                              return;
+                            }
+                            handleDragRef.current = null;
+                            // A release without a drag is a click: delete.
+                            if (!drag.moved) {
+                              applyPropertyCurves(
+                                removePropertyCurvePoint(
+                                  propertyCurves,
+                                  drag.property,
+                                  drag.cycle
+                                )
+                              );
+                            }
+                          }}
+                          onLostPointerCapture={(event) => {
+                            if (
+                              handleDragRef.current?.pointerId ===
+                              event.pointerId
+                            ) {
+                              handleDragRef.current = null;
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (!editable) return;
+                            if (
+                              event.key === "ArrowUp" ||
+                              event.key === "ArrowDown"
+                            ) {
+                              event.preventDefault();
+                              const delta = event.shiftKey ? 100 : 1_000;
+                              applyPropertyCurves(
+                                upsertPropertyCurvePoint(
+                                  propertyCurves,
+                                  lane.property,
+                                  cycle,
+                                  drawnTarget +
+                                    (event.key === "ArrowUp" ? delta : -delta)
+                                )
+                              );
+                            } else if (
+                              event.key === "ArrowLeft" ||
+                              event.key === "ArrowRight"
+                            ) {
+                              event.preventDefault();
+                              const nextCycle = Math.min(
+                                extent,
+                                Math.max(
+                                  1,
+                                  cycle +
+                                    (event.key === "ArrowLeft" ? -1 : 1)
+                                )
+                              );
+                              const without = removePropertyCurvePoint(
+                                propertyCurves,
+                                lane.property,
+                                cycle
+                              );
+                              applyPropertyCurves(
+                                upsertPropertyCurvePoint(
+                                  without,
+                                  lane.property,
+                                  nextCycle,
+                                  drawnTarget
+                                )
+                              );
+                            } else if (
+                              event.key === "Delete" ||
+                              event.key === "Backspace"
+                            ) {
+                              event.preventDefault();
+                              applyPropertyCurves(
+                                removePropertyCurvePoint(
+                                  propertyCurves,
+                                  lane.property,
+                                  cycle
+                                )
+                              );
+                            } else if (
+                              event.key === "Enter" ||
+                              event.key === " "
+                            ) {
+                              event.preventDefault();
+                            }
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            // Mouse deletion is handled on pointerup; keyboard
+                            // movement and deletion are explicit above.
+                            if (event.detail === 0 && editable) {
+                              applyPropertyCurves(
+                                removePropertyCurvePoint(
+                                  propertyCurves,
+                                  lane.property,
+                                  cycle
+                                )
+                              );
+                            }
+                          }}
+                        />
+                      ) : null}
+                      {realized !== null ? (
+                        <i
+                          className={`evolve-plan-property-mark${
+                            missReason ? " is-miss" : ""
+                          }`}
+                          aria-hidden="true"
+                          style={{ bottom: `${realized / 1_000}%` }}
+                        />
+                      ) : null}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+          <div className="evolve-plan-events" aria-label="Events">
+            <span className="evolve-plan-lane-name">Events</span>
             {cycles.map((cycle) => {
-              const metrics = previewByCycle.get(cycle);
-              const realized = metrics?.complexityMilli ?? null;
-              const corridor = metrics?.complexityCorridor ?? {
-                floor: complexityFloor,
-                ceiling: complexityCeiling,
-              };
-              const within =
-                realized !== null &&
-                realized >= corridor.floor &&
-                realized <= corridor.ceiling;
-              const label =
-                realized === null
-                  ? `Cycle ${cycle} complexity not cached`
-                  : `Cycle ${cycle} complexity ${formatPerceptualScore(realized)}, corridor ${formatPerceptualScore(corridor.floor)} through ${formatPerceptualScore(corridor.ceiling)}${within ? ", inside corridor" : ", outside corridor"}`;
+              const cycleTrace = traceByCycle.get(cycle) ?? [];
               return (
                 <span
                   key={cycle}
-                  className={`evolve-plan-complexity-cell${
-                    within ? " is-within-corridor" : ""
-                  }`}
-                  role="group"
-                  aria-label={label}
-                  title={label}
+                  className="evolve-plan-events-cell"
                   style={{ gridColumn: cycle + 2 }}
+                  aria-hidden={cycleTrace.length === 0 ? true : undefined}
                 >
-                  <i
-                    className="evolve-plan-complexity-band"
-                    aria-hidden="true"
-                    style={{
-                      bottom: `${corridor.floor / 1_000}%`,
-                      height: `${Math.max(
-                        1,
-                        (corridor.ceiling - corridor.floor) / 1_000
-                      )}%`,
-                    }}
-                  />
-                  {realized !== null ? (
-                    <i
-                      className="evolve-plan-complexity-mark"
-                      aria-hidden="true"
-                      style={{ bottom: `${realized / 1_000}%` }}
-                    />
+                  {cycleTrace.length > 0 ? (
+                    <span className="evolve-plan-trace-stack">
+                      {cycleTrace.map((entry, index) => {
+                        const label = traceEntryLabel(
+                          entry,
+                          directiveById.get(entry.directiveId)
+                        );
+                        const traceState = [
+                          entry.applied > 0 ? "is-applied" : "",
+                          entry.applied === 0 && entry.skipped !== "none"
+                            ? "is-skipped"
+                            : "",
+                          entry.applied > 0 && entry.skipped !== "none"
+                            ? "is-partial"
+                            : "",
+                          entry.corridorClamp ? "is-corridor-clamped" : "",
+                          entry.complexityCorridorClamp
+                            ? "is-complexity-clamped"
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .map((state) => ` ${state}`)
+                          .join("");
+                        return (
+                          <i
+                            key={`${entry.directiveId}-${entry.family}-${index}`}
+                            className={`evolve-plan-trace${traceState}`}
+                            role="img"
+                            tabIndex={0}
+                            aria-label={label}
+                            title={label}
+                          />
+                        );
+                      })}
+                    </span>
                   ) : null}
                 </span>
               );
             })}
           </div>
+
+          {families.length === 0 ? (
+            <div className="evolve-plan-empty">
+              No used lanes. Show all lanes to add a pin.
+            </div>
+          ) : null}
+
+          {families.map((family) => (
+            <div
+              className={`evolve-plan-lane is-${family}`}
+              key={family}
+              aria-label={`${DIRECTIVE_FAMILY_LABELS[family]} lane`}
+            >
+              <span className="evolve-plan-lane-name">
+                {DIRECTIVE_FAMILY_LABELS[family]}
+              </span>
+              <span
+                className="evolve-plan-seed-lock"
+                title="Cycle 0 is the locked seed"
+              >
+                lock
+              </span>
+              <button
+                type="button"
+                className="evolve-plan-lane-add"
+                aria-label={`Add ${DIRECTIVE_FAMILY_LABELS[family]} pin`}
+                disabled={disabled || planAtCapacity}
+                onPointerDown={(event) => {
+                  if (!scrollerRef.current) return;
+                  const cycle = Math.min(
+                    extent,
+                    cycleFromPointer(event, scrollerRef.current, cellWidth)
+                  );
+                  add(family, cycle);
+                }}
+                onClick={(event) => {
+                  if (event.detail === 0) {
+                    add(family, firstAvailableCycle(plan, family, extent));
+                  }
+                }}
+              />
+              {plan
+                .filter(
+                  (row) =>
+                    row.family === family &&
+                    row.fromCycle <= extent &&
+                    row.toCycle >= 1
+                )
+                .map((row) => {
+                  const visibleFrom = Math.max(1, row.fromCycle);
+                  const visibleTo = Math.min(extent, row.toCycle);
+                  const width = (visibleTo - visibleFrom + 1) * cellWidth;
+                  const pin = row.fromCycle === row.toCycle;
+                  return (
+                    <button
+                      type="button"
+                      key={row.id}
+                      className={`evolve-plan-directive${pin ? " is-pin" : " is-range"} is-pacing-${row.pacing}${row.enabled ? "" : " is-disabled"}${selectedId === row.id ? " is-selected" : ""}`}
+                      style={{
+                        left: LANE_LABEL_WIDTH + visibleFrom * cellWidth,
+                        width,
+                      }}
+                      aria-label={directiveTitle(row)}
+                      aria-pressed={selectedId === row.id}
+                      disabled={disabled}
+                      title={`${directiveTitle(row)}. Drag to move; drag the handles to resize.`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (event.detail === 0) select(row);
+                      }}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        beginDrag(event, row, "move");
+                      }}
+                      onPointerUp={endDrag}
+                      onPointerCancel={() => setDrag(null)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "ArrowLeft" ||
+                          event.key === "ArrowRight"
+                        ) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          nudgeDirective(
+                            row,
+                            event.key === "ArrowLeft" ? -1 : 1,
+                            event.shiftKey
+                          );
+                        } else if (
+                          event.key === "Delete" ||
+                          event.key === "Backspace"
+                        ) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          removeById(row.id);
+                        }
+                      }}
+                    >
+                      <i
+                        className="evolve-plan-resize is-start"
+                        aria-hidden="true"
+                        onPointerDown={(event) =>
+                          beginDrag(
+                            event as unknown as PointerEvent<HTMLButtonElement>,
+                            row,
+                            "resize-start"
+                          )
+                        }
+                      />
+                      <b>
+                        {row.magnitude?.mode === "perceptual"
+                          ? formatPerceptualScore(row.magnitude.targetMilli)
+                          : `${row.intensity}%`}
+                      </b>
+                      <ScopeGlyph row={row} totalBeats={totalBeats} />
+                      <i
+                        className="evolve-plan-resize is-end"
+                        aria-hidden="true"
+                        onPointerDown={(event) =>
+                          beginDrag(
+                            event as unknown as PointerEvent<HTMLButtonElement>,
+                            row,
+                            "resize-end"
+                          )
+                        }
+                      />
+                    </button>
+                  );
+                })}
+            </div>
+          ))}
         </div>
 
         <aside className="evolve-plan-inspector" aria-label="Directive inspector">
+          <section
+            className="evolve-plan-property-card"
+            aria-label="Property curve settings"
+          >
+            <div className="evolve-plan-curve-head">
+              <strong>Property curves</strong>
+              <label className="evolve-plan-curve-enable">
+                <input
+                  type="checkbox"
+                  aria-label={`${selectedPropertyLabel} curve enabled`}
+                  checked={selectedPropertyCurve?.enabled ?? false}
+                  disabled={disabled || !onPropertyCurvesChange}
+                  onChange={(event) =>
+                    applyPropertyCurves(
+                      setPropertyCurveSettings(
+                        propertyCurves,
+                        selectedProperty,
+                        { enabled: event.currentTarget.checked }
+                      )
+                    )
+                  }
+                />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <label className="rb-tool-field">
+              <span>Property</span>
+              <select
+                aria-label="Property curve"
+                value={selectedProperty}
+                disabled={disabled}
+                onChange={(event) =>
+                  setSelectedProperty(event.currentTarget.value as CurveProperty)
+                }
+              >
+                {PROPERTY_LANES.map((lane) => (
+                  <option key={lane.property} value={lane.property}>
+                    {lane.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="evolve-plan-curve-fields">
+              <label className="rb-tool-field">
+                <span>Tolerance</span>
+                <NumericField
+                  aria-label={`${selectedPropertyLabel} curve tolerance`}
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={(selectedPropertyCurve?.toleranceMilli ?? 5_000) / 1_000}
+                  disabled={disabled || !onPropertyCurvesChange}
+                  onValueCommit={(value) =>
+                    applyPropertyCurves(
+                      setPropertyCurveSettings(
+                        propertyCurves,
+                        selectedProperty,
+                        { toleranceMilli: Math.round(value * 1_000) }
+                      )
+                    )
+                  }
+                />
+              </label>
+              <label className="rb-tool-field">
+                <span>Weight</span>
+                <NumericField
+                  aria-label={`${selectedPropertyLabel} curve weight`}
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={selectedPropertyCurve?.weight ?? 50}
+                  disabled={disabled || !onPropertyCurvesChange}
+                  onValueCommit={(value) =>
+                    applyPropertyCurves(
+                      setPropertyCurveSettings(
+                        propertyCurves,
+                        selectedProperty,
+                        { weight: value }
+                      )
+                    )
+                  }
+                />
+              </label>
+            </div>
+            <p className="evolve-plan-curve-help">
+              {selectedPropertyLabel} · {selectedPropertyCurve?.points.length ?? 0}
+              {selectedPropertyCurve?.points.length === 1 ? " point" : " points"}.
+              Focus a lane cell and press Enter to create, arrows to adjust or
+              move, and Delete to remove.
+            </p>
+            {propertyCurveError ? (
+              <p className="evolve-plan-curve-error" role="alert">
+                {propertyCurveError}
+              </p>
+            ) : null}
+          </section>
           <section className="evolve-plan-curve-card" aria-label="Evolution curve">
             <div className="evolve-plan-curve-head">
               <strong>Evolution curve</strong>
@@ -1472,7 +2261,7 @@ export function EvolvePlanEditor({
               One step-size target per cycle for the whole piece, interpolated
               between points; the family weights choose what kind of change.
               Directive cycles override it; outside its points the piece
-              repeats. Click the Step size lane to place points; shift-click
+              repeats. Click the Pacing lane to place points; shift-click
               removes.
             </p>
             <div className="evolve-plan-curve-fields">
@@ -1533,7 +2322,7 @@ export function EvolvePlanEditor({
               </ul>
             ) : (
               <p className="evolve-plan-curve-empty">
-                No points yet — enable the curve and click the Step size lane.
+                No points yet — enable the curve and click the Pacing lane.
               </p>
             )}
             {curveError ? (
@@ -2080,11 +2869,11 @@ export function EvolvePlanEditor({
                           Any level
                           {inheritedOptions.subdivisionLevel !== null &&
                           inheritedOptions.subdivisionLevel !== undefined
-                            ? ` · inherited Level ${inheritedOptions.subdivisionLevel}`
+                            ? ` · inherited prime ${inheritedOptions.subdivisionLevel}`
                             : ""}
                         </option>
                         {subdivisionLevels.map((level) => (
-                          <option key={level.index} value={level.index}>
+                          <option key={level.prime} value={level.prime}>
                             {subdivisionLevelLabel(level)}
                           </option>
                         ))}

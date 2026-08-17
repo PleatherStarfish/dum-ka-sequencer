@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc e9095e57642798548aab88872d58bc699b66d26666b31ea52b3181584f45f2f2 # shrinks to floor = 0, ceiling_hint = 7, complexity_floor = 50001, complexity_ceiling_hint = 0, cycle = 1, seed_value = 0
 cc ce9c5ef10953329a6b9ef95cc3a6eae7a01d2310e8e05a83393c2e68e4844d8d # shrinks to floor = 7, ceiling_hint = 0, complexity_floor = 1, complexity_ceiling_hint = 0, cycle = 10, seed_value = 4174898677793473166
+cc 57219ee10b772232f5e432d6a602573c2448e43634a5e75319bda2f37e58d075 # shrinks to target = 24988, tol = 6262, cycle = 2, seed_value = 0

@@ -218,6 +218,24 @@
       "maxOperations": 4,
       "points": []
     },
+    "propertyCurves": [
+      {
+        "property": "occupancy",
+        "enabled": true,
+        "toleranceMilli": 4000,
+        "weight": 65,
+        "points": [
+          {
+            "cycle": 2,
+            "targetMilli": 35000
+          },
+          {
+            "cycle": 12,
+            "targetMilli": 70000
+          }
+        ]
+      }
+    ],
     "planLengthCycles": 20,
     "seedMode": {
       "type": "locked",
@@ -612,6 +630,24 @@
             "maxOperations": 4,
             "points": []
           },
+          "propertyCurves": [
+            {
+              "property": "occupancy",
+              "enabled": true,
+              "toleranceMilli": 4000,
+              "weight": 65,
+              "points": [
+                {
+                  "cycle": 2,
+                  "targetMilli": 35000
+                },
+                {
+                  "cycle": 12,
+                  "targetMilli": 70000
+                }
+              ]
+            }
+          ],
           "planLengthCycles": 20,
           "seedMode": {
             "type": "locked",

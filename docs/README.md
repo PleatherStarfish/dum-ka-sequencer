@@ -44,6 +44,9 @@ For platform work:
 - [DUMKA_PERCEPTUAL_DISTANCE.md](DUMKA_PERCEPTUAL_DISTANCE.md) — the exact
   fixed-point `v1` dissimilarity model, legal-prefix planner, calibration
   protocol, academic basis, limitations, and focused benchmarks.
+- [DUMKA_PROPERTY_CURVES.md](DUMKA_PROPERTY_CURVES.md) — the implemented
+  six-lane level-steering model, effective-band algebra, budgets, trace honesty,
+  and Evolve authoring contract.
 - [DUMKA_SPAN_TIES_AND_DENSITY.md](DUMKA_SPAN_TIES_AND_DENSITY.md) — the M3.9
   root-cause record and delivered tie-handshake/density-corridor contract.
 - [DUMKA_TREE_DEPTH.md](DUMKA_TREE_DEPTH.md) — the M3.95 working lattice,

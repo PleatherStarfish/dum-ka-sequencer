@@ -1162,6 +1162,243 @@
       "subdivision": 13
     }
   ],
+  "propertyProfiles": [
+    {
+      "cycleBeats": 1,
+      "onsets": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          6,
+          1
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 41667,
+        "densityMilli": 50000,
+        "diversityMilli": 75000,
+        "evennessMilli": 100000,
+        "occupancyMilli": 50000,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 8
+    },
+    {
+      "cycleBeats": 1,
+      "onsets": [
+        [
+          0,
+          4
+        ],
+        [
+          4,
+          2
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 16667,
+        "densityMilli": 25000,
+        "diversityMilli": 100000,
+        "evennessMilli": 100000,
+        "occupancyMilli": 75000,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 8
+    },
+    {
+      "cycleBeats": 1,
+      "onsets": [
+        [
+          0,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 50000,
+        "densityMilli": 25000,
+        "diversityMilli": 100000,
+        "evennessMilli": 85355,
+        "occupancyMilli": 25000,
+        "syncopationMilli": 26034
+      },
+      "rotationBeats": 0,
+      "subdivision": 8
+    },
+    {
+      "cycleBeats": 1,
+      "onsets": [],
+      "profile": {
+        "complexityMilli": 0,
+        "densityMilli": 0,
+        "diversityMilli": 0,
+        "evennessMilli": 0,
+        "occupancyMilli": 0,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 8
+    },
+    {
+      "cycleBeats": 2,
+      "onsets": [
+        [
+          0,
+          3
+        ],
+        [
+          5,
+          1
+        ],
+        [
+          11,
+          2
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 66667,
+        "densityMilli": 18750,
+        "diversityMilli": 57938,
+        "evennessMilli": 99388,
+        "occupancyMilli": 37500,
+        "syncopationMilli": 15833
+      },
+      "rotationBeats": 1,
+      "subdivision": 8
+    },
+    {
+      "cycleBeats": 4,
+      "onsets": [
+        [
+          0,
+          1
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          12,
+          1
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 0,
+        "densityMilli": 25000,
+        "diversityMilli": 0,
+        "evennessMilli": 100000,
+        "occupancyMilli": 25000,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 4
+    },
+    {
+      "cycleBeats": 8,
+      "onsets": [
+        [
+          0,
+          1
+        ],
+        [
+          9,
+          1
+        ],
+        [
+          18,
+          1
+        ],
+        [
+          27,
+          1
+        ],
+        [
+          36,
+          1
+        ],
+        [
+          45,
+          1
+        ],
+        [
+          54,
+          1
+        ],
+        [
+          63,
+          1
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 0,
+        "densityMilli": 11111,
+        "diversityMilli": 0,
+        "evennessMilli": 100000,
+        "occupancyMilli": 11111,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 9
+    },
+    {
+      "cycleBeats": 3,
+      "onsets": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          1
+        ],
+        [
+          4,
+          1
+        ]
+      ],
+      "profile": {
+        "complexityMilli": 0,
+        "densityMilli": 50000,
+        "diversityMilli": 0,
+        "evennessMilli": 100000,
+        "occupancyMilli": 50000,
+        "syncopationMilli": 0
+      },
+      "rotationBeats": 0,
+      "subdivision": 2
+    },
+    {
+      "cycleBeats": 4,
+      "onsets": [
+        [
+          0,
+          1
+        ]
+      ],
+      "profile": null,
+      "rotationBeats": 0,
+      "subdivision": 13
+    }
+  ],
   "spectrum": {
     "cases": [
       {

@@ -38,13 +38,14 @@ use super::barlow::{factor_descending, indispensability, stratification};
 use super::lattice::symmetric_difference;
 use super::perceptual::{
     perceptual_distance, PerceptualContext, PerceptualCycleDistance, PerceptualModel,
-    PerceptualModelVersion,
+    PerceptualModelVersion, StateProperties,
 };
 use super::plan::{
     active_directives, pin_quota, rotate_pin_quota, slot_range, ComplexityCorridorClamp,
-    ComplexityCorridorLimit, DensityCorridorClamp, DensityCorridorLimit, DirectiveFamily,
-    DirectiveMagnitude, DirectivePacing, DirectiveSkip, DirectiveTraceEntry, EvolutionCurve,
-    EvolutionDirective, PerceptualPacingTrace, RangeAccumulator, RotateDirection, SlotRange,
+    ComplexityCorridorLimit, CurveMiss, CurveProperty, CurveRail, DensityCorridorClamp,
+    DensityCorridorLimit, DirectiveFamily, DirectiveMagnitude, DirectivePacing, DirectiveSkip,
+    DirectiveTraceEntry, EvolutionCurve, EvolutionDirective, MissReason, PerceptualPacingTrace,
+    PropertyCurve, RangeAccumulator, RotateDirection, SlotRange, SteeringChoice, SteeringTarget,
     EVOLUTION_CURVE_TRACE_ID, LEGACY_EVOLUTION_TRACE_ID, MAX_MORPH_ALIGNMENT_WORK,
     MAX_MORPH_MICROSTEPS,
 };
@@ -203,6 +204,10 @@ pub struct EvolutionInputs<'a> {
     /// Authored directive plan. Empty means the exact legacy fold.
     pub plan: &'a [EvolutionDirective],
     pub curve: &'a EvolutionCurve,
+    /// Drawn per-property level curves (M3.97 §2). Empty means the exact
+    /// legacy/aggregate-curve fold; a curve steers only on directive-free
+    /// cycles inside its own point span.
+    pub property_curves: &'a [PropertyCurve],
     /// Authored only (no automation lane yet, documented).
     pub op_weights: OpWeights,
     pub automation: &'a GeneratorAutomationSampler<'a>,
@@ -280,6 +285,8 @@ struct DensityCorridor {
     ceiling_count: usize,
     floor_percent: u32,
     ceiling_percent: u32,
+    floor_milli: u32,
+    ceiling_milli: u32,
 }
 
 impl DensityCorridor {
@@ -298,7 +305,37 @@ impl DensityCorridor {
             ceiling_count,
             floor_percent,
             ceiling_percent,
+            floor_milli: floor_percent.saturating_mul(1_000),
+            ceiling_milli: ceiling_percent.saturating_mul(1_000),
         }
+    }
+
+    /// Intersect a drawn density band without round-tripping through percent.
+    /// Returns `None` when the milli intersection admits no integer onset count;
+    /// callers keep the pre-existing rail and report the conflict explicitly.
+    fn intersect_milli(self, floor_milli: u32, ceiling_milli: u32, slots: u32) -> Option<Self> {
+        let floor_milli = self.floor_milli.max(floor_milli);
+        let ceiling_milli = self.ceiling_milli.min(ceiling_milli);
+        if floor_milli > ceiling_milli {
+            return None;
+        }
+        let floor_count =
+            usize::try_from((u64::from(floor_milli) * u64::from(slots)).div_ceil(100_000))
+                .unwrap_or(usize::MAX);
+        let ceiling_count =
+            usize::try_from((u64::from(ceiling_milli) * u64::from(slots)) / 100_000)
+                .unwrap_or(usize::MAX);
+        if floor_count > ceiling_count {
+            return None;
+        }
+        Some(Self {
+            floor_count,
+            ceiling_count,
+            floor_percent: floor_milli / 1_000,
+            ceiling_percent: ceiling_milli / 1_000,
+            floor_milli,
+            ceiling_milli,
+        })
     }
 
     fn clamp_for(self, onset_count: usize) -> Option<DensityCorridorClamp> {
@@ -321,6 +358,17 @@ impl DensityCorridor {
         DensityCorridorRange {
             floor: self.floor_percent,
             ceiling: self.ceiling_percent,
+            floor_milli: None,
+            ceiling_milli: None,
+        }
+    }
+
+    const fn exact_range(self) -> DensityCorridorRange {
+        DensityCorridorRange {
+            floor: self.floor_percent,
+            ceiling: self.ceiling_percent,
+            floor_milli: Some(self.floor_milli),
+            ceiling_milli: Some(self.ceiling_milli),
         }
     }
 }
@@ -796,6 +844,7 @@ fn normalize_to_density_corridor(
 
 /// Deterministically push or pull attack depth into the active rail. Every
 /// onset is touched at most once per pass, and every move is trial-projected.
+#[allow(clippy::too_many_arguments)] // fold environment; same precedent as apply_directive
 fn normalize_to_complexity_corridor(
     seed: &CompiledSeed,
     state: &EvolutionState,
@@ -1001,6 +1050,7 @@ fn legacy_corridor_trace(
         corridor_clamp: density,
         complexity_corridor_clamp: complexity,
         perceptual: None,
+        steering_choices: Vec::new(),
     })
 }
 
@@ -1191,6 +1241,7 @@ fn step_scoped(
             corridor_clamp,
             complexity_corridor_clamp,
             perceptual: None,
+            steering_choices: Vec::new(),
         }
     };
     let normalization_trace = || {
@@ -1857,6 +1908,10 @@ fn morph_alignment(
     best.map(|(_, _, pairs)| pairs).unwrap_or_default()
 }
 
+/// Greedy lower-bound estimate of remaining morph micro-steps. Production
+/// now paces and applies Morph through the exact A* `morph_schedule`; this
+/// estimate is retained only as a test oracle for that schedule's length.
+#[cfg(test)]
 fn morph_remaining_steps(
     directive: &EvolutionDirective,
     state: &EvolutionState,
@@ -1905,105 +1960,6 @@ fn morph_remaining_steps(
         .sum()
 }
 
-fn morph_step_candidates(
-    directive: &EvolutionDirective,
-    state: &EvolutionState,
-    seed: &CompiledSeed,
-    window: Option<SlotRange>,
-) -> Vec<EvolutionState> {
-    let physical = materialize_rotation(seed, state);
-    let Some(target) = morph_target_state(directive, seed) else {
-        return Vec::new();
-    };
-    let Some(slots) = seed.total_beats.checked_mul(seed.required_subdivision) else {
-        return Vec::new();
-    };
-    let pairs = morph_alignment(&physical, &target, slots);
-    let mut candidates = Vec::with_capacity(pairs.len());
-    for pair in pairs {
-        match (pair.current, pair.target) {
-            (Some(current_index), Some(target_index)) => {
-                let source = &physical.onsets[current_index];
-                let target_onset = &target.onsets[target_index];
-                if !directive_slot_allowed(directive, target_onset.slot, seed.required_subdivision)
-                {
-                    continue;
-                }
-                if !window.map_or(true, |range| {
-                    range.contains_interval(source.slot, source.slot.saturating_add(source.dur))
-                        && range.contains_interval(
-                            target_onset.slot,
-                            target_onset.slot.saturating_add(target_onset.dur),
-                        )
-                }) {
-                    continue;
-                }
-                if source.slot == target_onset.slot {
-                    if source.dur == target_onset.dur && source.class == target_onset.class {
-                        continue;
-                    }
-                    let mut next = physical.clone();
-                    next.onsets[current_index].dur = target_onset.dur;
-                    next.onsets[current_index].class = target_onset.class.clone();
-                    candidates.push(next);
-                    continue;
-                }
-                let forward = (target_onset.slot + slots - source.slot) % slots;
-                let backward = (source.slot + slots - target_onset.slot) % slots;
-                let adjacent = if forward < backward {
-                    vec![(source.slot + 1) % slots]
-                } else if backward < forward {
-                    vec![(source.slot + slots - 1) % slots]
-                } else {
-                    vec![(source.slot + slots - 1) % slots, (source.slot + 1) % slots]
-                };
-                for slot in adjacent {
-                    if !directive_slot_allowed(directive, slot, seed.required_subdivision) {
-                        continue;
-                    }
-                    let mut next = physical.clone();
-                    next.onsets[current_index].slot = slot;
-                    next.onsets.sort_by_key(|onset| onset.slot);
-                    candidates.push(next);
-                }
-            }
-            (Some(current_index), None) if physical.onsets.len() > 1 => {
-                let onset = &physical.onsets[current_index];
-                if !directive_slot_allowed(directive, onset.slot, seed.required_subdivision) {
-                    continue;
-                }
-                if !window.map_or(true, |range| {
-                    range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
-                }) {
-                    continue;
-                }
-                let mut next = physical.clone();
-                next.onsets.remove(current_index);
-                candidates.push(next);
-            }
-            (None, Some(target_index)) => {
-                let onset = &target.onsets[target_index];
-                if !directive_slot_allowed(directive, onset.slot, seed.required_subdivision) {
-                    continue;
-                }
-                if !window.map_or(true, |range| {
-                    range.contains_interval(onset.slot, onset.slot.saturating_add(onset.dur))
-                }) {
-                    continue;
-                }
-                let mut next = physical.clone();
-                let at = next
-                    .onsets
-                    .partition_point(|current| current.slot < onset.slot);
-                next.onsets.insert(at, onset.clone());
-                candidates.push(next);
-            }
-            _ => {}
-        }
-    }
-    candidates
-}
-
 pub(crate) fn validate_morph_target_work(
     directive_id: u64,
     seed: &CompiledSeed,
@@ -2044,8 +2000,12 @@ pub(crate) fn validate_morph_target_work(
 }
 
 fn directive_slot_allowed(directive: &EvolutionDirective, slot: u32, working: u32) -> bool {
-    directive.options.subdivision_level.map_or(true, |level| {
-        super::depth::slot_level_index(slot, working) == Some(level)
+    directive.options.subdivision_level.map_or(true, |prime| {
+        // `subdivisionLevel` names an enabled palette PRIME (DUMKA_TREE_DEPTH
+        // §7, DUMKA_EVOLVE_PLAN): a slot qualifies iff its reduced within-beat
+        // denominator is divisible by that prime — i.e. the position exists
+        // only because that prime refined the working lattice.
+        prime != 0 && super::depth::reduced_denominator(slot, working) % prime == 0
     })
 }
 
@@ -2084,6 +2044,9 @@ fn directive_candidate_count(
     template: &[u32],
     beat_level: u32,
     window: Option<SlotRange>,
+    inputs: &EvolutionInputs<'_>,
+    corridor: DensityCorridor,
+    complexity_corridor: ComplexityCorridor,
 ) -> usize {
     let slots = seed.total_beats * seed.required_subdivision;
     match directive.family {
@@ -2176,7 +2139,27 @@ fn directive_candidate_count(
         .count(),
         DirectiveFamily::Stochastic => 1,
         DirectiveFamily::Morph => {
-            morph_remaining_steps(directive, state, seed, window).min(MAX_MORPH_MICROSTEPS as usize)
+            // The quota is the exact A* micro-step count to the target under
+            // the active corridors, so an intensity-100 pin reaches the
+            // endpoint in one cycle (the greedy estimate could undercount a
+            // blocked-arc detour and stall short). A failed search yields 0
+            // candidates — the operator then traces the typed skip.
+            morph_schedule(
+                directive,
+                state,
+                seed,
+                inputs,
+                window,
+                corridor,
+                complexity_corridor,
+            )
+            .map(|schedule| schedule.len())
+            // Infeasible under a rail/projection still requests one operation
+            // so the apply stage re-runs the search, fails identically, and
+            // records the typed skip/clamp — a blocked morph is traced, not
+            // silently zero.
+            .unwrap_or(1)
+            .min(MAX_MORPH_MICROSTEPS as usize)
         }
     }
 }
@@ -2315,10 +2298,7 @@ fn morph_search_neighbors(
     };
 
     for (index, onset) in state.onsets.iter().enumerate() {
-        for slot in [
-            (onset.slot + slots - 1) % slots,
-            (onset.slot + 1) % slots,
-        ] {
+        for slot in [(onset.slot + slots - 1) % slots, (onset.slot + 1) % slots] {
             if slot == onset.slot
                 || !directive_slot_allowed(directive, slot, working)
                 || !onset_move_fits_window(state, onset.slot, slot, window)
@@ -2404,15 +2384,23 @@ fn morph_schedule(
         return Err(DirectiveSkip::Exhausted.into());
     };
     if candidate_failure(seed, &target, inputs, slots, corridor, complexity_corridor).is_some() {
-        return Err(candidate_failure(seed, &target, inputs, slots, corridor, complexity_corridor)
-            .expect("checked target failure"));
+        return Err(
+            candidate_failure(seed, &target, inputs, slots, corridor, complexity_corridor)
+                .expect("checked target failure"),
+        );
     }
 
     let start_key = morph_state_key(&start);
     let target_key = morph_state_key(&target);
     let mut open = std::collections::BinaryHeap::new();
     let initial_h = morph_search_heuristic(&start, &target);
-    open.push(std::cmp::Reverse((initial_h, initial_h, 0_u32, 0_u32, start_key.clone())));
+    open.push(std::cmp::Reverse((
+        initial_h,
+        initial_h,
+        0_u32,
+        0_u32,
+        start_key.clone(),
+    )));
     let mut best = std::collections::BTreeMap::from([(start_key.clone(), (0_u32, 0_u32))]);
     let mut states = std::collections::BTreeMap::from([(start_key.clone(), start)]);
     let mut parent = std::collections::BTreeMap::<MorphStateKey, MorphStateKey>::new();
@@ -2860,32 +2848,27 @@ fn apply_one_directive_operation(
         }
         DirectiveFamily::Stochastic => return Err(DirectiveSkip::Exhausted.into()),
         DirectiveFamily::Morph => {
-            let mut candidates = morph_step_candidates(directive, state, seed, window);
-            if !candidates.is_empty() {
-                let start = usize::try_from(ordinal).unwrap_or(usize::MAX) % candidates.len();
-                candidates.rotate_left(start);
-            }
-            let mut first_failure = None;
-            for morph_candidate in candidates {
-                if let Some(failure) = candidate_failure(
-                    seed,
-                    &morph_candidate,
-                    inputs,
-                    slots,
-                    corridor,
-                    complexity_corridor,
-                ) {
-                    first_failure.get_or_insert(failure);
-                    continue;
-                }
-                // Morph alignment may expose an insertion before moving the
-                // onset that currently occupies its target interval. Search
-                // the deterministic one-step frontier for the first legal
-                // microstep instead of letting that temporary overlap stall
-                // an otherwise reachable target.
-                return Ok((morph_candidate, None));
-            }
-            return Err(first_failure.unwrap_or_else(|| DirectiveSkip::Exhausted.into()));
+            // Endpoint exactness is a property of the chosen path, not a hope
+            // pinned to greedy arc selection. The bounded deterministic A*
+            // returns a full micro-step schedule that provably reaches the
+            // target (or a typed failure), so we apply its first step; each
+            // later operation re-runs it from the new state and converges
+            // exactly. The old greedy shortest-arc picker could commit to a
+            // blocked arc and stall short of a reachable target — proven by
+            // morph_reaches_every_target_endpoint_exactly.
+            let schedule = morph_schedule(
+                directive,
+                state,
+                seed,
+                inputs,
+                window,
+                corridor,
+                complexity_corridor,
+            )?;
+            return match schedule.into_iter().next() {
+                Some(step) => Ok((step, None)),
+                None => Err(DirectiveSkip::Exhausted.into()),
+            };
         }
     }
     if let Some(failure) = candidate_failure(
@@ -3066,6 +3049,7 @@ fn apply_evolution_curve(
         corridor_clamp: None,
         complexity_corridor_clamp: None,
         perceptual: None,
+        steering_choices: Vec::new(),
     };
     let complexity_corridor = sampled_complexity_corridor(inputs, cycle);
     let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
@@ -3214,6 +3198,470 @@ fn apply_evolution_curve(
     (best_state, trace)
 }
 
+/// The realized functional a [`CurveProperty`] tracks, read off a state's
+/// six-field profile (M3.97 §1).
+fn property_value(profile: &StateProperties, property: CurveProperty) -> u32 {
+    match property {
+        CurveProperty::Density => profile.density_milli,
+        CurveProperty::Complexity => profile.complexity_milli,
+        CurveProperty::Syncopation => profile.syncopation_milli,
+        CurveProperty::Evenness => profile.evenness_milli,
+        CurveProperty::Occupancy => profile.occupancy_milli,
+        CurveProperty::Diversity => profile.diversity_milli,
+    }
+}
+
+/// Whether any drawn property curve has an acceptance band at exactly `cycle`
+/// (i.e. `cycle` lies inside that curve's point span). Gates the steering
+/// branch per directive-free cycle.
+fn property_curves_active_at(inputs: &EvolutionInputs<'_>, cycle: u64) -> bool {
+    inputs
+        .property_curves
+        .iter()
+        .any(|curve| curve.band_at(cycle).is_some())
+}
+
+struct PropertySteeringOutcome {
+    state: EvolutionState,
+    trace: DirectiveTraceEntry,
+    curve_misses: Vec<CurveMiss>,
+    density_corridor: DensityCorridorRange,
+    complexity_corridor: ComplexityCorridorRange,
+}
+
+struct SteeringCandidate {
+    state: EvolutionState,
+    profile: StateProperties,
+    error: u64,
+    property_error: u64,
+    distance: u32,
+    family: DirectiveFamily,
+    density_clamp: Option<DensityCorridorClamp>,
+}
+
+/// Steer one directive-free cycle toward the drawn per-property levels
+/// (M3.97 §4). The error vector `Σ weightᵢ × gapᵢ` over the active curves says
+/// *what kind* of operator to apply; the aggregate pacing curve (when active)
+/// caps *how much* one cycle may travel; the drawn levels say *where to go*.
+///
+/// Density and Complexity curves additionally tighten their corridors, so a
+/// breach of those two is clamped by the shared `candidate_failure` predicate
+/// exactly like a global corridor; the other four functionals have no
+/// micro-operators and are steered only — an unreachable band is a miss, not a
+/// silent nudge. Each step evaluates one canonical candidate per family (≤8)
+/// and applies the greatest error reduction; ties resolve by the fixed family
+/// band order (a total order, so no further salt is consulted). Error is
+/// strictly decreasing per applied step, so the bounded loop always converges
+/// or stalls into a traced miss — never oscillates.
+#[allow(clippy::too_many_arguments)] // fold environment; same precedent as apply_evolution_curve
+fn apply_property_steering(
+    state: &EvolutionState,
+    seed: &CompiledSeed,
+    ranks: &[u32],
+    template: &[u32],
+    beat_level: u32,
+    inputs: &EvolutionInputs<'_>,
+    cycle: u64,
+    corridor: DensityCorridor,
+    complexity_work_budget: &mut ComplexityNormalizationBudget,
+) -> PropertySteeringOutcome {
+    let slots = seed.total_beats * seed.required_subdivision;
+    // The bands active this cycle, in the fixed lane order (density, complexity,
+    // then the other four) — the deterministic tie-break order.
+    let active_curves: Vec<(CurveProperty, u32, u32, u32)> = CurveProperty::ALL
+        .iter()
+        .filter_map(|&property| {
+            inputs
+                .property_curves
+                .iter()
+                .find(|curve| curve.property == property)
+                .and_then(|curve| {
+                    curve
+                        .band_at(cycle)
+                        .map(|(floor, ceiling)| (property, curve.weight, floor, ceiling))
+                })
+        })
+        .collect();
+
+    // Density/Complexity curves are hard rails: intersect each with the sampled
+    // corridor so a breach is clamped like any global corridor. The static
+    // intersection check (validation) guarantees a non-empty result against the
+    // authored corridor; a tighter automated corridor that empties it degrades
+    // to a clamp, which surfaces honestly in the trace.
+    let mut effective_density = corridor;
+    let (sampled_complexity, complexity_automated) =
+        sampled_complexity_corridor_with_presence(inputs, cycle);
+    let (_, density_automated) = sampled_density_corridor_with_presence(inputs, cycle, slots);
+    let mut effective_complexity = sampled_complexity;
+    let mut rail_conflicts = [None; 6];
+    for &(property, _weight, floor, ceiling) in &active_curves {
+        match property {
+            CurveProperty::Density => {
+                if let Some(intersection) = effective_density.intersect_milli(floor, ceiling, slots)
+                {
+                    effective_density = intersection;
+                } else {
+                    let drawn_floor_count = (u64::from(floor) * u64::from(slots)).div_ceil(100_000);
+                    let drawn_ceiling_count = (u64::from(ceiling) * u64::from(slots)) / 100_000;
+                    rail_conflicts[property.index()] =
+                        Some(if drawn_floor_count > drawn_ceiling_count {
+                            CurveRail::DiscreteGrid
+                        } else if density_automated {
+                            CurveRail::Automation
+                        } else {
+                            CurveRail::GlobalCorridor
+                        });
+                }
+            }
+            CurveProperty::Complexity => {
+                let intersected_floor = effective_complexity.floor_milli.max(floor);
+                let intersected_ceiling = effective_complexity.ceiling_milli.min(ceiling);
+                if intersected_floor > intersected_ceiling {
+                    rail_conflicts[property.index()] = Some(if complexity_automated {
+                        CurveRail::Automation
+                    } else {
+                        CurveRail::GlobalCorridor
+                    });
+                    // The sampled ceiling remains the hard cap. Re-establish
+                    // the crossed-pair invariant instead of deadlocking every
+                    // candidate against floor > ceiling.
+                    effective_complexity = ComplexityCorridor {
+                        floor_milli: intersected_ceiling,
+                        ceiling_milli: intersected_ceiling,
+                    };
+                } else {
+                    effective_complexity = ComplexityCorridor {
+                        floor_milli: intersected_floor,
+                        ceiling_milli: intersected_ceiling,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut trace = DirectiveTraceEntry {
+        cycle,
+        directive_id: EVOLUTION_CURVE_TRACE_ID,
+        family: DirectiveFamily::Stochastic,
+        requested: 0,
+        applied: 0,
+        skipped: DirectiveSkip::None,
+        corridor_clamp: None,
+        complexity_corridor_clamp: None,
+        perceptual: None,
+        steering_choices: Vec::new(),
+    };
+
+    // Candidate zero: bring the inherited state into the effective rails.
+    let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
+        seed,
+        state,
+        ranks,
+        inputs,
+        cycle,
+        None,
+        effective_density,
+        effective_complexity,
+        complexity_work_budget,
+    );
+    trace.corridor_clamp = density_clamp;
+    trace.complexity_corridor_clamp = complexity_clamp;
+
+    let context = PerceptualContext::new(
+        seed.total_beats,
+        seed.required_subdivision,
+        ranks.to_vec(),
+        template.to_vec(),
+    )
+    .expect("validated Barlow grid constructs a perceptual context");
+    let model = PerceptualModel::for_version(inputs.curve.model_version);
+
+    // `Some(0)` is a literal hold. Only a cycle outside the authored point span
+    // is absent. Pacing participates in the objective on both sides while its
+    // ceiling remains a hard cap, so a satisfied property band cannot freeze a
+    // composition below its authored pace.
+    let pacing_target = inputs.curve.target_milli_in_span(cycle);
+    let pacing_band = pacing_target.map(|target| {
+        (
+            target.saturating_sub(inputs.curve.tolerance_milli),
+            target
+                .saturating_add(inputs.curve.tolerance_milli)
+                .min(100_000),
+        )
+    });
+
+    let error_of = |profile: &StateProperties| -> u64 {
+        active_curves
+            .iter()
+            .map(|&(property, weight, floor, ceiling)| {
+                let value = property_value(profile, property);
+                // The band [floor, ceiling] has floor ≤ ceiling, so at most one
+                // side is breached; the other saturating difference is zero.
+                let gap = floor.saturating_sub(value) + value.saturating_sub(ceiling);
+                u64::from(weight) * u64::from(gap)
+            })
+            .sum()
+    };
+    let pacing_gap = |distance: u32| -> u32 {
+        pacing_band.map_or(0, |(floor, ceiling)| {
+            floor.saturating_sub(distance) + distance.saturating_sub(ceiling)
+        })
+    };
+    const PACING_WEIGHT: u64 = 50;
+
+    let families = [
+        DirectiveFamily::BarlowRemove,
+        DirectiveFamily::BarlowAdd,
+        DirectiveFamily::Rotate,
+        DirectiveFamily::Syncopate,
+        DirectiveFamily::Desyncopate,
+        DirectiveFamily::Fragment,
+        DirectiveFamily::Consolidate,
+        DirectiveFamily::Euclid,
+    ];
+
+    let mut current = normalized.clone();
+    let mut current_profile = context.state_properties(&current);
+    let mut current_property_error = error_of(&current_profile);
+    let mut current_distance = pacing_target
+        .map(|_| perceptual_distance(state, &current, &context, &model).total_milli)
+        .unwrap_or(0);
+    let mut current_error = current_property_error
+        .saturating_add(PACING_WEIGHT.saturating_mul(u64::from(pacing_gap(current_distance))));
+    let mut best_clamp = trace.corridor_clamp;
+    // Why steering stopped short, if it did — carried into each miss. Defaults
+    // to the operation-budget cap (the loop ran its full length still short).
+    let mut stop_reason = MissReason::BudgetCapped;
+    let mut last_step_pacing_blocked = [false; 6];
+    let mut last_step_projection = false;
+    let mut stall_failure: Option<DirectiveApplyFailure> = None;
+
+    for offset in 0..u64::from(inputs.curve.max_operations) {
+        if current_error == 0 {
+            break;
+        }
+        let mut best: Option<SteeringCandidate> = None;
+        let mut step_saw_pacing_cap = false;
+        let mut step_pacing_blocked = [false; 6];
+        let mut step_projection = false;
+        let mut step_failure: Option<DirectiveApplyFailure> = None;
+        for family in families {
+            trace.requested = trace.requested.saturating_add(1);
+            let synthetic = EvolutionDirective {
+                id: EVOLUTION_CURVE_TRACE_ID,
+                order: 0,
+                enabled: true,
+                from_cycle: cycle,
+                to_cycle: cycle,
+                family,
+                pacing: DirectivePacing::PerCycle,
+                magnitude: DirectiveMagnitude::OperationQuota,
+                intensity: 0,
+                scope: None,
+                options: super::plan::DirectiveOptions::default(),
+            };
+            match apply_one_directive_operation(
+                &synthetic,
+                &current,
+                seed,
+                ranks,
+                template,
+                beat_level,
+                inputs,
+                cycle,
+                cycle,
+                offset,
+                None,
+                effective_density,
+                effective_complexity,
+            ) {
+                Ok((candidate, clamp)) => {
+                    let candidate_profile = context.state_properties(&candidate);
+                    let candidate_property_error = error_of(&candidate_profile);
+                    let candidate_distance = pacing_target
+                        .map(|_| {
+                            perceptual_distance(state, &candidate, &context, &model).total_milli
+                        })
+                        .unwrap_or(0);
+                    let candidate_error = candidate_property_error.saturating_add(
+                        PACING_WEIGHT.saturating_mul(u64::from(pacing_gap(candidate_distance))),
+                    );
+                    if let Some((_, cap)) = pacing_band {
+                        if candidate_distance > cap {
+                            if candidate_error < current_error {
+                                step_saw_pacing_cap = true;
+                                for &(property, _weight, floor, ceiling) in &active_curves {
+                                    let current_value = property_value(&current_profile, property);
+                                    let candidate_value =
+                                        property_value(&candidate_profile, property);
+                                    let current_gap = floor.saturating_sub(current_value)
+                                        + current_value.saturating_sub(ceiling);
+                                    let candidate_gap = floor.saturating_sub(candidate_value)
+                                        + candidate_value.saturating_sub(ceiling);
+                                    if candidate_gap < current_gap {
+                                        step_pacing_blocked[property.index()] = true;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    if candidate_error < current_error
+                        && match &best {
+                            Some(best) => candidate_error < best.error,
+                            None => true,
+                        }
+                    {
+                        best = Some(SteeringCandidate {
+                            state: candidate,
+                            profile: candidate_profile,
+                            error: candidate_error,
+                            property_error: candidate_property_error,
+                            distance: candidate_distance,
+                            family,
+                            density_clamp: clamp,
+                        });
+                    }
+                }
+                Err(failure) => {
+                    step_projection |= failure.skipped == DirectiveSkip::Projection;
+                    if step_failure.is_none()
+                        || (failure.skipped == DirectiveSkip::Projection
+                            && step_failure
+                                .as_ref()
+                                .is_some_and(|prior| prior.skipped != DirectiveSkip::Projection))
+                    {
+                        step_failure = Some(failure);
+                    }
+                }
+            }
+        }
+        match best {
+            Some(candidate) => {
+                let mut chosen_for = SteeringTarget::Pacing;
+                let mut best_reduction = PACING_WEIGHT.saturating_mul(u64::from(
+                    pacing_gap(current_distance).saturating_sub(pacing_gap(candidate.distance)),
+                ));
+                for &(property, weight, floor, ceiling) in &active_curves {
+                    let current_value = property_value(&current_profile, property);
+                    let candidate_value = property_value(&candidate.profile, property);
+                    let current_gap =
+                        floor.saturating_sub(current_value) + current_value.saturating_sub(ceiling);
+                    let candidate_gap = floor.saturating_sub(candidate_value)
+                        + candidate_value.saturating_sub(ceiling);
+                    let reduction = u64::from(weight)
+                        .saturating_mul(u64::from(current_gap.saturating_sub(candidate_gap)));
+                    if reduction > best_reduction {
+                        best_reduction = reduction;
+                        chosen_for = property.into();
+                    }
+                }
+                current = candidate.state;
+                current_profile = candidate.profile;
+                current_error = candidate.error;
+                current_property_error = candidate.property_error;
+                current_distance = candidate.distance;
+                if candidate.density_clamp.is_some() {
+                    best_clamp = candidate.density_clamp;
+                }
+                if trace.steering_choices.is_empty() {
+                    trace.family = candidate.family;
+                }
+                trace.steering_choices.push(SteeringChoice {
+                    family: candidate.family,
+                    chosen_for,
+                });
+                trace.applied = trace.applied.saturating_add(1);
+            }
+            // No admissible candidate reduced the error this step: a stall.
+            // Attribute it — a pacing cap, a projection frontier, or simply no
+            // reducing operator — and stop rather than churn.
+            None => {
+                stop_reason = if step_saw_pacing_cap {
+                    MissReason::PacingCapped
+                } else if step_projection {
+                    MissReason::Projection
+                } else {
+                    MissReason::NoReducingCandidate
+                };
+                last_step_pacing_blocked = step_pacing_blocked;
+                last_step_projection = step_projection;
+                stall_failure = step_failure;
+                break;
+            }
+        }
+    }
+
+    trace.corridor_clamp = best_clamp;
+    if current_error > 0 {
+        trace.skipped = if stop_reason == MissReason::Projection {
+            DirectiveSkip::Projection
+        } else {
+            DirectiveSkip::Exhausted
+        };
+        if let Some(failure) = stall_failure {
+            if failure.skipped != DirectiveSkip::None {
+                trace.skipped = failure.skipped;
+            }
+            if failure.corridor_clamp.is_some() {
+                trace.corridor_clamp = failure.corridor_clamp;
+            }
+            if failure.complexity_corridor_clamp.is_some() {
+                trace.complexity_corridor_clamp = failure.complexity_corridor_clamp;
+            }
+        }
+    }
+    if let Some(target) = pacing_target {
+        let actual = current_distance;
+        trace.perceptual = Some(PerceptualPacingTrace {
+            model_version: inputs.curve.model_version,
+            actual_milli: actual,
+            target_milli: target,
+            tolerance_milli: inputs.curve.tolerance_milli,
+            reached: actual.abs_diff(target) <= inputs.curve.tolerance_milli,
+            exhausted: pacing_gap(actual) > 0,
+        });
+    }
+    // A remaining gap after steering is an honest miss (§5): name each property
+    // still outside its band, the integer distance to it, and why steering
+    // could not close it. Empty when every active band was satisfied.
+    let mut curve_misses = Vec::new();
+    if current_property_error > 0 {
+        for &(property, _weight, floor, ceiling) in &active_curves {
+            let value = property_value(&current_profile, property);
+            let gap = floor.saturating_sub(value) + value.saturating_sub(ceiling);
+            if gap > 0 {
+                let rail = rail_conflicts[property.index()];
+                let reason = if rail.is_some() {
+                    MissReason::RailBlocked
+                } else if last_step_pacing_blocked[property.index()] {
+                    MissReason::PacingCapped
+                } else if stop_reason == MissReason::BudgetCapped {
+                    MissReason::BudgetCapped
+                } else if last_step_projection {
+                    MissReason::Projection
+                } else {
+                    MissReason::NoReducingCandidate
+                };
+                curve_misses.push(CurveMiss {
+                    property,
+                    gap_milli: gap,
+                    reason,
+                    rail,
+                });
+            }
+        }
+    }
+    PropertySteeringOutcome {
+        state: current,
+        trace,
+        curve_misses,
+        density_corridor: effective_density.exact_range(),
+        complexity_corridor: effective_complexity.range(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // fold environment; same precedent as step
 fn apply_directive(
     directive: &EvolutionDirective,
@@ -3240,6 +3688,7 @@ fn apply_directive(
         corridor_clamp: None,
         complexity_corridor_clamp: None,
         perceptual: None,
+        steering_choices: Vec::new(),
     };
     let window = match slot_range(directive.scope, seed.total_beats, seed.required_subdivision) {
         Ok(window) => window,
@@ -3330,6 +3779,9 @@ fn apply_directive(
         template,
         beat_level,
         window,
+        inputs,
+        corridor,
+        complexity_corridor,
     );
     if let DirectiveMagnitude::Perceptual {
         model_version,
@@ -3549,6 +4001,10 @@ fn move_onset(state: &mut EvolutionState, from: u32, to: u32) {
 pub struct EvolvedSeedResolution {
     pub seed: CompiledSeed,
     pub trace: Vec<DirectiveTraceEntry>,
+    /// Per-property misses for the requested steered cycle (M3.97 §5): each
+    /// names a drawn band the steering search could not reach and why. Empty
+    /// on non-steered cycles and whenever every active band was satisfied.
+    pub curve_misses: Vec<CurveMiss>,
     /// The final requested cycle's effective percent rail. This is captured
     /// by the same ordered fold that enforced it, so preview cannot drift
     /// from automation, scope, or directive precedence.
@@ -3652,6 +4108,7 @@ fn unsupported_grid_corridor_resolution(
                             corridor_clamp: None,
                             complexity_corridor_clamp: None,
                             perceptual: None,
+                            steering_choices: Vec::new(),
                         })
                 }));
                 requested_cycle_trace.extend(legacy_corridor_trace(
@@ -3675,6 +4132,7 @@ fn unsupported_grid_corridor_resolution(
                                 corridor_clamp: None,
                                 complexity_corridor_clamp: None,
                                 perceptual: None,
+                                steering_choices: Vec::new(),
                             });
                         }
                     }
@@ -3717,6 +4175,7 @@ fn unsupported_grid_corridor_resolution(
                                         corridor_clamp: density_clamp,
                                         complexity_corridor_clamp: complexity_clamp,
                                         perceptual: None,
+                                        steering_choices: Vec::new(),
                                     },
                                 ),
                             );
@@ -3730,6 +4189,7 @@ fn unsupported_grid_corridor_resolution(
     EvolvedSeedResolution {
         seed: state_to_compiled(seed, &state),
         trace: requested_cycle_trace,
+        curve_misses: Vec::new(),
         density_corridor: requested_density_corridor,
         complexity_corridor: requested_complexity_corridor,
         state_complexity_milli: super::depth::state_complexity_milli(
@@ -3840,6 +4300,20 @@ pub(crate) fn validate_evolution_grid(
     Ok(())
 }
 
+/// Whether any drawn property curve would steer at least one folded cycle in
+/// `1..=inputs.cycle`. A curve first steers at its earliest point's cycle, so
+/// this is the cheap feature-off gate (empty `property_curves` ⇒ false ⇒ the
+/// legacy O(1) short-circuit is preserved byte for byte).
+fn property_curves_active_through(inputs: &EvolutionInputs<'_>) -> bool {
+    inputs.property_curves.iter().any(|curve| {
+        curve.is_active()
+            && curve
+                .points
+                .first()
+                .is_some_and(|point| point.cycle <= inputs.cycle)
+    })
+}
+
 pub fn evolved_seed_with_trace(
     seed: &CompiledSeed,
     inputs: &EvolutionInputs<'_>,
@@ -3849,6 +4323,7 @@ pub fn evolved_seed_with_trace(
         return Some(EvolvedSeedResolution {
             seed: seed.clone(),
             trace: Vec::new(),
+            curve_misses: Vec::new(),
             density_corridor: sampled_density_corridor(inputs, 0, slots).percent_range(),
             complexity_corridor: sampled_complexity_corridor(inputs, 0).range(),
             state_complexity_milli: super::depth::state_complexity_milli(
@@ -3898,6 +4373,7 @@ pub fn evolved_seed_with_trace(
         && !evolution_is_automated
         && !corridor_is_active
         && !inputs.curve.is_active()
+        && !property_curves_active_through(inputs)
     {
         let verbatim_distance = stratification(seed.total_beats, seed.required_subdivision)
             .and_then(|strata| {
@@ -3909,6 +4385,7 @@ pub fn evolved_seed_with_trace(
         return Some(EvolvedSeedResolution {
             seed: seed.clone(),
             trace: Vec::new(),
+            curve_misses: Vec::new(),
             density_corridor: requested_global_corridor.percent_range(),
             complexity_corridor: sampled_complexity_corridor(inputs, inputs.cycle).range(),
             state_complexity_milli: super::depth::state_complexity_milli(
@@ -3940,6 +4417,7 @@ pub fn evolved_seed_with_trace(
     let mut leash_anchor = initial_state;
     let mut accumulators = std::collections::BTreeMap::<u64, RangeAccumulator>::new();
     let mut requested_cycle_trace = Vec::new();
+    let mut requested_curve_misses: Vec<CurveMiss> = Vec::new();
     let mut requested_density_corridor = requested_global_corridor.percent_range();
     let mut requested_complexity_corridor =
         sampled_complexity_corridor(inputs, inputs.cycle).range();
@@ -3958,7 +4436,31 @@ pub fn evolved_seed_with_trace(
         };
         let active = active_directives(inputs.plan, cycle);
         if active.is_empty() {
-            if inputs.curve.enabled {
+            if property_curves_active_at(inputs, cycle) {
+                // A drawn property curve owns this directive-free cycle: steer
+                // toward its levels under the pacing cap (M3.97 §4). Property
+                // curves take precedence over the aggregate pacing curve, which
+                // becomes the steering cap rather than a separate driver.
+                let outcome = apply_property_steering(
+                    &state,
+                    seed,
+                    &ranks,
+                    &template,
+                    beat_level,
+                    inputs,
+                    cycle,
+                    corridor,
+                    &mut complexity_work_budget,
+                );
+                state = outcome.state;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.push(outcome.trace);
+                    requested_curve_misses = outcome.curve_misses;
+                    requested_density_corridor = outcome.density_corridor;
+                    requested_complexity_corridor = outcome.complexity_corridor;
+                }
+                leash_anchor = state.clone();
+            } else if inputs.curve.enabled {
                 // The curve owns every directive-free cycle when enabled:
                 // the legacy stochastic layer never fires, and a zero
                 // target is deterministic repetition (corridor still
@@ -4033,23 +4535,6 @@ pub fn evolved_seed_with_trace(
         let all_orphaned = active.iter().all(|directive| {
             slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_err()
         });
-        let mut orphaned_normalization_trace = None;
-        if all_orphaned {
-            let (normalized, density_clamp, complexity_clamp) = normalize_to_active_corridors(
-                seed,
-                &state,
-                &ranks,
-                inputs,
-                cycle,
-                None,
-                corridor,
-                sampled_complexity_corridor(inputs, cycle),
-                &mut complexity_work_budget,
-            );
-            orphaned_normalization_trace =
-                legacy_corridor_trace(cycle, density_clamp, complexity_clamp);
-            state = normalized;
-        }
         for directive in active {
             let scope_is_valid =
                 slot_range(directive.scope, seed.total_beats, seed.required_subdivision).is_ok();
@@ -4087,10 +4572,29 @@ pub fn evolved_seed_with_trace(
             }
         }
         if all_orphaned {
-            if cycle == inputs.cycle {
-                requested_cycle_trace.extend(orphaned_normalization_trace);
-            }
-            if inputs.curve.enabled {
+            if property_curves_active_at(inputs, cycle) {
+                // Same precedence as the empty-cycle path: a drawn property
+                // curve steers this now-directive-free cycle.
+                let outcome = apply_property_steering(
+                    &state,
+                    seed,
+                    &ranks,
+                    &template,
+                    beat_level,
+                    inputs,
+                    cycle,
+                    corridor,
+                    &mut complexity_work_budget,
+                );
+                state = outcome.state;
+                if cycle == inputs.cycle {
+                    requested_cycle_trace.push(outcome.trace);
+                    requested_curve_misses = outcome.curve_misses;
+                    requested_density_corridor = outcome.density_corridor;
+                    requested_complexity_corridor = outcome.complexity_corridor;
+                }
+                leash_anchor = state.clone();
+            } else if inputs.curve.enabled {
                 let target = inputs.curve.target_milli_at(cycle);
                 if target > 0 {
                     let (next, curve_trace) = apply_evolution_curve(
@@ -4137,6 +4641,7 @@ pub fn evolved_seed_with_trace(
     Some(EvolvedSeedResolution {
         seed: state_to_compiled(seed, &state),
         trace: requested_cycle_trace,
+        curve_misses: requested_curve_misses,
         density_corridor: requested_density_corridor,
         complexity_corridor: requested_complexity_corridor,
         state_complexity_milli: super::depth::state_complexity_milli(
@@ -4214,6 +4719,7 @@ mod tests {
             euclid_rest_policy: super::super::reshape::EuclidRestPolicy::Tied,
             plan: &[],
             curve: &CURVE_OFF,
+            property_curves: &[],
             op_weights: OpWeights::default(),
             automation: &no_automation,
             spans,
@@ -4246,6 +4752,7 @@ mod tests {
             euclid_rest_policy: super::super::reshape::EuclidRestPolicy::Tied,
             plan: &[],
             curve: &CURVE_OFF,
+            property_curves: &[],
             op_weights: OpWeights::default(),
             automation,
             spans,
@@ -4377,6 +4884,377 @@ mod tests {
                 evolved_seed_with_trace(&seed, &inputs(7, cycle, 100, 100, &s)).unwrap();
             assert!(resolution.trace.is_empty(), "cycle {cycle}");
         }
+    }
+
+    #[test]
+    fn density_property_curve_steers_the_realized_level_into_its_band() {
+        // A fully-dense 16-slot seed (density 100 000) with a Density curve
+        // centered at 50 000 ± 5 000 must land inside [45 000, 55 000]: the
+        // curve tightens the effective density corridor and normalization
+        // brings the inherited state into it.
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let curve = [PropertyCurve {
+            property: CurveProperty::Density,
+            enabled: true,
+            tolerance_milli: 5_000,
+            weight: 50,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 50_000,
+            }],
+        }];
+        let mut steered = inputs(7, 1, 0, 100, &s);
+        steered.property_curves = &curve;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        let onsets = resolution.seed.events.len() as u32;
+        let slots = resolution.seed.total_beats * resolution.seed.required_subdivision;
+        let density = 100_000 * onsets / slots;
+        assert!(
+            (45_000..=55_000).contains(&density),
+            "density {density} ({onsets}/{slots} slots)"
+        );
+        assert_eq!(resolution.trace.len(), 1);
+        assert_eq!(resolution.trace[0].directive_id, EVOLUTION_CURVE_TRACE_ID);
+    }
+
+    #[test]
+    fn absent_property_curves_replay_the_legacy_fold_byte_for_byte() {
+        // An empty slice and a present-but-disabled curve must both reproduce
+        // the exact stochastic fold — the compat pin for the whole feature.
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let disabled = [PropertyCurve {
+            property: CurveProperty::Syncopation,
+            enabled: false,
+            tolerance_milli: 1_000,
+            weight: 50,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 80_000,
+            }],
+        }];
+        for cycle in [1_u64, 5, 20] {
+            let legacy = evolved_seed(&seed, &inputs(7, cycle, 60, 100, &s)).unwrap();
+            let mut with_disabled = inputs(7, cycle, 60, 100, &s);
+            with_disabled.property_curves = &disabled;
+            let same = evolved_seed(&seed, &with_disabled).unwrap();
+            assert_eq!(legacy, same, "disabled curve diverged at cycle {cycle}");
+        }
+    }
+
+    #[test]
+    fn conflicting_curves_trace_the_property_that_lost() {
+        // Density pinned near-empty and Syncopation drawn high: with (almost)
+        // no onsets admissible there is nothing to syncopate, so syncopation
+        // cannot reach its band. The miss is named and measured, never silent.
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let curves = [
+            PropertyCurve {
+                property: CurveProperty::Density,
+                enabled: true,
+                tolerance_milli: 2_000,
+                weight: 50,
+                points: vec![super::super::plan::CurvePoint {
+                    cycle: 1,
+                    target_milli: 0,
+                }],
+            },
+            PropertyCurve {
+                property: CurveProperty::Syncopation,
+                enabled: true,
+                tolerance_milli: 5_000,
+                weight: 50,
+                points: vec![super::super::plan::CurvePoint {
+                    cycle: 1,
+                    target_milli: 80_000,
+                }],
+            },
+        ];
+        let mut steered = inputs(7, 1, 0, 100, &s);
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        let sync_miss = resolution
+            .curve_misses
+            .iter()
+            .find(|miss| miss.property == CurveProperty::Syncopation)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a syncopation miss, got {:?}",
+                    resolution.curve_misses
+                )
+            });
+        assert!(sync_miss.gap_milli > 0, "miss carries a positive gap");
+        // Density, by contrast, reached its near-empty band — no density miss.
+        assert!(resolution
+            .curve_misses
+            .iter()
+            .all(|miss| miss.property != CurveProperty::Density));
+    }
+
+    #[test]
+    fn density_curve_intersects_in_milli_without_deleting_away_from_reachable_targets() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        for (target_milli, expected_onsets) in [(43_750, 7_usize), (6_250, 1)] {
+            let curves = [PropertyCurve {
+                property: CurveProperty::Density,
+                enabled: true,
+                tolerance_milli: 0,
+                weight: 50,
+                points: vec![super::super::plan::CurvePoint {
+                    cycle: 1,
+                    target_milli,
+                }],
+            }];
+            let mut steered = inputs(23, 1, 0, 100, &s);
+            steered.property_curves = &curves;
+            let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+            assert_eq!(resolution.seed.events.len(), expected_onsets);
+            assert!(resolution.curve_misses.is_empty());
+            assert_eq!(resolution.density_corridor.floor_milli, Some(target_milli));
+            assert_eq!(
+                resolution.density_corridor.ceiling_milli,
+                Some(target_milli)
+            );
+        }
+    }
+
+    #[test]
+    fn density_band_without_an_integer_onset_count_is_reported_not_collapsed() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let curves = [PropertyCurve {
+            property: CurveProperty::Density,
+            enabled: true,
+            tolerance_milli: 0,
+            weight: 50,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 43_825,
+            }],
+        }];
+        let mut steered = inputs(23, 1, 0, 100, &s);
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        assert!(
+            !resolution.seed.events.is_empty(),
+            "an empty discrete band must not silence"
+        );
+        assert!(resolution.curve_misses.iter().any(|miss| {
+            miss.property == CurveProperty::Density
+                && miss.reason == MissReason::RailBlocked
+                && miss.rail == Some(CurveRail::DiscreteGrid)
+        }));
+    }
+
+    #[test]
+    fn steering_strictly_improves_a_non_corridor_property_and_traces_why() {
+        let seed = compiled("[x x x x] [x x x x] [x x x x] [x x x x]");
+        let s = spans(4, 4);
+        let curves = [PropertyCurve {
+            property: CurveProperty::Occupancy,
+            enabled: true,
+            tolerance_milli: 0,
+            weight: 100,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 50_000,
+            }],
+        }];
+        let mut steered = inputs(11, 1, 0, 100, &s);
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        let (ranks, levels, _) = fold_env(4, 4);
+        let context = PerceptualContext::new(4, 4, ranks, levels).unwrap();
+        let before = context.state_properties(&seed_state(&seed)).occupancy_milli;
+        let after = context
+            .state_properties(&seed_state(&resolution.seed))
+            .occupancy_milli;
+        assert!(after < before, "steering must change the realized property");
+        let trace = resolution.trace.last().expect("steering trace");
+        assert!(trace.applied > 0);
+        assert!(
+            trace.requested > trace.applied,
+            "rejected family candidates count"
+        );
+        assert!(trace.steering_choices.iter().any(|choice| {
+            choice.chosen_for == SteeringTarget::Occupancy
+                && choice.family != DirectiveFamily::Stochastic
+        }));
+    }
+
+    #[test]
+    fn zero_pacing_target_remains_a_hold_when_property_steering_is_active() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let pacing = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 0,
+            max_operations: 4,
+            points: vec![
+                super::super::plan::CurvePoint {
+                    cycle: 1,
+                    target_milli: 0,
+                },
+                super::super::plan::CurvePoint {
+                    cycle: 8,
+                    target_milli: 0,
+                },
+            ],
+        };
+        let curves = [PropertyCurve {
+            property: CurveProperty::Syncopation,
+            enabled: true,
+            tolerance_milli: 0,
+            weight: 100,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 100_000,
+            }],
+        }];
+        let mut steered = inputs(23, 1, 0, 100, &s);
+        steered.curve = &pacing;
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        assert_eq!(resolution.seed, seed);
+        let perceptual = resolution.trace[0].perceptual.expect("hold trace");
+        assert_eq!(perceptual.target_milli, 0);
+        assert_eq!(perceptual.actual_milli, 0);
+        assert!(perceptual.reached);
+        assert!(resolution
+            .curve_misses
+            .iter()
+            .all(|miss| miss.reason == MissReason::PacingCapped));
+    }
+
+    #[test]
+    fn satisfied_property_band_does_not_suppress_the_pacing_lower_bound() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let pacing = EvolutionCurve {
+            enabled: true,
+            model_version: PerceptualModelVersion::V1,
+            tolerance_milli: 6_000,
+            max_operations: 4,
+            points: vec![
+                super::super::plan::CurvePoint {
+                    cycle: 1,
+                    target_milli: 12_000,
+                },
+                super::super::plan::CurvePoint {
+                    cycle: 8,
+                    target_milli: 12_000,
+                },
+            ],
+        };
+        let curves = [PropertyCurve {
+            property: CurveProperty::Occupancy,
+            enabled: true,
+            tolerance_milli: 100_000,
+            weight: 50,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 50_000,
+            }],
+        }];
+        let mut steered = inputs(7, 1, 0, 100, &s);
+        steered.curve = &pacing;
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        let perceptual = resolution.trace[0].perceptual.expect("pacing trace");
+        assert!(
+            perceptual.actual_milli > 0,
+            "a satisfied level band must not freeze pacing"
+        );
+        assert_ne!(resolution.seed, seed);
+    }
+
+    #[test]
+    fn automated_complexity_crossing_collapses_to_the_ceiling_and_names_the_rail() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let automation = |target: &str, _: u64, _: f64| {
+            (target == DUMKA_COMPLEXITY_CEILING_TARGET).then_some(20_000.0)
+        };
+        let curves = [PropertyCurve {
+            property: CurveProperty::Complexity,
+            enabled: true,
+            tolerance_milli: 0,
+            weight: 50,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 40_000,
+            }],
+        }];
+        let mut steered = inputs_with_automation(7, 1, 0, 100, &s, &automation);
+        steered.property_curves = &curves;
+        let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+        assert_eq!(resolution.complexity_corridor.floor, 20_000);
+        assert_eq!(resolution.complexity_corridor.ceiling, 20_000);
+        assert!(resolution.curve_misses.iter().any(|miss| {
+            miss.property == CurveProperty::Complexity
+                && miss.reason == MissReason::RailBlocked
+                && miss.rail == Some(CurveRail::Automation)
+        }));
+    }
+
+    #[test]
+    fn directives_override_property_curves_and_orphaned_scopes_fall_back_once() {
+        let seed = compiled(SEED_TEXT);
+        let s = spans(4, 4);
+        let curves = [PropertyCurve {
+            property: CurveProperty::Occupancy,
+            enabled: true,
+            tolerance_milli: 0,
+            weight: 100,
+            points: vec![super::super::plan::CurvePoint {
+                cycle: 1,
+                target_milli: 0,
+            }],
+        }];
+        let active = [directive(91, 0, DirectiveFamily::Rotate, 1, 1, 100)];
+        let mut directive_only = inputs(7, 1, 0, 100, &s);
+        directive_only.plan = &active;
+        let expected = evolved_seed_with_trace(&seed, &directive_only).unwrap();
+        let mut overridden = inputs(7, 1, 0, 100, &s);
+        overridden.plan = &active;
+        overridden.property_curves = &curves;
+        let actual = evolved_seed_with_trace(&seed, &overridden).unwrap();
+        assert_eq!(actual.seed, expected.seed);
+        assert!(actual.curve_misses.is_empty());
+        assert!(actual
+            .trace
+            .iter()
+            .all(|entry| entry.directive_id != EVOLUTION_CURVE_TRACE_ID));
+
+        let mut orphan = directive(92, 0, DirectiveFamily::Rotate, 1, 1, 100);
+        orphan.scope = Some(super::super::plan::BeatRange {
+            start_beat: 99,
+            len_beats: 1,
+        });
+        let orphan_plan = [orphan];
+        let mut fallback = inputs(7, 1, 0, 100, &s);
+        fallback.property_curves = &curves;
+        let fallback_resolution = evolved_seed_with_trace(&seed, &fallback).unwrap();
+        let mut orphaned = inputs(7, 1, 0, 100, &s);
+        orphaned.plan = &orphan_plan;
+        orphaned.property_curves = &curves;
+        let orphaned_resolution = evolved_seed_with_trace(&seed, &orphaned).unwrap();
+        assert_eq!(orphaned_resolution.seed, fallback_resolution.seed);
+        assert_eq!(
+            orphaned_resolution
+                .trace
+                .iter()
+                .filter(|entry| entry.directive_id == EVOLUTION_CURVE_TRACE_ID)
+                .count(),
+            1
+        );
+        assert!(orphaned_resolution.trace.iter().any(|entry| {
+            entry.directive_id == 92 && entry.skipped == DirectiveSkip::OrphanedScope
+        }));
     }
 
     #[test]
@@ -4873,7 +5751,7 @@ mod tests {
                 .iter()
                 .map(|resolution| seed_state(&resolution.seed).onsets[0].slot)
                 .collect::<Vec<_>>(),
-            vec![0, 0, 3, 3, 2],
+            vec![0, 0, 1, 1, 2],
             "the gentle shoulders hold while each requested step moves only one slot"
         );
         assert_eq!(
@@ -4911,7 +5789,9 @@ mod tests {
         oracle_inputs.cycle_beats = 1;
         oracle_inputs.plan = &oracle_plan;
         let oracle = evolved_seed_with_trace(&seed, &oracle_inputs).unwrap();
-        assert_eq!(seed_state(&oracle.seed).onsets[0].slot, 3);
+        // The A* schedule takes the forward shortest arc (0→1→2), so one step
+        // lands on slot 1; the perceptual pacer must reproduce that same step.
+        assert_eq!(seed_state(&oracle.seed).onsets[0].slot, 1);
         assert_eq!(oracle.trace[0].applied, 1);
         let target = transition_distance(&seed, &oracle.seed);
         assert!(target > 0);
@@ -4965,6 +5845,44 @@ mod tests {
         assert_eq!(resolution.seed, compiled("[x . . x]"));
         assert_eq!(resolution.trace[0].skipped, DirectiveSkip::None);
         assert_eq!(resolution.trace[0].applied, 2);
+    }
+
+    #[test]
+    fn morph_reaches_every_target_endpoint_exactly() {
+        // Exhaustive verdict on the greedy morph path (the A* search that was
+        // written for endpoint exactness is unused): for a single-beat grid,
+        // every non-empty seed must reach every non-empty target EXACTLY in
+        // one intensity-100 pin cycle — all cardinality combinations, all
+        // positions, including the insertion-blocked orderings the A* was
+        // meant to handle. If greedy were incomplete this would fail.
+        let mask_pattern = |mask: u32, n: u32| -> String {
+            let inner = (0..n)
+                .map(|slot| if mask & (1 << slot) != 0 { "x" } else { "." })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("[{inner}]")
+        };
+        for n in [4u32, 5, 6] {
+            let s = spans(1, n);
+            for seed_mask in 1..(1u32 << n) {
+                let seed = compiled(&mask_pattern(seed_mask, n));
+                for target_mask in 1..(1u32 << n) {
+                    let target_text = mask_pattern(target_mask, n);
+                    let mut row = directive(1, 0, DirectiveFamily::Morph, 1, 1, 100);
+                    row.options.morph_target = Some(target_text.clone());
+                    let plan = vec![row];
+                    let mut plan_inputs = inputs(7, 1, 0, 0, &s);
+                    plan_inputs.cycle_beats = 1;
+                    plan_inputs.plan = &plan;
+                    let resolution = evolved_seed_with_trace(&seed, &plan_inputs).unwrap();
+                    assert_eq!(
+                        resolution.seed,
+                        compiled(&target_text),
+                        "n={n} seed={seed_mask:#08b} target={target_mask:#08b}: greedy morph missed the endpoint"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -5185,7 +6103,21 @@ mod tests {
         let mut oracle = seed_state(&seed);
         let window = slot_range(row.scope, 2, 4).unwrap();
         assert_eq!(
-            directive_candidate_count(&row, &oracle, &seed, &ranks, &template, beat_level, window,),
+            directive_candidate_count(
+                &row,
+                &oracle,
+                &seed,
+                &ranks,
+                &template,
+                beat_level,
+                window,
+                &oracle_inputs,
+                corridor,
+                ComplexityCorridor {
+                    floor_milli: 0,
+                    ceiling_milli: 100_000,
+                },
+            ),
             1,
             "the fixture starts with one fragmentable sustain"
         );
@@ -5405,6 +6337,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 20,
                 ceiling: 60,
+                ..Default::default()
             },
             "an orphaned later row cannot replace the last applied rail"
         );
@@ -5417,6 +6350,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 10,
                 ceiling: 90,
+                ..Default::default()
             },
             "a valid inheriting row restores the sampled global rail"
         );
@@ -5445,6 +6379,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 55,
                 ceiling: 55,
+                ..Default::default()
             }
         );
     }
@@ -5523,6 +6458,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 0,
                 ceiling: 50,
+                ..Default::default()
             },
             "all orphaned rows leave the requested cycle on its global rail"
         );
@@ -6390,6 +7326,121 @@ mod tests {
         }
     }
 
+    fn steering_point(cycle: u64, target_milli: u32) -> super::super::plan::CurvePoint {
+        super::super::plan::CurvePoint {
+            cycle,
+            target_milli,
+        }
+    }
+
+    proptest! {
+        // Liveness: on a supported grid, steering any random pair of drawn
+        // curves never panics and always resolves — and replays byte for byte.
+        #[test]
+        fn property_steering_resolves_and_replays_for_random_curves(
+            density_target in 0_u32..=100_000,
+            density_tol in 0_u32..=20_000,
+            sync_target in 0_u32..=100_000,
+            sync_tol in 0_u32..=20_000,
+            weight in 1_u32..=100,
+            cycle in 1_u64..=15,
+            seed_value in any::<u64>(),
+        ) {
+            let seed = compiled(SEED_TEXT);
+            let s = spans(4, 4);
+            let curves = [
+                PropertyCurve {
+                    property: CurveProperty::Density,
+                    enabled: true,
+                    tolerance_milli: density_tol,
+                    weight,
+                    points: vec![steering_point(1, density_target), steering_point(16, density_target)],
+                },
+                PropertyCurve {
+                    property: CurveProperty::Syncopation,
+                    enabled: true,
+                    tolerance_milli: sync_tol,
+                    weight,
+                    points: vec![steering_point(1, sync_target), steering_point(16, sync_target)],
+                },
+            ];
+            let mut steered = inputs(seed_value, cycle, 0, 100, &s);
+            steered.property_curves = &curves;
+            let resolution =
+                evolved_seed_with_trace(&seed, &steered).expect("supported grid resolves");
+            let replay =
+                evolved_seed_with_trace(&seed, &steered).expect("replay resolves");
+            prop_assert_eq!(resolution.seed, replay.seed, "steering replay diverged");
+        }
+
+        // Convergence-and-hold for the hard-railed Density lane: the realized
+        // onset count lands inside the curve's effective band, or the trace
+        // carries a truthful density clamp saying why it could not.
+        #[test]
+        fn density_curve_holds_its_band_or_traces_a_stall(
+            target in 20_000_u32..=80_000,
+            tol in 5_000_u32..=15_000,
+            cycle in 1_u64..=15,
+            seed_value in any::<u64>(),
+        ) {
+            let seed = compiled(SEED_TEXT);
+            let s = spans(4, 4);
+            let curves = [PropertyCurve {
+                property: CurveProperty::Density,
+                enabled: true,
+                tolerance_milli: tol,
+                weight: 50,
+                points: vec![steering_point(1, target), steering_point(16, target)],
+            }];
+            let mut steered = inputs(seed_value, cycle, 0, 100, &s);
+            steered.property_curves = &curves;
+            let resolution = evolved_seed_with_trace(&seed, &steered).unwrap();
+            let count = resolution.seed.events.len();
+            let floor_milli = target.saturating_sub(tol);
+            let ceiling_milli = target.saturating_add(tol).min(100_000);
+            let floor_count = ((u64::from(floor_milli) * 16).div_ceil(100_000)) as usize;
+            let ceiling_count = ((u64::from(ceiling_milli) * 16) / 100_000) as usize;
+            let inside = floor_count <= ceiling_count
+                && count >= floor_count
+                && count <= ceiling_count;
+            let truthful_stall = resolution
+                .curve_misses
+                .iter()
+                .any(|miss| miss.property == CurveProperty::Density && miss.gap_milli > 0);
+            prop_assert!(
+                inside || truthful_stall,
+                "density count {count} outside {}..={} without a clamp",
+                floor_count,
+                ceiling_count,
+            );
+        }
+
+        // Byte-compat: a present-but-disabled curve is indistinguishable from
+        // no curve, across the whole stochastic parameter space.
+        #[test]
+        fn disabled_property_curves_match_the_legacy_fold(
+            rate in 0_u32..=100,
+            leash in 0_u32..=100,
+            cycle in 1_u64..=15,
+            seed_value in any::<u64>(),
+        ) {
+            let seed = compiled(SEED_TEXT);
+            let s = spans(4, 4);
+            let disabled = [PropertyCurve {
+                property: CurveProperty::Occupancy,
+                enabled: false,
+                tolerance_milli: 4_000,
+                weight: 50,
+                points: vec![steering_point(1, 70_000), steering_point(16, 70_000)],
+            }];
+            let legacy = evolved_seed(&seed, &inputs(seed_value, cycle, rate, leash, &s)).unwrap();
+            let mut with_disabled = inputs(seed_value, cycle, rate, leash, &s);
+            with_disabled.property_curves = &disabled;
+            let same = evolved_seed(&seed, &with_disabled).unwrap();
+            prop_assert_eq!(legacy, same, "disabled property curve changed the fold");
+        }
+    }
+
     #[test]
     fn trajectories_replay_and_diverge_by_seed() {
         let seed = compiled(SEED_TEXT);
@@ -7050,6 +8101,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 0,
                 ceiling: 50,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -7096,6 +8148,7 @@ mod tests {
             DensityCorridorRange {
                 floor: 36,
                 ceiling: 45,
+                ..Default::default()
             }
         );
         assert_eq!(resolution.trace.len(), 1);
@@ -7222,9 +8275,23 @@ mod tests {
         };
         let first_beat = Some(SlotRange { start: 0, end: 4 });
         let remove = directive(404, 0, DirectiveFamily::BarlowRemove, 1, 1, 100);
+        let count_spans = spans(2, 4);
+        let count_inputs = inputs(1, 1, 0, 0, &count_spans);
         assert_eq!(
             directive_candidate_count(
-                &remove, &crossing, &seed, &ranks, &template, beat_level, first_beat,
+                &remove,
+                &crossing,
+                &seed,
+                &ranks,
+                &template,
+                beat_level,
+                first_beat,
+                &count_inputs,
+                DensityCorridor::new(0, 100, 8),
+                ComplexityCorridor {
+                    floor_milli: 0,
+                    ceiling_milli: 100_000,
+                },
             ),
             0,
             "an onset inside the beat cannot remove a sustain that exits it"

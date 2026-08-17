@@ -447,7 +447,12 @@ Normalization mirrors patch rules; ids allocated
   **Smooth across 4 cycles**, which atomically turns it into a four-cycle
   Gentle transition. Stochastic exposes neither Perceptual target nor a
   Transition control.
-- **Composition strip** (the requested graphic): a per-cycle summary row
+- **Composition strip** (the requested graphic) — *superseded by M3.97: the
+  strip is retired; its density + corridor readout is now the Density property
+  lane and its applied-trace ticks moved to the Events gutter, in the property
+  lane stack (see [DUMKA_PROPERTY_CURVES.md](DUMKA_PROPERTY_CURVES.md) §6 and
+  [UI_AND_INTERACTION.md](UI_AND_INTERACTION.md)).* The original design: a
+  per-cycle summary row
   under the lanes — onset-count sparkline + density heat ribbon,
   computed from cached per-cycle previews (the existing
   `generator_preview` random access, ≤ cycle 10 000, debounced and
@@ -462,7 +467,11 @@ Normalization mirrors patch rules; ids allocated
   hold remains visible rather than masquerading as an inactive gap. A selected
   perceptual row shows its backend `actual` versus `target ± tolerance`; its
   trace tick still uses applied/skipped/corridor truth.
-- **Depth lane and insight**: a second thin band plots backend
+- **Depth lane and insight** — *superseded by M3.97: the single complexity
+  band is now the Complexity property lane (one of six), and depth diversity
+  is the read-only Diversity lane plus the inspector readout — see
+  [DUMKA_PROPERTY_CURVES.md](DUMKA_PROPERTY_CURVES.md) §1/§6.* The original
+  design: a second thin band plots backend
   `stateComplexityMilli` against the effective complexity corridor. Density
   and complexity clamp markers remain independently labelled, including a
   stalled normalization that could not reach its rail. The nearby Depth

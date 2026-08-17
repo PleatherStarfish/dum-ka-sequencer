@@ -11,9 +11,10 @@ import {
   type DumkaCompiled,
 } from "../../../src/dumkaPattern";
 import {
-  dumkaSubdivisionLevels,
+  type DumkaStateProfile,
   stateComplexityMilli,
   stateDepthDiversityMilli,
+  stateProperties,
   stratification,
 } from "../../../src/dumkaMetrics";
 import { transportSnapshotFixture } from "../../../src/__fixtures__/dto/transportSnapshot.fixture";
@@ -64,9 +65,16 @@ type DumkaMockEntry =
       gridSupported: boolean;
       depthMetrics: Record<
         string,
-        { complexityMilli: number; diversityMilli: number }
+        {
+          complexityMilli: number;
+          diversityMilli: number;
+          // The full six-functional profile on this working grid, or null when
+          // the grid's primes exceed the published Ψ tables (the engine then
+          // emits no propertyProfile either). When present, its complexity and
+          // diversity equal the two fields above by construction.
+          profile: DumkaStateProfile | null;
+        }
       >;
-      depthLevels: Record<string, number[]>;
     };
 
 const DUMKA_MOCK_PALETTES = [2, 3, 5, 7]
@@ -112,30 +120,57 @@ function buildDumkaMockTable(): Record<string, DumkaMockEntry> {
                 (event) =>
                   (event.start.num * workingSubdivision) / event.start.den
               );
+              // Realized attack/occupancy masks on this working grid, exactly
+              // as the engine's RhythmView builds them (the mock resolves only
+              // verbatim repeats, so the seed IS the realized state, rotation
+              // zero). Sustains raise occupancy above density.
+              const slots = result.compiled.totalBeats * workingSubdivision;
+              const attacks = new Array<boolean>(slots).fill(false);
+              const occupancy = new Array<boolean>(slots).fill(false);
+              for (const event of result.compiled.events) {
+                const start =
+                  (event.start.num * workingSubdivision) / event.start.den;
+                const duration = Math.min(
+                  (event.dur.num * workingSubdivision) / event.dur.den,
+                  slots
+                );
+                attacks[start] = true;
+                for (let offset = 0; offset < duration; offset += 1) {
+                  occupancy[(start + offset) % slots] = true;
+                }
+              }
+              const complexityMilli = stateComplexityMilli(
+                onsetSlots,
+                workingSubdivision
+              );
+              const diversityMilli = stateDepthDiversityMilli(
+                onsetSlots,
+                workingSubdivision
+              );
+              const profile = stateProperties(
+                result.compiled.totalBeats,
+                workingSubdivision,
+                attacks,
+                occupancy
+              );
+              // Fail closed on the engine's pinned invariant: when a profile
+              // exists, its complexity and diversity are the very fields the
+              // preview also publishes standalone. A divergence here means the
+              // attack/occupancy construction drifted from the onset-slot list.
+              if (
+                profile &&
+                (profile.complexityMilli !== complexityMilli ||
+                  profile.diversityMilli !== diversityMilli)
+              ) {
+                throw new Error(
+                  `mock dumka profile diverged from depth metrics at Subdivision ${workingSubdivision} for pattern ${pattern}`
+                );
+              }
               return [
                 String(workingSubdivision),
-                {
-                  complexityMilli: stateComplexityMilli(
-                    onsetSlots,
-                    workingSubdivision
-                  ),
-                  diversityMilli: stateDepthDiversityMilli(
-                    onsetSlots,
-                    workingSubdivision
-                  ),
-                },
+                { complexityMilli, diversityMilli, profile },
               ];
             })
-          ),
-          depthLevels: Object.fromEntries(
-            dumkaMockWorkingSubdivisions(
-              result.compiled.requiredSubdivision
-            ).map((workingSubdivision) => [
-              String(workingSubdivision),
-              dumkaSubdivisionLevels(workingSubdivision).map(
-                (level) => level.denominator
-              ),
-            ])
           ),
         }
       : { error: formatDumkaParseError(result.issue) };
@@ -2065,10 +2100,9 @@ export async function installMockTauri(
               );
             }
             const level = options.subdivisionLevel;
-            const levels = entry.depthLevels[String(workingSubdivision)] ?? [];
-            if (level >= levels.length) {
+            if (!palette.includes(level)) {
               throw new Error(
-                `dumka plan invalid: directive ${directiveId} subdivisionLevel ${String(options.subdivisionLevel)} does not exist on working Subdivision ${workingSubdivision}`
+                `dumka plan invalid: directive ${directiveId} subdivisionLevel ${String(options.subdivisionLevel)} is not an enabled palette prime`
               );
             }
           }
@@ -2247,6 +2281,22 @@ export async function installMockTauri(
               point !== null &&
               Number((point as Record<string, unknown>).targetMilli) > 0
           );
+        // A drawn property curve steers directive-free cycles (M3.97 §4). Any
+        // enabled curve with points evolves the state from cycle 1 on — even a
+        // target of 0 is a real level — so cycles ≥ 1 are steered work the mock
+        // does not port and must refuse, exactly like the aggregate curve.
+        const propertyCurvesRaw = generator.propertyCurves;
+        const hasActivePropertyCurve =
+          Array.isArray(propertyCurvesRaw) &&
+          propertyCurvesRaw.some((curve) => {
+            if (typeof curve !== "object" || curve === null) return false;
+            const record = curve as Record<string, unknown>;
+            return (
+              record.enabled === true &&
+              Array.isArray(record.points) &&
+              record.points.length > 0
+            );
+          });
         if (
           cycle > 0 &&
           (evolutionRate > 0 ||
@@ -2258,7 +2308,8 @@ export async function installMockTauri(
             effectiveComplexityCeiling < 100_000 ||
             complexityIsAutomated ||
             hasEnabledPlan ||
-            hasActiveCurve)
+            hasActiveCurve ||
+            hasActivePropertyCurve)
         ) {
           throw new Error(
             `mock dumka preview cannot resolve evolving cycle ${cycle}; use the real-backend lane`
@@ -2382,6 +2433,7 @@ export async function installMockTauri(
           },
           stateComplexityMilli: depthMetrics.complexityMilli,
           stateDepthDiversityMilli: depthMetrics.diversityMilli,
+          propertyProfile: depthMetrics.profile,
           cycleDistance,
         };
       }

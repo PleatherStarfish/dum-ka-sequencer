@@ -8,9 +8,47 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::depth::MAX_WORKING_SUBDIVISION;
+use super::tree::{MAX_SUBDIVISION, MAX_TOTAL_BEATS};
 
 pub const Q16_ONE: i32 = 65_536;
 pub const MAX_HARMONICS: u32 = 16;
+pub const MAX_SPECTRUM_PERIOD: u32 = MAX_TOTAL_BEATS * MAX_SUBDIVISION;
+
+const CORDIC_TAU_Q30: i64 = 6_746_518_852;
+const CORDIC_GAIN_INVERSE_Q30: i64 = 652_032_874;
+const CORDIC_ATAN_Q30: [i64; 31] = [
+    843_314_857,
+    497_837_829,
+    263_043_837,
+    133_525_159,
+    67_021_687,
+    33_543_516,
+    16_775_851,
+    8_388_437,
+    4_194_283,
+    2_097_149,
+    1_048_576,
+    524_288,
+    262_144,
+    131_072,
+    65_536,
+    32_768,
+    16_384,
+    8_192,
+    4_096,
+    2_048,
+    1_024,
+    512,
+    256,
+    128,
+    64,
+    32,
+    16,
+    8,
+    4,
+    2,
+    1,
+];
 
 /// Pinned Q16.16 `(cos(2π/W), sin(2π/W))` seeds for `W = 1..=64`.
 ///
@@ -94,12 +132,18 @@ pub struct HarmonicRow {
 
 /// Build `m=1..=min(16,W/2)` fixed-point rows.
 ///
-/// Returns an empty table outside the supported `1..=64` period domain.
+/// Returns an empty table outside the real generator grid domain. Periods up
+/// to 64 retain the historical pinned roots byte-for-byte; larger whole-cycle
+/// periods use a pinned integer CORDIC root so evenness never fabricates zero.
 pub fn cosine_table(period_slots: u32) -> Vec<HarmonicRow> {
-    if period_slots == 0 || period_slots > MAX_WORKING_SUBDIVISION {
+    if period_slots == 0 || period_slots > MAX_SPECTRUM_PERIOD {
         return Vec::new();
     }
-    let base = UNIT_ROOTS_Q16[(period_slots - 1) as usize];
+    let base = if period_slots <= MAX_WORKING_SUBDIVISION {
+        UNIT_ROOTS_Q16[(period_slots - 1) as usize]
+    } else {
+        cordic_unit_root_q16(period_slots)
+    };
     let fundamental = recurrence(period_slots, base);
     let maximum = MAX_HARMONICS.min(period_slots / 2);
     (1..=maximum)
@@ -119,6 +163,34 @@ pub fn cosine_table(period_slots: u32) -> Vec<HarmonicRow> {
             }
         })
         .collect()
+}
+
+fn cordic_unit_root_q16(period_slots: u32) -> (i32, i32) {
+    debug_assert!(period_slots > MAX_WORKING_SUBDIVISION);
+    let mut x = CORDIC_GAIN_INVERSE_Q30;
+    let mut y = 0_i64;
+    let mut angle = (CORDIC_TAU_Q30 + i64::from(period_slots) / 2) / i64::from(period_slots);
+    for (shift, &step) in CORDIC_ATAN_Q30.iter().enumerate() {
+        let direction = if angle >= 0 { 1_i64 } else { -1_i64 };
+        let next_x = x - direction * (y >> shift);
+        let next_y = y + direction * (x >> shift);
+        x = next_x;
+        y = next_y;
+        angle -= direction * step;
+    }
+    (q30_to_q16(x), q30_to_q16(y))
+}
+
+fn q30_to_q16(value: i64) -> i32 {
+    const SHIFT: u32 = 14;
+    const HALF: i64 = 1_i64 << (SHIFT - 1);
+    let rounded = if value >= 0 {
+        (value + HALF) >> SHIFT
+    } else {
+        -((-value + HALF) >> SHIFT)
+    };
+    i32::try_from(rounded.clamp(-i64::from(Q16_ONE), i64::from(Q16_ONE)))
+        .expect("Q16 root is in i32 range")
 }
 
 fn recurrence(period_slots: u32, root: (i32, i32)) -> Vec<(i32, i32)> {
@@ -421,9 +493,83 @@ fn dedupe(order: &[u32]) -> Vec<u32> {
         .collect()
 }
 
+/// Onset-set evenness in `0..=100_000` milliunits from the fixed-point
+/// fundamental. By Demaine/Milne (source doc Fact 1) the summed squared
+/// chordal spread is `k² − |F(1)|²`, so `1 − |F(1)|²/k²` reads 100000 for a
+/// perfect k-gon (balanced) and 0 for a single onset or a fully clustered
+/// set. Integer-exact over the Q16.16 tables; no floating point. Grids
+/// below two slots (no fundamental row) and empty sets score 0.
+pub fn state_evenness_milli(period_slots: u32, onset_slots: &[u32]) -> u32 {
+    let onset_count = onset_slots.len() as i128;
+    if onset_count == 0 || period_slots == 0 {
+        return 0;
+    }
+    let table = cosine_table(period_slots);
+    let Some(fundamental) = table.first() else {
+        return 0;
+    };
+    let (mut real, mut imaginary) = (0i128, 0i128);
+    for &slot in onset_slots {
+        let index = (slot % period_slots) as usize;
+        real += i128::from(fundamental.cosine[index]);
+        imaginary += i128::from(fundamental.sine[index]);
+    }
+    let magnitude_sq = real * real + imaginary * imaginary;
+    let unit_sq = i128::from(Q16_ONE) * i128::from(Q16_ONE);
+    let maximum_sq = onset_count * onset_count * unit_sq;
+    if maximum_sq == 0 {
+        return 0;
+    }
+    let deficit = (maximum_sq - magnitude_sq).clamp(0, maximum_sq);
+    u32::try_from((100_000 * deficit + maximum_sq / 2) / maximum_sq).unwrap_or(100_000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evenness_is_maximal_for_regular_polygons_and_zero_when_clustered() {
+        // Perfect k-gons balance the fundamental exactly: |F(1)| = 0.
+        assert_eq!(state_evenness_milli(8, &[0, 4]), 100_000);
+        assert_eq!(state_evenness_milli(8, &[0, 2, 4, 6]), 100_000);
+        assert_eq!(state_evenness_milli(12, &[0, 4, 8]), 100_000);
+        // A lone onset cannot be even; the fundamental is fully concentrated.
+        assert_eq!(state_evenness_milli(8, &[0]), 0);
+        // Adjacent onsets cluster: low evenness, and strictly below a spread pair.
+        let clustered = state_evenness_milli(8, &[0, 1]);
+        assert!(clustered < 30_000, "clustered pair evenness {clustered}");
+        assert!(clustered < state_evenness_milli(8, &[0, 3]));
+        // Degenerate grids and empty sets score zero, never panic.
+        assert_eq!(state_evenness_milli(1, &[0]), 0);
+        assert_eq!(state_evenness_milli(8, &[]), 0);
+        assert_eq!(state_evenness_milli(0, &[0]), 0);
+        assert_eq!(
+            state_evenness_milli(72, &[0, 9, 18, 27, 36, 45, 54, 63]),
+            100_000
+        );
+        assert_eq!(
+            state_evenness_milli(128, &[0, 16, 32, 48, 64, 80, 96, 112]),
+            100_000
+        );
+        // Bounded on every admissible grid and count.
+        for period in 2..=64u32 {
+            for onsets in [vec![0u32], vec![0, period / 2], (0..period).collect()] {
+                assert!(state_evenness_milli(period, &onsets) <= 100_000);
+            }
+        }
+    }
+
+    #[test]
+    fn cordic_roots_cover_the_real_whole_cycle_domain() {
+        for period in [65, 72, 96, 128, 1_024, MAX_SPECTRUM_PERIOD] {
+            let table = cosine_table(period);
+            assert!(!table.is_empty(), "period {period}");
+            assert_eq!(table[0].cosine.len(), period as usize);
+            assert_eq!(table[0].sine.len(), period as usize);
+        }
+        assert!(cosine_table(MAX_SPECTRUM_PERIOD + 1).is_empty());
+    }
 
     #[test]
     fn pinned_root_recurrence_vectors_are_stable() {

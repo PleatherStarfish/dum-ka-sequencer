@@ -8,6 +8,17 @@ import {
   normalizeEvolutionCurve,
   curveTargetMilliAt,
   curveScoringWork,
+  validatePropertyCurves,
+  validatePropertyCurveConfiguration,
+  propertySteeringWork,
+  propertyPacingScoringWork,
+  propertyCurveTargetMilliAt,
+  propertyCurveBandAt,
+  upsertPropertyCurvePoint,
+  removePropertyCurvePoint,
+  setPropertyCurveSettings,
+  DEFAULT_PROPERTY_CURVE_TOLERANCE,
+  normalizePropertyCurves,
   DEFAULT_EVOLUTION_CURVE,
   DEFAULT_DIRECTIVE_OPTIONS,
   DEFAULT_DIRECTIVE_PACING,
@@ -78,7 +89,7 @@ describe("dumka evolution plan model", () => {
           complexityFloor: 70_000,
           complexityCeiling: 20_000,
           placementBias: 77,
-          subdivisionLevel: 1,
+          subdivisionLevel: 3,
         },
       },
     ])[0]!;
@@ -88,24 +99,25 @@ describe("dumka evolution plan model", () => {
       complexityFloor: 20_000,
       complexityCeiling: 70_000,
       placementBias: 77,
-      subdivisionLevel: 1,
+      subdivisionLevel: 3,
     });
-    expect(validateEvolutionPlan([normalized], 12).ok).toBe(true);
+    // subdivisionLevel names a palette prime: valid iff enabled in the palette.
+    expect(validateEvolutionPlan([normalized], [2, 3]).ok).toBe(true);
     expect(
       validateEvolutionPlan(
         [
           {
             ...normalized,
             enabled: false,
-            options: { ...normalized.options, subdivisionLevel: 6 },
+            options: { ...normalized.options, subdivisionLevel: 5 },
           },
         ],
-        12
+        [2, 3]
       )
     ).toEqual({
       ok: false,
       message:
-        "dumka plan invalid: directive 1 subdivisionLevel 6 does not exist on working Subdivision 12",
+        "dumka plan invalid: directive 1 subdivisionLevel 5 is not an enabled palette prime",
     });
   });
 
@@ -551,7 +563,7 @@ describe("evolution curve model", () => {
     expect(
       validateEvolutionCurve(curve([[1, 1], [600, 1]]))
     ).toBe(
-      "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 512"
+      "dumka plan invalid: curve spans 599 cycles between its first and last points, the maximum is 511"
     );
   });
 
@@ -596,5 +608,280 @@ describe("evolution curve model", () => {
     expect(repaired.enabled).toBe(true);
     const emptied = normalizeEvolutionCurve({ enabled: true, points: [] });
     expect(emptied.curve.enabled).toBe(true);
+  });
+
+  it("mirrors plan.rs PropertyCurve interpolation and absence", () => {
+    const curve = {
+      property: "density" as const,
+      enabled: true,
+      toleranceMilli: 1_000,
+      weight: 50,
+      points: [
+        { cycle: 2, targetMilli: 20_000 },
+        { cycle: 6, targetMilli: 80_000 },
+      ],
+    };
+    // Absent — not zero — outside the drawn span.
+    expect(propertyCurveTargetMilliAt(curve, 1)).toBeNull();
+    expect(propertyCurveBandAt(curve, 1)).toBeNull();
+    expect(propertyCurveTargetMilliAt(curve, 7)).toBeNull();
+    expect(propertyCurveTargetMilliAt(curve, 2)).toBe(20_000);
+    expect(propertyCurveTargetMilliAt(curve, 4)).toBe(50_000);
+    expect(propertyCurveBandAt(curve, 2)).toEqual([19_000, 21_000]);
+    expect(
+      propertyCurveBandAt({ ...curve, toleranceMilli: 100_000 }, 2)
+    ).toEqual([0, 100_000]);
+  });
+
+  it("draws, moves, and clears points on a per-property curve", () => {
+    // Drawing the first point creates an enabled curve with default rails.
+    const created = upsertPropertyCurvePoint([], "syncopation", 3, 40_000);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      property: "syncopation",
+      enabled: true,
+      toleranceMilli: DEFAULT_PROPERTY_CURVE_TOLERANCE,
+      weight: 50,
+      points: [{ cycle: 3, targetMilli: 40_000 }],
+    });
+    // A second point sorts in; re-drawing a cycle replaces (moves) it.
+    const two = upsertPropertyCurvePoint(created, "syncopation", 1, 10_000);
+    expect(two[0]!.points).toEqual([
+      { cycle: 1, targetMilli: 10_000 },
+      { cycle: 3, targetMilli: 40_000 },
+    ]);
+    const moved = upsertPropertyCurvePoint(two, "syncopation", 3, 90_000);
+    expect(moved[0]!.points).toEqual([
+      { cycle: 1, targetMilli: 10_000 },
+      { cycle: 3, targetMilli: 90_000 },
+    ]);
+    // A second property lands in fixed lane order (density before syncopation).
+    const withDensity = upsertPropertyCurvePoint(moved, "density", 2, 60_000);
+    expect(withDensity.map((curve) => curve.property)).toEqual([
+      "density",
+      "syncopation",
+    ]);
+    // Settings edit an existing lane; removing the last point drops the curve.
+    const weighted = setPropertyCurveSettings(withDensity, "density", {
+      weight: 80,
+      toleranceMilli: 12_000,
+    });
+    expect(weighted.find((c) => c.property === "density")).toMatchObject({
+      weight: 80,
+      toleranceMilli: 12_000,
+    });
+    const dropped = removePropertyCurvePoint(weighted, "density", 2);
+    expect(dropped.map((curve) => curve.property)).toEqual(["syncopation"]);
+    // Setting on an absent property pre-creates a disabled placeholder lane.
+    const placeholder = setPropertyCurveSettings([], "evenness", {
+      enabled: true,
+    });
+    expect(placeholder[0]).toMatchObject({
+      property: "evenness",
+      enabled: true,
+      points: [],
+    });
+  });
+
+  it("coalesces a 65th point and clamps a 513-cycle endpoint before committing", () => {
+    const full = [
+      {
+        property: "occupancy" as const,
+        enabled: true,
+        toleranceMilli: 5_000,
+        weight: 50,
+        points: Array.from({ length: 64 }, (_, index) => ({
+          cycle: index + 1,
+          targetMilli: 20_000,
+        })),
+      },
+    ];
+    const coalesced = upsertPropertyCurvePoint(full, "occupancy", 100, 90_000);
+    expect(coalesced[0]!.points).toHaveLength(64);
+    expect(coalesced[0]!.points.at(-1)).toEqual({
+      cycle: 64,
+      targetMilli: 90_000,
+    });
+
+    const clamped = upsertPropertyCurvePoint(
+      [
+        {
+          ...full[0]!,
+          points: [{ cycle: 1, targetMilli: 20_000 }],
+        },
+      ],
+      "occupancy",
+      1_000,
+      80_000
+    );
+    expect(clamped[0]!.points.at(-1)!.cycle).toBe(512);
+  });
+
+  it("pins property-only and shared pacing work budgets", () => {
+    const propertyCurve = (
+      property: "syncopation" | "occupancy",
+      first: number,
+      last: number
+    ) => ({
+      property,
+      enabled: true,
+      toleranceMilli: 1_000,
+      weight: 50,
+      points: [
+        { cycle: first, targetMilli: 50_000 },
+        { cycle: last, targetMilli: 50_000 },
+      ],
+    });
+    const oneSpan = [propertyCurve("syncopation", 1, 512)];
+    expect(propertySteeringWork(oneSpan, 8)).toBe(32_768n);
+    const disjoint = [
+      ...oneSpan,
+      propertyCurve("occupancy", 513, 1_024),
+    ];
+    expect(
+      validatePropertyCurveConfiguration(
+        disjoint,
+        0,
+        100,
+        0,
+        100_000,
+        [],
+        { ...DEFAULT_EVOLUTION_CURVE, maxOperations: 8 }
+      )
+    ).toBe(
+      "dumka plan invalid: propertyCurve steering needs 65536 functional evaluations across 1024 cycles, the maximum is 32768"
+    );
+
+    const pacing = {
+      ...DEFAULT_EVOLUTION_CURVE,
+      enabled: true,
+      maxOperations: 8,
+      points: [
+        { cycle: 1, targetMilli: 0 },
+        { cycle: 64, targetMilli: 0 },
+      ],
+    };
+    const shared = [propertyCurve("syncopation", 1, 64)];
+    expect(propertyPacingScoringWork([], pacing, shared)).toBe(4_160n);
+    expect(
+      validatePropertyCurveConfiguration(
+        shared,
+        0,
+        100,
+        0,
+        100_000,
+        [],
+        pacing
+      )
+    ).toBe(
+      "dumka perceptual plan reserves 4160 scoring operations, exceeding the limit of 4096"
+    );
+    const within = {
+      ...pacing,
+      points: [
+        { cycle: 1, targetMilli: 0 },
+        { cycle: 63, targetMilli: 0 },
+      ],
+    };
+    expect(
+      propertyPacingScoringWork(
+        [],
+        within,
+        [propertyCurve("syncopation", 1, 63)]
+      )
+    ).toBe(4_095n);
+  });
+
+  it("mirrors plan.rs validate_property_curves messages byte-for-byte", () => {
+    const density = (points: { cycle: number; targetMilli: number }[]) => ({
+      property: "density" as const,
+      enabled: true,
+      toleranceMilli: 5_000,
+      weight: 50,
+      points,
+    });
+    const ok = [density([{ cycle: 1, targetMilli: 50_000 }])];
+    expect(validatePropertyCurves(ok, 0, 100, 0, 100_000)).toBeNull();
+
+    expect(validatePropertyCurves([...ok, ...ok], 0, 100, 0, 100_000)).toBe(
+      "dumka plan invalid: propertyCurve supports at most one curve per property, got a second density"
+    );
+    expect(
+      validatePropertyCurves(
+        [{ ...density([{ cycle: 1, targetMilli: 1 }]), weight: 0 }],
+        0,
+        100,
+        0,
+        100_000
+      )
+    ).toBe("dumka plan invalid: propertyCurve density weight must be 1-100, got 0");
+    expect(
+      validatePropertyCurves(
+        [
+          density([
+            { cycle: 3, targetMilli: 1 },
+            { cycle: 3, targetMilli: 2 },
+          ]),
+        ],
+        0,
+        100,
+        0,
+        100_000
+      )
+    ).toBe(
+      "dumka plan invalid: propertyCurve density points must have strictly ascending cycles"
+    );
+    // Static intersection: 90% ± 1% band cannot fit a 0-50% corridor.
+    expect(
+      validatePropertyCurves(
+        [{ ...density([{ cycle: 5, targetMilli: 90_000 }]), toleranceMilli: 1_000 }],
+        0,
+        50,
+        0,
+        100_000
+      )
+    ).toBe(
+      "dumka plan invalid: propertyCurve density conflicts with the density corridor at cycle 5"
+    );
+    // A steered-only property never triggers the intersection check.
+    expect(
+      validatePropertyCurves(
+        [
+          {
+            property: "syncopation" as const,
+            enabled: true,
+            toleranceMilli: 1_000,
+            weight: 50,
+            points: [{ cycle: 5, targetMilli: 90_000 }],
+          },
+        ],
+        0,
+        50,
+        0,
+        100_000
+      )
+    ).toBeNull();
+  });
+
+  it("tolerantly normalizes a property-curve array", () => {
+    const { curves, droppedCurves, droppedPoints } = normalizePropertyCurves([
+      {
+        property: "density",
+        enabled: true,
+        toleranceMilli: 5_000,
+        weight: 50,
+        points: [
+          { cycle: 2, targetMilli: 40_000 },
+          { cycle: 1, targetMilli: 20_000 },
+          { cycle: 1, targetMilli: 99_000 }, // duplicate cycle → dropped
+        ],
+      },
+      { property: "density", enabled: true, weight: 50, points: [] }, // second density → dropped
+      { property: "bogus", enabled: true, points: [] }, // unknown property → dropped
+    ]);
+    expect(curves).toHaveLength(1);
+    expect(curves[0]!.points.map((point) => point.cycle)).toEqual([1, 2]);
+    expect(droppedPoints).toBe(1);
+    expect(droppedCurves).toBe(2);
   });
 });

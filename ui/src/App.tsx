@@ -1,4 +1,7 @@
-import { DEFAULT_EVOLUTION_CURVE } from "./dumkaEvolvePlan";
+import {
+  DEFAULT_EVOLUTION_CURVE,
+  validatePropertyCurves,
+} from "./dumkaEvolvePlan";
 import {
   useCallback,
   useEffect,
@@ -10,6 +13,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
 } from "react";
 import {
   onTransportPosition,
@@ -62,6 +66,7 @@ import {
   type GeneratorPreview,
   type GeneratorPreviewRequest,
   type EvolutionCurve,
+  type PropertyCurve,
   type EvolutionDirective,
   type TrackPlaybackRequest,
   type SubdivisionSwitchPreview,
@@ -932,8 +937,124 @@ export default function App() {
   const [dumkaEvolutionCurve, setDumkaEvolutionCurve] = useState<EvolutionCurve>(
     () => ({ ...DEFAULT_EVOLUTION_CURVE, points: [] })
   );
+  const [dumkaPropertyCurves, setDumkaPropertyCurves] = useState<PropertyCurve[]>(
+    []
+  );
   const [dumkaPlanLengthCycles, setDumkaPlanLengthCycles] = useState(0);
+  const [dumkaCorridorEditError, setDumkaCorridorEditError] = useState<
+    string | null
+  >(null);
   const [generatorDensityPercent, setGeneratorDensityPercent] = useState(100);
+  const corridorEditIsValid = useCallback(
+    (
+      densityFloor: number,
+      densityCeiling: number,
+      complexityFloor: number,
+      complexityCeiling: number
+    ) => {
+      const message = validatePropertyCurves(
+        dumkaPropertyCurves,
+        densityFloor,
+        densityCeiling,
+        complexityFloor,
+        complexityCeiling
+      );
+      setDumkaCorridorEditError(message);
+      return message === null;
+    },
+    [dumkaPropertyCurves]
+  );
+  const updateDumkaDensityFloor = useCallback(
+    (update: SetStateAction<number>) => {
+      const next = typeof update === "function" ? update(dumkaDensityFloor) : update;
+      if (
+        corridorEditIsValid(
+          next,
+          dumkaDensityCeiling,
+          dumkaComplexityFloor,
+          dumkaComplexityCeiling
+        )
+      ) {
+        setDumkaDensityFloor(next);
+      }
+    },
+    [
+      corridorEditIsValid,
+      dumkaComplexityCeiling,
+      dumkaComplexityFloor,
+      dumkaDensityCeiling,
+      dumkaDensityFloor,
+    ]
+  );
+  const updateDumkaDensityCeiling = useCallback(
+    (update: SetStateAction<number>) => {
+      const next =
+        typeof update === "function" ? update(dumkaDensityCeiling) : update;
+      if (
+        corridorEditIsValid(
+          dumkaDensityFloor,
+          next,
+          dumkaComplexityFloor,
+          dumkaComplexityCeiling
+        )
+      ) {
+        setDumkaDensityCeiling(next);
+      }
+    },
+    [
+      corridorEditIsValid,
+      dumkaComplexityCeiling,
+      dumkaComplexityFloor,
+      dumkaDensityCeiling,
+      dumkaDensityFloor,
+    ]
+  );
+  const updateDumkaComplexityFloor = useCallback(
+    (update: SetStateAction<number>) => {
+      const next =
+        typeof update === "function" ? update(dumkaComplexityFloor) : update;
+      if (
+        corridorEditIsValid(
+          dumkaDensityFloor,
+          dumkaDensityCeiling,
+          next,
+          dumkaComplexityCeiling
+        )
+      ) {
+        setDumkaComplexityFloor(next);
+      }
+    },
+    [
+      corridorEditIsValid,
+      dumkaComplexityCeiling,
+      dumkaComplexityFloor,
+      dumkaDensityCeiling,
+      dumkaDensityFloor,
+    ]
+  );
+  const updateDumkaComplexityCeiling = useCallback(
+    (update: SetStateAction<number>) => {
+      const next =
+        typeof update === "function" ? update(dumkaComplexityCeiling) : update;
+      if (
+        corridorEditIsValid(
+          dumkaDensityFloor,
+          dumkaDensityCeiling,
+          dumkaComplexityFloor,
+          next
+        )
+      ) {
+        setDumkaComplexityCeiling(next);
+      }
+    },
+    [
+      corridorEditIsValid,
+      dumkaComplexityCeiling,
+      dumkaComplexityFloor,
+      dumkaDensityCeiling,
+      dumkaDensityFloor,
+    ]
+  );
   const [generatorSeedMode, setGeneratorSeedMode] =
     useState<GeneratorConfig["seedMode"]["type"]>("locked");
   const [generatorSeed, setGeneratorSeed] = useState(seed);
@@ -1133,6 +1254,7 @@ export default function App() {
           euclidRestPolicy: dumkaEuclidRestPolicy,
           plan: dumkaPlan,
           evolutionCurve: dumkaEvolutionCurve,
+          propertyCurves: dumkaPropertyCurves,
           // This is editor canvas state, not an engine input. Runtime requests
           // use a canonical value so resizing the score view cannot wake
           // preview or playback effects.
@@ -1161,6 +1283,7 @@ export default function App() {
     dumkaOpWeights,
     dumkaPlan,
     dumkaEvolutionCurve,
+    dumkaPropertyCurves,
     dumkaPattern,
     generatorDensityPercent,
     generatorKind,
@@ -4370,6 +4493,7 @@ export default function App() {
       setDumkaDriftLeash(patch.generator.driftLeash);
       setDumkaDensityFloor(patch.generator.densityFloor);
       setDumkaDensityCeiling(patch.generator.densityCeiling);
+      setDumkaCorridorEditError(null);
       setDumkaSubdivisionPalette([...patch.generator.subdivisionPalette]);
       setDumkaComplexityFloor(patch.generator.complexityFloor);
       setDumkaComplexityCeiling(patch.generator.complexityCeiling);
@@ -4386,6 +4510,12 @@ export default function App() {
           ...point,
         })),
       });
+      setDumkaPropertyCurves(
+        patch.generator.propertyCurves.map((curve) => ({
+          ...curve,
+          points: curve.points.map((point) => ({ ...point })),
+        }))
+      );
     }
     setGeneratorSeedMode(patch.generator.seedMode.type);
     setGeneratorSeed(patch.generator.seedMode.seed);
@@ -8765,7 +8895,9 @@ export default function App() {
           dumkaDensityCeiling={dumkaDensityCeiling}
           dumkaPreviewError={
             generatorKind === "dumka"
-              ? (currentRhythmPreviewFailure?.message ?? null)
+              ? (dumkaCorridorEditError ??
+                currentRhythmPreviewFailure?.message ??
+                null)
               : null
           }
           dumkaRequired={dumkaRequired}
@@ -8788,14 +8920,14 @@ export default function App() {
           onApplyDumkaStructure={handleApplyDumkaStructure}
           setDumkaEvolutionRate={setDumkaEvolutionRate}
           setDumkaDriftLeash={setDumkaDriftLeash}
-          setDumkaDensityFloor={setDumkaDensityFloor}
-          setDumkaDensityCeiling={setDumkaDensityCeiling}
+          setDumkaDensityFloor={updateDumkaDensityFloor}
+          setDumkaDensityCeiling={updateDumkaDensityCeiling}
           dumkaSubdivisionPalette={dumkaSubdivisionPalette}
           setDumkaSubdivisionPalette={setDumkaSubdivisionPalette}
           dumkaComplexityFloor={dumkaComplexityFloor}
-          setDumkaComplexityFloor={setDumkaComplexityFloor}
+          setDumkaComplexityFloor={updateDumkaComplexityFloor}
           dumkaComplexityCeiling={dumkaComplexityCeiling}
-          setDumkaComplexityCeiling={setDumkaComplexityCeiling}
+          setDumkaComplexityCeiling={updateDumkaComplexityCeiling}
           dumkaPlacementBias={dumkaPlacementBias}
           setDumkaPlacementBias={setDumkaPlacementBias}
           dumkaBarlowTemperature={dumkaBarlowTemperature}
@@ -8845,6 +8977,11 @@ export default function App() {
           onPlanChange={setDumkaPlan}
           curve={dumkaEvolutionCurve}
           onCurveChange={setDumkaEvolutionCurve}
+          propertyCurves={dumkaPropertyCurves}
+          onPropertyCurvesChange={(curves) => {
+            setDumkaPropertyCurves(curves);
+            setDumkaCorridorEditError(null);
+          }}
           onPlanLengthCyclesChange={(cycles) =>
             setDumkaPlanLengthCycles(clamp(Math.round(cycles), 0, 0xffff_ffff))
           }
@@ -8857,6 +8994,7 @@ export default function App() {
           complexityFloor={dumkaComplexityFloor}
           complexityCeiling={dumkaComplexityCeiling}
           workingSubdivision={dumkaRequired?.workingSubdivision ?? 1}
+          subdivisionPalette={dumkaSubdivisionPalette}
           seedTotalBeats={dumkaRequired?.cycleBeats ?? cycleBeats}
         />
       </section>

@@ -231,7 +231,7 @@ describe("EvolvePlanEditor", () => {
 
     expect(
       screen.getByRole("group", {
-        name: /Cycle 5 composition: 1 onset, 25% density; corridor 30% through 55%/,
+        name: /Cycle 5 density 25%, 1 onset, corridor 30% through 55%/,
       })
     ).toBeTruthy();
     expect(
@@ -304,6 +304,357 @@ describe("EvolvePlanEditor", () => {
     expect(upserted.points.some((point) => point.cycle === 6)).toBe(true);
     // Exactly two authored changes: the removal and the single left click.
     expect(onCurveChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws a property curve by clicking a lane and clears points with shift-click", () => {
+    const onPropertyCurvesChange = vi.fn();
+    const { rerender } = render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const cell = screen.getByRole("group", { name: /Cycle 6 syncopation/ });
+    // Non-primary buttons must not author (the audit's pointer-guard lesson).
+    fireEvent.pointerDown(cell, { button: 2, clientY: 0 });
+    expect(onPropertyCurvesChange).not.toHaveBeenCalled();
+    // A primary click creates the syncopation curve with a point at cycle 6.
+    fireEvent.pointerDown(cell, { button: 0, clientY: 0 });
+    expect(onPropertyCurvesChange).toHaveBeenCalledTimes(1);
+    const created = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
+      property: string;
+      enabled: boolean;
+      points: Array<{ cycle: number; targetMilli: number }>;
+    }>;
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      property: "syncopation",
+      enabled: true,
+      points: [{ cycle: 6, targetMilli: 0 }],
+    });
+
+    // With the curve present, shift-clicking its only point clears the curve.
+    rerender(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={created as never}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const drawnCell = screen.getByRole("group", { name: /Cycle 6 syncopation/ });
+    fireEvent.pointerDown(drawnCell, { button: 0, clientY: 0, shiftKey: true });
+    expect(onPropertyCurvesChange).toHaveBeenLastCalledWith([]);
+  });
+
+  it("draws a freehand automation line by dragging across a lane", () => {
+    const onPropertyCurvesChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    // Press on the Density lane at cycle 2, then drag right across cycles 3-4.
+    // The cursor's X selects the cycle (LANE_LABEL_WIDTH 112 + cellWidth 54).
+    const cell = screen.getByRole("group", { name: /Cycle 2 density/ });
+    fireEvent.pointerDown(cell, {
+      button: 0,
+      pointerId: 1,
+      clientX: 112 + 2.5 * 54,
+      clientY: 0,
+    });
+    fireEvent.pointerMove(cell, {
+      pointerId: 1,
+      clientX: 112 + 3.5 * 54,
+      clientY: 0,
+    });
+    fireEvent.pointerMove(cell, {
+      pointerId: 1,
+      clientX: 112 + 4.5 * 54,
+      clientY: 0,
+    });
+    fireEvent.pointerUp(cell, { pointerId: 1 });
+    const drawn = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
+      property: string;
+      points: Array<{ cycle: number }>;
+    }>;
+    const density = drawn.find((curve) => curve.property === "density");
+    // One drag laid a connected line of points across every crossed cycle.
+    expect(density?.points.map((point) => point.cycle)).toEqual([2, 3, 4]);
+  });
+
+  it("deletes a point by clicking its handle", () => {
+    const onPropertyCurvesChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[
+          {
+            property: "density",
+            enabled: true,
+            toleranceMilli: 5_000,
+            weight: 50,
+            points: [
+              { cycle: 3, targetMilli: 40_000 },
+              { cycle: 8, targetMilli: 70_000 },
+            ],
+          },
+        ]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    // Each authored point is a labelled handle; a plain click (no drag) removes
+    // just that point and leaves the rest of the line.
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Move or remove density point at cycle 3",
+      })
+    );
+    const next = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
+      property: string;
+      points: Array<{ cycle: number }>;
+    }>;
+    expect(next[0]?.points.map((point) => point.cycle)).toEqual([8]);
+  });
+
+  it("authors, adjusts, moves, and deletes property points from the keyboard", () => {
+    const onPropertyCurvesChange = vi.fn();
+    const { rerender } = render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    fireEvent.keyDown(
+      screen.getByRole("group", { name: "Cycle 3 syncopation not cached" }),
+      { key: "Enter" }
+    );
+    expect(onPropertyCurvesChange.mock.calls.at(-1)?.[0]).toMatchObject([
+      {
+        property: "syncopation",
+        points: [{ cycle: 3, targetMilli: 50_000 }],
+      },
+    ]);
+
+    const authored = onPropertyCurvesChange.mock.calls.at(-1)?.[0];
+    rerender(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={authored}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const handle = screen.getByRole("button", {
+      name: "Move or remove syncopation point at cycle 3",
+    });
+    fireEvent.keyDown(handle, { key: "ArrowUp" });
+    expect(
+      onPropertyCurvesChange.mock.calls.at(-1)?.[0][0].points[0]
+    ).toEqual({ cycle: 3, targetMilli: 51_000 });
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(
+      onPropertyCurvesChange.mock.calls.at(-1)?.[0][0].points[0]
+    ).toEqual({ cycle: 4, targetMilli: 50_000 });
+    fireEvent.keyDown(handle, { key: "Delete" });
+    expect(onPropertyCurvesChange.mock.calls.at(-1)?.[0]).toEqual([]);
+  });
+
+  it("exposes settings for disabled imported property curves", () => {
+    const onPropertyCurvesChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[
+          {
+            property: "density",
+            enabled: false,
+            toleranceMilli: 12_000,
+            weight: 80,
+            points: [{ cycle: 3, targetMilli: 40_000 }],
+          },
+        ]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    expect(
+      (screen.getByLabelText("Density curve tolerance") as HTMLInputElement)
+        .value
+    ).toBe("12");
+    expect(
+      (screen.getByLabelText("Density curve weight") as HTMLInputElement).value
+    ).toBe("80");
+    fireEvent.click(screen.getByLabelText("Density curve enabled"));
+    expect(onPropertyCurvesChange.mock.calls.at(-1)?.[0][0].enabled).toBe(true);
+  });
+
+  it("marks drawn bands as directive-overridden only for a valid active scope", () => {
+    const propertyCurves = [
+      {
+        property: "density" as const,
+        enabled: true,
+        toleranceMilli: 1_000,
+        weight: 50,
+        points: [{ cycle: 5, targetMilli: 90_000 }],
+      },
+    ];
+    const cachedPreviews = [
+      {
+        cycle: 5,
+        preview: {
+          spans: [],
+          densityCorridor: { floor: 0, ceiling: 100 },
+          cycleDistance: null,
+          workingSubdivision: 4,
+          stateComplexityMilli: null,
+          stateDepthDiversityMilli: null,
+          complexityCorridor: null,
+          propertyProfile: {
+            densityMilli: 20_000,
+            complexityMilli: 0,
+            syncopationMilli: 0,
+            evennessMilli: 0,
+            occupancyMilli: 0,
+            diversityMilli: 0,
+          },
+          curveMisses: [
+            {
+              property: "density" as const,
+              gapMilli: 69_000,
+              reason: "noReducingCandidate" as const,
+            },
+          ],
+        },
+      },
+    ];
+    const { rerender } = render(
+      <EvolvePlanEditor
+        plan={[directive({ fromCycle: 5, toCycle: 5, scope: null })]}
+        planLengthCycles={8}
+        totalBeats={4}
+        propertyCurves={propertyCurves}
+        cachedPreviews={cachedPreviews}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const overridden = screen.getByRole("group", {
+      name: /Cycle 5 density 20\.0, target band overridden by directive/,
+    });
+    expect(overridden.classList.contains("is-overridden")).toBe(true);
+    expect(overridden.querySelector(".is-miss")).toBeNull();
+
+    rerender(
+      <EvolvePlanEditor
+        plan={[
+          directive({
+            fromCycle: 5,
+            toCycle: 5,
+            scope: { startBeat: 4, lenBeats: 1 },
+          }),
+        ]}
+        planLengthCycles={8}
+        totalBeats={4}
+        propertyCurves={propertyCurves}
+        cachedPreviews={cachedPreviews}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const miss = screen.getByRole("group", {
+      name: /Cycle 5 density 20\.0, target 90\.0 band/,
+    });
+    expect(miss.classList.contains("is-overridden")).toBe(false);
+    expect(miss.querySelector(".is-miss")).not.toBeNull();
+  });
+
+  it("keeps DOM focus order aligned with the visible calibration-first layout", () => {
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={8}
+        totalBeats={4}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const timeline = screen.getByLabelText("Evolution score timeline");
+    const pacing = screen.getByLabelText("Pacing lane");
+    const density = screen.getByLabelText("Density lane");
+    const events = screen.getByLabelText("Events");
+    const remove = screen.getByLabelText("Remove lane");
+    const children = [...timeline.children];
+    expect(children.indexOf(pacing)).toBeLessThan(children.indexOf(density));
+    expect(children.indexOf(density)).toBeLessThan(children.indexOf(events));
+    expect(children.indexOf(events)).toBeLessThan(children.indexOf(remove));
+  });
+
+  it("moves a point by dragging its handle instead of deleting it", () => {
+    const onPropertyCurvesChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[
+          {
+            property: "density",
+            enabled: true,
+            toleranceMilli: 5_000,
+            weight: 50,
+            points: [
+              { cycle: 3, targetMilli: 40_000 },
+              { cycle: 8, targetMilli: 70_000 },
+            ],
+          },
+        ]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const handle = screen.getByRole("button", {
+      name: "Move or remove density point at cycle 3",
+    });
+    // A press-and-drag past the click threshold repositions the point; a
+    // release after moving must NOT be read as a delete.
+    fireEvent.pointerDown(handle, {
+      button: 0,
+      pointerId: 5,
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(handle, {
+      pointerId: 5,
+      clientX: 100,
+      clientY: 132,
+    });
+    fireEvent.pointerUp(handle, { pointerId: 5 });
+    const next = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
+      property: string;
+      points: Array<{ cycle: number }>;
+    }>;
+    // Both points survive — the dragged one moved, it was not removed.
+    expect(next[0]?.points.map((point) => point.cycle)).toEqual([3, 8]);
   });
 
   it("plots the step-size lane with target bands and tolerance verdicts", () => {
@@ -532,7 +883,7 @@ describe("EvolvePlanEditor", () => {
     ).toBeTruthy();
   });
 
-  it("offers canonical working-grid depth indices instead of palette primes", () => {
+  it("offers the enabled palette primes as subdivision-level filters", () => {
     const onPlanChange = vi.fn();
     render(
       <EvolvePlanEditor
@@ -540,6 +891,7 @@ describe("EvolvePlanEditor", () => {
         planLengthCycles={12}
         totalBeats={4}
         workingSubdivision={12}
+        subdivisionPalette={[2, 3]}
         initialSelectedId={1}
         onPlanChange={onPlanChange}
       />
@@ -552,12 +904,8 @@ describe("EvolvePlanEditor", () => {
       Array.from(select.options).map((option) => option.textContent)
     ).toEqual([
       "Any level",
-      "Level 0 · beat starts",
-      "Level 1 · 1/2-beat positions",
-      "Level 2 · 1/4-beat positions",
-      "Level 3 · 1/3-beat positions",
-      "Level 4 · 1/6-beat positions",
-      "Level 5 · 1/12-beat positions",
+      "Prime 2 · 1/2-family positions",
+      "Prime 3 · 1/3-family positions",
     ]);
 
     fireEvent.change(select, { target: { value: "3" } });
@@ -1055,26 +1403,20 @@ describe("EvolvePlanEditor", () => {
     expect(
       screen.getByLabelText("Stochastic: 0/0, floor corridor 40%")
     ).toBeTruthy();
-    const onset = screen.getByTitle("1 onsets");
-    expect(onset).toBeTruthy();
-    expect(onset.parentElement?.style.getPropertyValue("--density-percent")).toBe(
-      "25%"
-    );
-    expect(onset.style.height).toBe("25%");
+    const densityCell = screen.getByRole("group", {
+      name: /Cycle 5 density 25%, 1 onset/,
+    });
     expect(
-      screen.getByRole("group", {
-        name: /Cycle 5 composition: 1 onset, 25% density/,
-      })
-    ).toBeTruthy();
+      (densityCell.querySelector(".evolve-plan-property-mark") as HTMLElement)
+        .style.bottom
+    ).toBe("25%");
+    const fullDensityCell = screen.getByRole("group", {
+      name: /Cycle 6 density 100%, 4 onsets/,
+    });
     expect(
-      screen.getByRole("group", {
-        name: "Cycle 6 composition: 4 onsets, 100% density; corridor 0% through 100%",
-      })
-    ).toBeTruthy();
-    expect(
-      (document.querySelector(
-        '.evolve-plan-onset-bar[title="4 onsets"]'
-      ) as HTMLElement).style.height
+      (fullDensityCell.querySelector(
+        ".evolve-plan-property-mark"
+      ) as HTMLElement).style.bottom
     ).toBe("100%");
     expect(document.querySelectorAll(".evolve-plan-trace")).toHaveLength(3);
   });

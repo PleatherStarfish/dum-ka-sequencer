@@ -20,6 +20,7 @@ import {
   normalizedPlacementRanks,
   stateComplexityMilli,
   stateDepthDiversityMilli,
+  stateProperties,
   stratification,
 } from "./dumkaMetrics";
 
@@ -59,28 +60,42 @@ interface SpectrumContract {
   }>;
 }
 
+interface PropertyProfileCase {
+  cycleBeats: number;
+  subdivision: number;
+  rotationBeats: number;
+  onsets: Array<[number, number]>;
+  profile: {
+    densityMilli: number;
+    complexityMilli: number;
+    syncopationMilli: number;
+    evennessMilli: number;
+    occupancyMilli: number;
+    diversityMilli: number;
+  } | null;
+}
+
 interface MetricsContract {
   metricalCases: ContractCase[];
   spectrum: SpectrumContract;
+  propertyProfiles: PropertyProfileCase[];
 }
 
 describe("dumkaMetrics", () => {
-  it("indexes working-grid denominator levels by Barlow price, not palette prime", () => {
-    expect(dumkaSubdivisionLevels(12)).toEqual([
-      { index: 0, denominator: 1, indigestibility: 0 },
-      { index: 1, denominator: 2, indigestibility: 210 },
-      { index: 2, denominator: 4, indigestibility: 420 },
-      { index: 3, denominator: 3, indigestibility: 560 },
-      { index: 4, denominator: 6, indigestibility: 770 },
-      { index: 5, denominator: 12, indigestibility: 980 },
+  it("offers the enabled palette primes as subdivision levels, priced by Barlow", () => {
+    expect(dumkaSubdivisionLevels([3, 2])).toEqual([
+      { prime: 2, indigestibility: 210 },
+      { prime: 3, indigestibility: 560 },
     ]);
-    expect(dumkaSubdivisionLevels(11)).toEqual([
-      { index: 0, denominator: 1, indigestibility: 0 },
-      { index: 1, denominator: 11, indigestibility: 3818 },
+    expect(dumkaSubdivisionLevels([5])).toEqual([
+      { prime: 5, indigestibility: 1344 },
     ]);
-    expect(dumkaSubdivisionLevelExists(5, 12)).toBe(true);
-    expect(dumkaSubdivisionLevelExists(6, 12)).toBe(false);
-    expect(dumkaSubdivisionLevelExists(0, 1)).toBe(true);
+    // An empty palette exposes no filter levels.
+    expect(dumkaSubdivisionLevels([])).toEqual([]);
+    // Only palette primes are valid subdivisionLevel values.
+    expect(dumkaSubdivisionLevelExists(3, [3, 2])).toBe(true);
+    expect(dumkaSubdivisionLevelExists(5, [3, 2])).toBe(false);
+    expect(dumkaSubdivisionLevelExists(2, [])).toBe(false);
   });
 
   it("matches the Rust metrics contract fixture on every grid", () => {
@@ -165,6 +180,36 @@ describe("dumkaMetrics", () => {
     expect(factorDescending(12)).toEqual([3, 2, 2]);
     expect(metricalLevels([3, 2])).toEqual([0, 2, 1, 2, 1, 2]);
     expect(metricalLevels([2, 3])).toEqual([0, 2, 2, 1, 2, 2]);
+  });
+
+  it("mirrors the Rust per-state property profile on every reference case", () => {
+    const cases = (metricsContract as MetricsContract).propertyProfiles;
+    expect(cases.length).toBeGreaterThan(0);
+    for (const reference of cases) {
+      const slots = reference.cycleBeats * reference.subdivision;
+      // Reproduce the engine's RhythmView normalization: whole-beat rotation
+      // then per-slot attack/occupancy masks with sustains wrapping the cycle.
+      const rotation =
+        (reference.rotationBeats % reference.cycleBeats) * reference.subdivision;
+      const attacks = new Array<boolean>(slots).fill(false);
+      const occupancy = new Array<boolean>(slots).fill(false);
+      for (const [slot, dur] of reference.onsets) {
+        const start = ((slot % slots) + rotation) % slots;
+        attacks[start] = true;
+        const length = Math.min(dur, slots);
+        for (let offset = 0; offset < length; offset += 1) {
+          occupancy[(start + offset) % slots] = true;
+        }
+      }
+      expect(
+        stateProperties(
+          reference.cycleBeats,
+          reference.subdivision,
+          attacks,
+          occupancy
+        )
+      ).toEqual(reference.profile);
+    }
   });
 
   it("mirrors the fixed-point depth complexity and diversity insights", () => {

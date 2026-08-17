@@ -201,9 +201,9 @@ test("mock validates depth and Morph plan fields before any folded cycle", async
     unpairedComplexity:
       "dumka plan invalid: directive 41 complexityFloor and complexityCeiling must both be set or both be omitted",
     missingDepthLevel:
-      "dumka plan invalid: directive 41 subdivisionLevel 3 does not exist on working Subdivision 4",
+      "dumka plan invalid: directive 41 subdivisionLevel 3 is not an enabled palette prime",
     disabledMissingDepthLevel:
-      "dumka plan invalid: directive 41 subdivisionLevel 3 does not exist on working Subdivision 4",
+      "dumka plan invalid: directive 41 subdivisionLevel 3 is not an enabled palette prime",
     missingMorphTarget:
       "dumka plan invalid: directive 41 morph requires options.morphTarget",
   });

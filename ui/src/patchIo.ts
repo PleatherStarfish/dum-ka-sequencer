@@ -4,19 +4,24 @@
 import {
   analyzeDumkaPattern,
   compileDumkaPattern,
+  DUMKA_SUBDIVISION_LEVELS,
   MAX_DUMKA_PATTERN_LENGTH,
   normalizeDumkaPattern,
   normalizeDumkaSubdivisionPalette,
 } from "./dumkaPattern";
 import { dumkaSubdivisionLevelExists } from "./dumkaMetrics";
 import {
+  curveScoringWork,
   normalizeEvolutionCurve,
+  normalizePropertyCurves,
+  propertyPacingScoringWorkError,
+  propertySteeringWorkError,
+  validatePropertyCurves,
   MAX_EVOLUTION_DIRECTIVES,
   MAX_PERCEPTUAL_DISTANCE_MILLI,
   MAX_PERCEPTUAL_OPERATIONS,
   MAX_PERCEPTUAL_SCORING_WORK,
   MAX_COMPLEXITY_MILLI,
-  MAX_SUBDIVISION_LEVEL_INDEX,
   perceptualDirectiveScoringWork,
 } from "./dumkaEvolvePlan";
 import {
@@ -49,6 +54,7 @@ import type {
   AutomationSegmentCurveKind,
   AutomationSet,
   EvolutionCurve,
+  PropertyCurve,
   ChannelAccentRoutingMode,
   ChannelHocketOrnamentMode,
   ChannelHocketRatchetMode,
@@ -1218,6 +1224,7 @@ export type PatchGeneratorConfig =
       plan: PatchEvolutionDirective[];
       planLengthCycles: number;
       evolutionCurve: EvolutionCurve;
+      propertyCurves: PropertyCurve[];
       seedMode: PatchGeneratorSeedMode;
     };
 
@@ -1667,9 +1674,7 @@ function normalizeDirectiveOptions(value: unknown): EvolutionDirective["options"
     placementBias: nullablePercent(options.placementBias),
     subdivisionLevel:
       typeof options.subdivisionLevel === "number" &&
-      Number.isInteger(options.subdivisionLevel) &&
-      options.subdivisionLevel >= 0 &&
-      options.subdivisionLevel <= MAX_SUBDIVISION_LEVEL_INDEX
+      DUMKA_SUBDIVISION_LEVELS.includes(options.subdivisionLevel as never)
         ? options.subdivisionLevel
         : null,
     morphTarget: validMorphTarget(options.morphTarget)
@@ -1695,6 +1700,10 @@ export interface NormalizeEvolutionPlanResult {
   droppedMalformed: number;
   droppedExcess: number;
   disabledOverBudget: number;
+  /** Lifetime perceptual-scoring work reserved by the admitted (enabled)
+   * directives. The evolution curve shares this budget, so the caller charges
+   * `curveScoringWork` on top of it before admitting the curve. */
+  admittedWork: bigint;
 }
 
 export interface PatchEvolutionPlanContext {
@@ -1798,20 +1807,18 @@ export function normalizePatchEvolutionPlan(
         rawOptions.subdivisionLevel !== null &&
         rawOptions.subdivisionLevel !== undefined &&
         (typeof rawOptions.subdivisionLevel !== "number" ||
-          !Number.isInteger(rawOptions.subdivisionLevel) ||
-          rawOptions.subdivisionLevel < 0 ||
-          rawOptions.subdivisionLevel > MAX_SUBDIVISION_LEVEL_INDEX)
+          !DUMKA_SUBDIVISION_LEVELS.includes(rawOptions.subdivisionLevel as never))
       ) {
         droppedMalformed += 1;
         return [];
       }
       if (
-        contextSeed?.ok === true &&
+        contextPalette !== null &&
         rawOptions.subdivisionLevel !== null &&
         rawOptions.subdivisionLevel !== undefined &&
         !dumkaSubdivisionLevelExists(
           Number(rawOptions.subdivisionLevel),
-          contextSeed.required.workingSubdivision
+          contextPalette
         )
       ) {
         droppedMalformed += 1;
@@ -1990,6 +1997,124 @@ export function normalizePatchEvolutionPlan(
     droppedMalformed,
     droppedExcess,
     disabledOverBudget,
+    admittedWork,
+  };
+}
+
+/**
+ * Charge the evolution curve against the shared perceptual-scoring budget
+ * already spent by the plan's admitted directives (mirrors the editor's
+ * `finishCurve`). An enabled curve that overflows is preserved but disabled
+ * so import never yields a config the engine will reject at preview.
+ */
+function budgetEvolutionCurve(
+  curve: EvolutionCurve,
+  admittedWork: bigint
+): { curve: EvolutionCurve; disabledOverBudget: boolean } {
+  if (
+    curve.enabled &&
+    admittedWork + curveScoringWork(curve) > BigInt(MAX_PERCEPTUAL_SCORING_WORK)
+  ) {
+    return { curve: { ...curve, enabled: false }, disabledOverBudget: true };
+  }
+  return { curve, disabledOverBudget: false };
+}
+
+interface NormalizedDumkaCorridors {
+  densityFloor: number;
+  densityCeiling: number;
+  complexityFloor: number;
+  complexityCeiling: number;
+}
+
+function normalizeDumkaCorridors(
+  candidate: Record<string, unknown>
+): NormalizedDumkaCorridors {
+  const densityCeiling = clamp(
+    Math.round(numberValue(candidate.densityCeiling, 100)),
+    0,
+    100
+  );
+  const complexityCeiling = clamp(
+    Math.round(
+      numberValue(candidate.complexityCeiling, MAX_COMPLEXITY_MILLI)
+    ),
+    0,
+    MAX_COMPLEXITY_MILLI
+  );
+  return {
+    densityFloor: Math.min(
+      clamp(Math.round(numberValue(candidate.densityFloor, 0)), 0, 100),
+      densityCeiling
+    ),
+    densityCeiling,
+    complexityFloor: Math.min(
+      clamp(
+        Math.round(numberValue(candidate.complexityFloor, 0)),
+        0,
+        MAX_COMPLEXITY_MILLI
+      ),
+      complexityCeiling
+    ),
+    complexityCeiling,
+  };
+}
+
+interface NormalizedPropertyCurveResult {
+  curves: PropertyCurve[];
+  droppedPoints: number;
+  droppedCurves: number;
+  disabledOverBudget: number;
+  disabledCorridorConflicts: number;
+}
+
+/** Repair imported property curves into an engine-admissible set. Authored
+ * data is preserved where possible: a conflicting or over-budget curve stays
+ * present but is disabled so the lane inspector can repair and re-enable it. */
+function normalizeImportedPropertyCurves(
+  value: unknown,
+  corridors: NormalizedDumkaCorridors,
+  plan: readonly EvolutionDirective[],
+  evolutionCurve: EvolutionCurve
+): NormalizedPropertyCurveResult {
+  const normalized = normalizePropertyCurves(value);
+  const curves: PropertyCurve[] = [];
+  let disabledOverBudget = 0;
+  let disabledCorridorConflicts = 0;
+  for (const source of normalized.curves) {
+    let curve = source;
+    if (
+      curve.enabled &&
+      validatePropertyCurves(
+        [curve],
+        corridors.densityFloor,
+        corridors.densityCeiling,
+        corridors.complexityFloor,
+        corridors.complexityCeiling
+      ) !== null
+    ) {
+      curve = { ...curve, enabled: false };
+      disabledCorridorConflicts += 1;
+    }
+    if (curve.enabled) {
+      const tentative = [...curves, curve];
+      if (
+        propertySteeringWorkError(tentative, evolutionCurve.maxOperations) !==
+          null ||
+        propertyPacingScoringWorkError(plan, evolutionCurve, tentative) !== null
+      ) {
+        curve = { ...curve, enabled: false };
+        disabledOverBudget += 1;
+      }
+    }
+    curves.push(curve);
+  }
+  return {
+    curves,
+    droppedPoints: normalized.droppedPoints,
+    droppedCurves: normalized.droppedCurves,
+    disabledOverBudget,
+    disabledCorridorConflicts,
   };
 }
 
@@ -1999,6 +2124,9 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
   let malformed = false;
   let excess = false;
   let overBudget = false;
+  let repairedPropertyCurves = false;
+  let propertyOverBudget = false;
+  let propertyCorridorConflict = false;
   for (const candidate of generatorCandidates) {
     if (!isRecord(candidate) || candidate.kind !== "dumka") continue;
     const pattern = normalizeDumkaPattern(candidate.pattern);
@@ -2014,6 +2142,24 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
     malformed ||= normalized.droppedMalformed > 0;
     excess ||= normalized.droppedExcess > 0;
     overBudget ||= normalized.disabledOverBudget > 0;
+    // The curve shares the perceptual budget; a curve that overflows what the
+    // admitted directives already reserve is disabled on load, same as a row.
+    const normalizedCurve = budgetEvolutionCurve(
+      normalizeEvolutionCurve(candidate.evolutionCurve).curve,
+      normalized.admittedWork
+    );
+    overBudget ||= normalizedCurve.disabledOverBudget;
+    const propertyResult = normalizeImportedPropertyCurves(
+      candidate.propertyCurves,
+      normalizeDumkaCorridors(candidate),
+      normalized.plan,
+      normalizedCurve.curve
+    );
+    repairedPropertyCurves ||=
+      propertyResult.droppedPoints > 0 || propertyResult.droppedCurves > 0;
+    propertyOverBudget ||= propertyResult.disabledOverBudget > 0;
+    propertyCorridorConflict ||=
+      propertyResult.disabledCorridorConflicts > 0;
   }
   const warnings: string[] = [];
   if (unknown) {
@@ -2031,7 +2177,20 @@ function evolutionPlanLoadWarnings(generatorCandidates: unknown[]): string[] {
     );
   }
   if (overBudget) {
-    warnings.push("Over-budget Dum-Ka perceptual directives were disabled.");
+    warnings.push(
+      "Over-budget Dum-Ka perceptual directives or evolution curve were disabled."
+    );
+  }
+  if (repairedPropertyCurves) {
+    warnings.push("Malformed Dum-Ka property curves or points were dropped.");
+  }
+  if (propertyOverBudget) {
+    warnings.push("Over-budget Dum-Ka property curves were disabled.");
+  }
+  if (propertyCorridorConflict) {
+    warnings.push(
+      "Dum-Ka property curves conflicting with global corridors were disabled."
+    );
   }
   return warnings;
 }
@@ -2046,11 +2205,22 @@ export function normalizePatchGeneratorConfig(
     const subdivisionPalette = normalizeDumkaSubdivisionPalette(
       candidate.subdivisionPalette
     );
-    const normalizedPlan = normalizePatchEvolutionPlan(candidate.plan, {
+    const normalizedPlanResult = normalizePatchEvolutionPlan(candidate.plan, {
       pattern,
       subdivisionPalette,
-    }).plan;
-    const normalizedCurve = normalizeEvolutionCurve(candidate.evolutionCurve);
+    });
+    const normalizedPlan = normalizedPlanResult.plan;
+    const normalizedCurve = budgetEvolutionCurve(
+      normalizeEvolutionCurve(candidate.evolutionCurve).curve,
+      normalizedPlanResult.admittedWork
+    );
+    const corridors = normalizeDumkaCorridors(candidate);
+    const normalizedPropertyCurves = normalizeImportedPropertyCurves(
+      candidate.propertyCurves,
+      corridors,
+      normalizedPlan,
+      normalizedCurve.curve
+    ).curves;
     return {
       kind: "dumka",
       pattern,
@@ -2059,37 +2229,11 @@ export function normalizePatchGeneratorConfig(
       // patch must load to a value the engine will actually accept.
       evolutionRate: clamp(Math.round(numberValue(candidate.evolutionRate, 0)), 0, 100),
       driftLeash: clamp(Math.round(numberValue(candidate.driftLeash, 25)), 0, 100),
-      densityFloor: Math.min(
-        clamp(Math.round(numberValue(candidate.densityFloor, 0)), 0, 100),
-        clamp(Math.round(numberValue(candidate.densityCeiling, 100)), 0, 100)
-      ),
-      densityCeiling: clamp(
-        Math.round(numberValue(candidate.densityCeiling, 100)),
-        0,
-        100
-      ),
+      densityFloor: corridors.densityFloor,
+      densityCeiling: corridors.densityCeiling,
       subdivisionPalette,
-      complexityFloor: Math.min(
-        clamp(
-          Math.round(numberValue(candidate.complexityFloor, 0)),
-          0,
-          MAX_COMPLEXITY_MILLI
-        ),
-        clamp(
-          Math.round(
-            numberValue(candidate.complexityCeiling, MAX_COMPLEXITY_MILLI)
-          ),
-          0,
-          MAX_COMPLEXITY_MILLI
-        )
-      ),
-      complexityCeiling: clamp(
-        Math.round(
-          numberValue(candidate.complexityCeiling, MAX_COMPLEXITY_MILLI)
-        ),
-        0,
-        MAX_COMPLEXITY_MILLI
-      ),
+      complexityFloor: corridors.complexityFloor,
+      complexityCeiling: corridors.complexityCeiling,
       placementBias: clamp(
         Math.round(numberValue(candidate.placementBias, 0)),
         0,
@@ -2142,6 +2286,7 @@ export function normalizePatchGeneratorConfig(
       euclidRestPolicy: candidate.euclidRestPolicy === "silent" ? "silent" : "tied",
       plan: normalizedPlan,
       evolutionCurve: normalizedCurve.curve,
+      propertyCurves: normalizedPropertyCurves,
       planLengthCycles: clamp(
         Math.round(numberValue(candidate.planLengthCycles, 0)),
         0,

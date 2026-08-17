@@ -405,6 +405,79 @@ fn golden_dumka_smoothed() {
     );
 }
 
+/// Steering golden (M3.97 §8): a rising Density curve (20 → 80) and a rising
+/// Syncopation curve (10 → 60) shape 32 directive-free cycles. Density is a
+/// hard rail through its effective corridor; syncopation is steered by the
+/// error vector. The golden samples cycles 30-31 — near the top of the ramp,
+/// where density has thickened to ~78% — so it pins the byte-exact realization
+/// of ~31 folded steering cycles: the whole arc, not just the seed.
+fn dumka_steered_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: rhythm::DEFAULT_DUMKA_PATTERN.to_string(),
+            evolution_rate: 0,
+            drift_leash: 0,
+            property_curves: vec![
+                rhythm::PropertyCurve {
+                    property: rhythm::CurveProperty::Density,
+                    enabled: true,
+                    tolerance_milli: 8_000,
+                    weight: 50,
+                    points: vec![
+                        rhythm::CurvePoint {
+                            cycle: 1,
+                            target_milli: 20_000,
+                        },
+                        rhythm::CurvePoint {
+                            cycle: 32,
+                            target_milli: 80_000,
+                        },
+                    ],
+                },
+                rhythm::PropertyCurve {
+                    property: rhythm::CurveProperty::Syncopation,
+                    enabled: true,
+                    tolerance_milli: 10_000,
+                    weight: 50,
+                    points: vec![
+                        rhythm::CurvePoint {
+                            cycle: 1,
+                            target_milli: 10_000,
+                        },
+                        rhythm::CurvePoint {
+                            cycle: 32,
+                            target_milli: 60_000,
+                        },
+                    ],
+                },
+            ],
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 23 },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+#[test]
+fn golden_dumka_steered_build() {
+    assert_golden_rendered(
+        "dumka_steered_build",
+        render_ledger_window_for_score(
+            "dumka_steered_build",
+            dumka_section_score(),
+            Some(dumka_steered_rhythm()),
+            30,
+            2,
+        ),
+    );
+}
+
 fn omit_depth_fields_from_legacy_wire(
     mut rhythm: cseq_transport::RhythmPlaybackConfig,
 ) -> cseq_transport::RhythmPlaybackConfig {

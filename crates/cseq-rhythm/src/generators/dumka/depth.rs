@@ -226,34 +226,6 @@ fn log2_q16(value: u32) -> u32 {
     integer * (1 << 16) + fraction
 }
 
-/// Canonical denominator-depth index for a slot on `W`.
-///
-/// Index 0 is a beat start (`q=1`). Positive indices are assigned by
-/// increasing Barlow indigestibility and then denominator over the divisors
-/// `q | W`. This is stable and order-free. Directive `subdivisionLevel`
-/// filters use this exact index; palette primes remain a separate
-/// lattice-authoring control.
-pub fn slot_level_index(slot: u32, working_subdivision: u32) -> Option<u32> {
-    if working_subdivision == 0 {
-        return None;
-    }
-    let denominator = reduced_denominator(slot, working_subdivision);
-    let mut levels = divisors(working_subdivision);
-    levels.sort_unstable_by_key(|&q| (indigestibility_scaled(q), q));
-    levels
-        .iter()
-        .position(|&q| q == denominator)
-        .and_then(|index| u32::try_from(index).ok())
-}
-
-/// Whether the canonical depth-rung index exists on `W`.
-pub fn slot_level_exists(level: u32, working_subdivision: u32) -> bool {
-    if working_subdivision == 0 {
-        return false;
-    }
-    u32::try_from(divisors(working_subdivision).len()).is_ok_and(|count| level < count)
-}
-
 fn divisors(value: u32) -> Vec<u32> {
     let mut divisors = Vec::new();
     for divisor in 1..=value {
@@ -403,8 +375,6 @@ mod tests {
                 working_subdivision: 96
             })
         );
-        assert!(slot_level_exists(3, 24));
-        assert!(!slot_level_exists(8, 24));
     }
 
     #[test]
@@ -455,10 +425,6 @@ mod tests {
         assert_eq!(reduced_denominator(3, 12), 4);
         assert_eq!(reduced_denominator(1, 12), 12);
         assert_eq!(onset_depth(4, 12), 560);
-        // W=12 order by price: 1, 2, 4, 3, 6, 12.
-        assert_eq!(slot_level_index(0, 12), Some(0));
-        assert_eq!(slot_level_index(6, 12), Some(1));
-        assert_eq!(slot_level_index(4, 12), Some(3));
     }
 
     #[test]

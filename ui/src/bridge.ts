@@ -1573,6 +1573,27 @@ export interface EvolutionCurve {
   points: CurvePoint[];
 }
 
+/** The six per-state functionals a property curve can steer (M3.97). */
+export type CurveProperty =
+  | "density"
+  | "complexity"
+  | "syncopation"
+  | "evenness"
+  | "occupancy"
+  | "diversity";
+
+/** A drawn per-property level curve: the steering search tracks its band on
+ * directive-free cycles. Absent (no band, no steering) outside its points'
+ * span — distinct from a level of 0. */
+export interface PropertyCurve {
+  property: CurveProperty;
+  enabled: boolean;
+  toleranceMilli: number;
+  /** Steering weight in the error vector; 1-100. */
+  weight: number;
+  points: CurvePoint[];
+}
+
 export interface DumkaGeneratorParams {
   /** Dum-Ka seed-notation text, sent and persisted verbatim. */
   pattern: string;
@@ -1621,6 +1642,9 @@ export interface DumkaGeneratorParams {
   seedMode: GeneratorSeedMode;
   /** Composition-level evolution curve (see EvolutionCurve). */
   evolutionCurve: EvolutionCurve;
+  /** Drawn per-property level curves (see PropertyCurve). Empty preserves
+   * legacy replay. */
+  propertyCurves: PropertyCurve[];
 }
 
 export type GeneratorConfig =
@@ -1684,6 +1708,41 @@ export interface GeneratorPreview {
    * Evolve editor plots. Absent for other generators, disabled resolution,
    * cycle 0, and grids without published Barlow tables. */
   cycleDistance?: PerceptualCycleDistance | null;
+  /** The six read-only per-state property functionals (0..=100000 milliunits)
+   * the calibration UI plots per cycle. Absent for other generators, disabled
+   * resolution, and grids without published Barlow tables. `complexityMilli`
+   * and `diversityMilli` mirror the standalone fields above (single source). */
+  propertyProfile?: DumkaPropertyProfile | null;
+  /** Per-property steering misses (M3.97 §5): each names a drawn band a steered
+   * cycle could not reach and why. Empty/absent on non-steered cycles. */
+  curveMisses?: DumkaCurveMiss[];
+}
+
+export interface DumkaPropertyProfile {
+  densityMilli: number;
+  complexityMilli: number;
+  syncopationMilli: number;
+  evennessMilli: number;
+  occupancyMilli: number;
+  diversityMilli: number;
+}
+
+/** Why a steered cycle could not pull a property into its band (engine-only). */
+export type MissReason =
+  | "noReducingCandidate"
+  | "pacingCapped"
+  | "budgetCapped"
+  | "projection"
+  | "railBlocked";
+
+/** The specific hard rail that prevented a property's band from being met. */
+export type CurveRail = "globalCorridor" | "automation" | "discreteGrid";
+
+export interface DumkaCurveMiss {
+  property: CurveProperty;
+  gapMilli: number;
+  reason: MissReason;
+  rail?: CurveRail | null;
 }
 
 export interface PerceptualCycleDistance {
@@ -1694,6 +1753,10 @@ export interface PerceptualCycleDistance {
 export interface DensityCorridorRange {
   floor: number;
   ceiling: number;
+  /** Exact property-curve intersection, retained in milliunits so non-whole
+   * percent targets remain observable across the bridge. */
+  floorMilli?: number | null;
+  ceilingMilli?: number | null;
 }
 
 export interface ComplexityCorridorRange {
@@ -1734,6 +1797,16 @@ export interface DirectiveTraceEntry {
    * present for perceptual mode. This is not the final whole-cycle distance
    * when multiple rows are active. */
   perceptual?: DirectivePerceptualTrace | null;
+  /** Actual selected operator families and the objective each selection served.
+   * Empty/absent for legacy traces and cycles on which no candidate won. */
+  steeringChoices?: SteeringChoice[];
+}
+
+export type SteeringTarget = CurveProperty | "pacing";
+
+export interface SteeringChoice {
+  family: DirectiveFamily;
+  chosenFor: SteeringTarget;
 }
 
 export interface DirectivePerceptualTrace {
@@ -2471,6 +2544,8 @@ export async function generatorPreview(
     stateComplexityMilli: preview.stateComplexityMilli ?? null,
     stateDepthDiversityMilli: preview.stateDepthDiversityMilli ?? null,
     cycleDistance: preview.cycleDistance ?? null,
+    propertyProfile: preview.propertyProfile ?? null,
+    curveMisses: preview.curveMisses ?? [],
   };
 }
 
