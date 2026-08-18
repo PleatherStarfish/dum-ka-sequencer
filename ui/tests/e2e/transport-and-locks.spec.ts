@@ -171,7 +171,7 @@ test.describe("transport lifecycle and playback locks", () => {
     page,
   }) => {
     await openCaesura(page);
-    const tempoInput = page.getByLabel("Tempo");
+    const tempoInput = page.getByLabel("Global BPM");
 
     await tempoInput.fill("123.5");
     await tempoInput.press("Enter");

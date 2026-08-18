@@ -292,16 +292,24 @@ describe("escape and stepping", () => {
     expect(commits).toEqual([16]); // already at max — no re-emit
   });
 
-  it("stepper buttons commit and respect bounds", async () => {
+  it("stepper buttons commit, respect bounds, and stay out of the a11y tree", async () => {
     const user = userEvent.setup();
     const commits: number[] = [];
-    render(
+    const { container } = render(
       <NumericField aria-label="Order" min={0} max={2} value={2} onValueCommit={(v) => commits.push(v)} />
     );
-    const up = screen.getByRole("button", { name: "Increase value" });
-    expect((up as HTMLButtonElement).disabled).toBe(true);
-    const down = screen.getByRole("button", { name: "Decrease value" });
-    await user.click(down);
+    // The steppers are mouse-only duplicates of the input's arrow keys, so
+    // they are aria-hidden: no "Increase …" buttons pollute the page listing
+    // (UC-55) and getByLabel("Order") stays unambiguous.
+    expect(screen.queryByRole("button")).toBeNull();
+    const steppers = container.querySelector(".numeric-field__steppers");
+    expect(steppers?.getAttribute("aria-hidden")).toBe("true");
+    const buttons = Array.from(
+      steppers?.querySelectorAll("button") ?? []
+    ) as HTMLButtonElement[];
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.disabled).toBe(true);
+    await user.click(buttons[1]!);
     expect(commits).toEqual([1]);
   });
 });

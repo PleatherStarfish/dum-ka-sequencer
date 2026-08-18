@@ -638,10 +638,16 @@ fn dumka_palette_triplets_rhythm() -> cseq_transport::RhythmPlaybackConfig {
 
 #[test]
 fn golden_dumka_palette_triplets() {
-    let rendered = render_ledger_for_score(
+    // Three cycles, not the default two: the curve walk paces its additions
+    // under the drift leash (2 onsets per cycle for this 2-onset seed), so
+    // the beats fill on cycle 1 and the first ternary onsets land on cycle 2
+    // — the "arriving gradually" behavior the depth palette promises.
+    let rendered = render_ledger_window_for_score(
         "dumka_palette_triplets",
         dumka_palette_triplets_score(),
         Some(dumka_palette_triplets_rhythm()),
+        0,
+        3,
     );
     let has_ternary_attack = rendered.lines().any(|line| {
         let mut columns = line.split('\t');

@@ -785,31 +785,34 @@ export function patchContentFingerprint(patch: SequencerPatchDocument): string {
 // Re-exported from patchIo (single source of truth) for backward compat.
 export { PARALLEL_TRACK_COLORS };
 
+/**
+ * One wire entry PER AUTHORED RULE, in authored order (UC-48): the
+ * `channelHocket.accentRule.{index}.*` automation targets address rules by
+ * index, so compacting disabled rules out of the list would rebind every
+ * later lane to the wrong rule. Disabled and zero-chance rules ship as
+ * `probability: 0` entries — the engine skips them before consuming any
+ * randomness — and rules whose weights all fall outside the palette ship
+ * with empty weights (the engine tolerates them and automation can raise a
+ * weight mid-play).
+ */
 export function channelAccentRulesToRequest(
   rules: PatchChannelAccentRule[],
   enabledChannels: number[]
 ): ChannelAccentRule[] {
   const channels = enabledChannels.filter((channel) => MIDI_CHANNELS.includes(channel));
-  return rules.flatMap((rule) => {
-    if (!rule.enabled || rule.probabilityPercent <= 0 || channels.length === 0) {
-      return [];
-    }
+  return rules.map((rule) => {
     const weights: ChannelAccentWeight[] = channels.flatMap((channel) => {
       const weight = clamp(Math.round(rule.weights[String(channel)] ?? 0), 0, 999);
       return weight > 0 ? [{ channel, weight }] : [];
     });
-    if (weights.length === 0) {
-      return [];
-    }
-    return [
-      {
-        minVelocity: clamp(Math.round(rule.minVelocity), 1, 127),
-        maxVelocity: clamp(Math.round(rule.maxVelocity), 1, 127),
-        probability: clamp(rule.probabilityPercent / 100, 0, 1),
-        mode: rule.mode,
-        weights,
-      },
-    ];
+    const silenced = !rule.enabled || rule.probabilityPercent <= 0;
+    return {
+      minVelocity: clamp(Math.round(rule.minVelocity), 1, 127),
+      maxVelocity: clamp(Math.round(rule.maxVelocity), 1, 127),
+      probability: silenced ? 0 : clamp(rule.probabilityPercent / 100, 0, 1),
+      mode: rule.mode,
+      weights,
+    };
   });
 }
 

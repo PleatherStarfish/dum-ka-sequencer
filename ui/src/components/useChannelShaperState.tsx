@@ -583,10 +583,13 @@ export function useChannelShaperState({
         channelEntryWeightKey(channelHocketOrder, entry)
       ] ?? 0
     );
+  // The wire list now carries one entry per authored rule (UC-48 keeps
+  // automation indices aligned), so "active" means rules that can actually
+  // fire: probability above zero with at least one in-palette weight.
   const activeChannelAccentRuleCount = channelAccentRulesToRequest(
     channelAccentRules,
     channelHocketMatrixChannels
-  ).length;
+  ).filter((rule) => rule.probability > 0 && rule.weights.length > 0).length;
   const activeChannelPositionRuleCount = channelPositionRules.filter(
     (rule) => rule.enabled
   ).length;
@@ -866,6 +869,28 @@ export function useChannelShaperState({
       1,
       127
     );
+    // UC-44: the preset routes onto the track's authored channel set — the
+    // quiet band favors the first two palette channels, the strong band the
+    // last — so a palette excluding channels 2/3/4 still yields firing rules.
+    // The historical literals only remain as a fallback for an empty palette.
+    const quietWeights: Record<string, number> =
+      channelHocketMatrixChannels.length > 0
+        ? Object.fromEntries(
+            channelHocketMatrixChannels
+              .slice(0, 2)
+              .map((channel) => [String(channel), 1])
+          )
+        : { "2": 1, "3": 1 };
+    const strongWeights: Record<string, number> =
+      channelHocketMatrixChannels.length > 0
+        ? {
+            [String(
+              channelHocketMatrixChannels[
+                channelHocketMatrixChannels.length - 1
+              ]!
+            )]: 1,
+          }
+        : { "4": 1 };
     setChannelAccentRules([
       {
         label: "Beat accents",
@@ -874,7 +899,7 @@ export function useChannelShaperState({
         maxVelocity: Math.max(beatMin, beatMax),
         probabilityPercent: 75,
         mode: "renderOnly",
-        weights: { "2": 1, "3": 1 },
+        weights: quietWeights,
       },
       {
         label: "Strong accents",
@@ -883,7 +908,7 @@ export function useChannelShaperState({
         maxVelocity: Math.max(strongMin, strongMax),
         probabilityPercent: 100,
         mode: "driveChain",
-        weights: { "4": 1 },
+        weights: strongWeights,
       },
     ]);
   };

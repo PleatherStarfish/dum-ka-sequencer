@@ -671,6 +671,54 @@ fn state_slots(state: &EvolutionState) -> Vec<u32> {
     state.onsets.iter().map(|onset| onset.slot).collect()
 }
 
+/// Onsets a fragment adds to the state: k−1 when splitting a sounding note
+/// (the first piece IS the original onset, shortened), k when filling a
+/// silent run — the same asymmetry the leash charges.
+fn fragment_added_onsets(interval: &super::figures::FigureInterval, k: u32) -> u32 {
+    if interval.onset_index.is_some() {
+        k.saturating_sub(1)
+    } else {
+        k
+    }
+}
+
+/// Distance from an onset count to a closed count band; 0 inside the band.
+fn count_band_gap(count: usize, floor: usize, ceiling: usize) -> usize {
+    floor
+        .saturating_sub(count)
+        .max(count.saturating_sub(ceiling))
+}
+
+/// The onset-count band a curve/steering walk may occupy. The floor is the
+/// last authored anchor's count minus the sampled leash budget; the ceiling
+/// is the density corridor's. Corridor > leash: a corridor lying entirely
+/// below the anchored floor wins outright.
+///
+/// The floor is anchored (seed, or the state a directive established) rather
+/// than per-cycle because the walk re-anchors its per-cycle budget every
+/// cycle: without an absolute floor, a sustained large step target ratchets
+/// density down one budget per cycle until a single onset remains — and a
+/// near-empty state is an absorbing attractor, because removals near
+/// emptiness register as maximal perceptual change while the matching
+/// recovery never outscores them. Growth has no anchored ceiling: added
+/// material saturates the distance model instead of compounding it, the
+/// corridor ceiling remains the authored rail, and cumulative density growth
+/// under a curve is exactly what the depth palette promises.
+fn leashed_count_band(
+    authored_count_anchor: usize,
+    leash_budget: u32,
+    corridor: DensityCorridor,
+) -> (usize, usize) {
+    let floor = authored_count_anchor
+        .saturating_sub(leash_budget as usize)
+        .max(corridor.floor_count);
+    if floor <= corridor.ceiling_count {
+        (floor, corridor.ceiling_count)
+    } else {
+        (corridor.floor_count, corridor.ceiling_count)
+    }
+}
+
 /// A scoped attack owns its complete sounding interval, not only its onset.
 /// This keeps destructive and displacement edits from reaching across a
 /// directive boundary through an inherited sustain.
@@ -1413,19 +1461,18 @@ fn step_scoped(
             if intervals.is_empty() {
                 return (current, normalization_trace());
             }
-            let interval =
-                intervals[pool_pick(intervals.len(), temperature, inputs.seed_value, cycle)];
-            let mut ks = super::figures::k_candidates(interval.len);
-            let unconstrained_k_count = ks.len();
+            let picked = pool_pick(intervals.len(), temperature, inputs.seed_value, cycle);
             let headroom = corridor.ceiling_count.saturating_sub(current.onsets.len());
-            ks.retain(|&k| {
-                let added = if interval.onset_index.is_some() {
-                    k.saturating_sub(1)
-                } else {
-                    k
-                };
-                usize::try_from(added).unwrap_or(usize::MAX) <= headroom
-            });
+            let corridor_ks = |interval: &super::figures::FigureInterval| {
+                let mut ks = super::figures::k_candidates(interval.len);
+                let unconstrained = ks.len();
+                ks.retain(|&k| {
+                    usize::try_from(fragment_added_onsets(interval, k)).unwrap_or(usize::MAX)
+                        <= headroom
+                });
+                (ks, unconstrained)
+            };
+            let (ks, unconstrained_k_count) = corridor_ks(&intervals[picked]);
             if ks.is_empty() {
                 return (
                     current,
@@ -1455,8 +1502,51 @@ fn step_scoped(
             );
             // Same integer pool construction as the temperature: 0 keeps
             // the simplest true tuplet, 100 draws over every legal size.
-            let k_pool = 1 + (u64::from(fill_complexity) * (ks.len() as u64 - 1)) / 100;
-            let k = ks[draw(inputs.seed_value, cycle, SALT_FIG_K, k_pool) as usize];
+            let fill_draw = |ks: &[u32]| {
+                let k_pool = 1 + (u64::from(fill_complexity) * (ks.len() as u64 - 1)) / 100;
+                ks[draw(inputs.seed_value, cycle, SALT_FIG_K, k_pool) as usize]
+            };
+            // The preferred (interval, figure size) stands whenever it fits
+            // the remaining leash budget — byte-identical to the historical
+            // draw. Only a candidate the leash would silently discard falls
+            // back: first through the smaller admissible sizes of the same
+            // interval, then through the remaining ranked intervals. Without
+            // this, a deterministic pick that exceeds the budget (a k-onset
+            // fill of the top-ranked silence, most often) no-ops every cycle
+            // and figures never enter the piece at all.
+            let remaining_budget = budget.saturating_sub(symmetric_difference(
+                &state_slots(&current),
+                &state_slots(leash_anchor),
+            ));
+            let fits = |interval: &super::figures::FigureInterval, k: u32| {
+                fragment_added_onsets(interval, k) <= remaining_budget
+            };
+            let preferred_k = fill_draw(&ks);
+            let mut selection =
+                fits(&intervals[picked], preferred_k).then_some((intervals[picked], preferred_k));
+            if selection.is_none() {
+                for probe in 0..intervals.len() {
+                    let index = (picked + probe) % intervals.len();
+                    let (mut ks, _) = corridor_ks(&intervals[index]);
+                    ks.retain(|&k| fits(&intervals[index], k));
+                    if !ks.is_empty() {
+                        selection = Some((intervals[index], fill_draw(&ks)));
+                        break;
+                    }
+                }
+            }
+            let Some((interval, k)) = selection else {
+                return (
+                    current,
+                    Some(trace(
+                        1,
+                        0,
+                        DirectiveSkip::Exhausted,
+                        normalization_clamp,
+                        normalization_complexity_clamp,
+                    )),
+                );
+            };
             candidate = super::figures::apply_fragment(&current, &interval, k);
         }
         Op::Consolidate => {
@@ -1542,7 +1632,18 @@ fn step_scoped(
     ) {
         let candidate_slots: Vec<u32> = candidate.onsets.iter().map(|o| o.slot).collect();
         if symmetric_difference(&candidate_slots, &state_slots(leash_anchor)) > budget {
-            return (current, normalization_trace());
+            // A leash-rejected draw is a requested-but-unapplied operation;
+            // an empty trace here made the stall invisible to the preview.
+            return (
+                current,
+                Some(trace(
+                    1,
+                    0,
+                    DirectiveSkip::Exhausted,
+                    normalization_clamp,
+                    normalization_complexity_clamp,
+                )),
+            );
         }
     }
 
@@ -1570,19 +1671,20 @@ fn step_scoped(
         );
     }
 
+    // Every applied stochastic operation traces `requested 1, applied 1`.
+    // Success used to trace only when a corridor clamp fired, which made an
+    // applied op and a silently stalled one indistinguishable in the preview
+    // — the observability hole behind both the pacing-collapse and the
+    // figures-never-fire escapes. Liveness tests key on this entry.
     (
         candidate,
-        successful_clamp
-            .map(|clamp| {
-                trace(
-                    1,
-                    1,
-                    DirectiveSkip::None,
-                    Some(clamp),
-                    normalization_complexity_clamp,
-                )
-            })
-            .or_else(normalization_trace),
+        Some(trace(
+            1,
+            1,
+            DirectiveSkip::None,
+            successful_clamp.or(normalization_clamp),
+            normalization_complexity_clamp,
+        )),
     )
 }
 
@@ -2434,6 +2536,11 @@ fn apply_one_directive_operation(
     window: Option<SlotRange>,
     corridor: DensityCorridor,
     complexity_corridor: ComplexityCorridor,
+    // The curve/steering walks pass their remaining per-cycle drift budget so
+    // multi-onset figures are SELECTED within it instead of drawn once and
+    // then discarded by the walk's leash fence. Authored directives are
+    // leash-exempt and pass None — their draws stay byte-identical.
+    stochastic_added_cap: Option<u32>,
 ) -> Result<(EvolutionState, Option<DensityCorridorClamp>), DirectiveApplyFailure> {
     // Reserve a stable block for every application. Multi-draw families use
     // offsets inside the block, so application N's option draw can never
@@ -2622,36 +2729,62 @@ fn apply_one_directive_operation(
             if intervals.is_empty() {
                 return Err(DirectiveSkip::Exhausted.into());
             }
-            let interval = intervals[plan_pool_pick(
+            let picked = plan_pool_pick(
                 intervals.len(),
                 temperature,
                 inputs.seed_value,
                 directive.id,
                 draw_cycle,
                 draw_base,
-            )];
-            let mut ks = super::figures::k_candidates(interval.len)
-                .into_iter()
-                .filter(|k| {
-                    super::figures::fragment_positions(interval.len, *k)
-                        .into_iter()
-                        .skip(1)
-                        .map(|offset| interval.start.saturating_add(offset))
-                        .all(|slot| {
-                            directive_slot_allowed(directive, slot, seed.required_subdivision)
-                        })
-                })
-                .collect::<Vec<_>>();
-            let unconstrained_k_count = ks.len();
+            );
             let headroom = corridor.ceiling_count.saturating_sub(state.onsets.len());
-            ks.retain(|&k| {
-                let added = if interval.onset_index.is_some() {
-                    k.saturating_sub(1)
-                } else {
-                    k
-                };
-                usize::try_from(added).unwrap_or(usize::MAX) <= headroom
-            });
+            let corridor_ks = |interval: &super::figures::FigureInterval| {
+                let scoped: Vec<u32> = super::figures::k_candidates(interval.len)
+                    .into_iter()
+                    .filter(|k| {
+                        super::figures::fragment_positions(interval.len, *k)
+                            .into_iter()
+                            .skip(1)
+                            .map(|offset| interval.start.saturating_add(offset))
+                            .all(|slot| {
+                                directive_slot_allowed(directive, slot, seed.required_subdivision)
+                            })
+                    })
+                    .collect();
+                let unconstrained = scoped.len();
+                let ks: Vec<u32> = scoped
+                    .into_iter()
+                    .filter(|&k| {
+                        usize::try_from(fragment_added_onsets(interval, k)).unwrap_or(usize::MAX)
+                            <= headroom
+                    })
+                    .collect();
+                (ks, unconstrained)
+            };
+            let (mut ks, unconstrained_k_count) = corridor_ks(&intervals[picked]);
+            let mut interval = intervals[picked];
+            if let Some(cap) = stochastic_added_cap {
+                // Walk mode: select within the remaining drift budget, and
+                // fall back through the ranked intervals rather than drawing
+                // one over-budget figure the walk's leash fence would discard.
+                ks.retain(|&k| fragment_added_onsets(&interval, k) <= cap);
+                if ks.is_empty() {
+                    let mut fallback = None;
+                    for probe in 1..intervals.len() {
+                        let index = (picked + probe) % intervals.len();
+                        let (mut probe_ks, _) = corridor_ks(&intervals[index]);
+                        probe_ks.retain(|&k| fragment_added_onsets(&intervals[index], k) <= cap);
+                        if !probe_ks.is_empty() {
+                            fallback = Some((intervals[index], probe_ks));
+                            break;
+                        }
+                    }
+                    if let Some((fallback_interval, fallback_ks)) = fallback {
+                        interval = fallback_interval;
+                        ks = fallback_ks;
+                    }
+                }
+            }
             if ks.is_empty() {
                 return Err(DirectiveApplyFailure::corridor(DensityCorridorClamp {
                     limit: DensityCorridorLimit::Ceiling,
@@ -2926,6 +3059,7 @@ fn apply_stochastic_directive(
         window,
         corridor,
         complexity_corridor,
+        None,
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -2976,6 +3110,7 @@ fn apply_evolution_curve(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     corridor: DensityCorridor,
+    authored_count_anchor: usize,
     complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> (EvolutionState, DirectiveTraceEntry) {
     let curve = inputs.curve;
@@ -3028,6 +3163,21 @@ fn apply_evolution_curve(
     .expect("validated Barlow grid constructs a perceptual context");
     let model = PerceptualModel::for_version(curve.model_version);
 
+    // The curve replaces the stochastic layer, so its walk stays under the
+    // stochastic drift leash: one cycle may not travel further from its
+    // inherited (corridor-normalized) state than the sampled budget allows,
+    // however large the drawn step target. Without this fence a big target is
+    // satisfied by mass deletion — a near-empty cycle IS maximally distant —
+    // and the moving leash anchor then locks the wreckage in for every
+    // following cycle.
+    let leash_percent =
+        sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
+    let leash_budget =
+        (leash_percent * u32::try_from(seed.events.len()).unwrap_or(u32::MAX)).div_ceil(100);
+    let leash_anchor_slots = state_slots(&normalized);
+    let (count_floor, count_ceiling) =
+        leashed_count_band(authored_count_anchor, leash_budget, corridor);
+
     let mut current = normalized.clone();
     let initial = perceptual_distance(state, &current, &context, &model).total_milli;
     let mut best_state = current.clone();
@@ -3036,7 +3186,7 @@ fn apply_evolution_curve(
     let mut best_applied = 0;
     let mut current_clamp = trace.corridor_clamp;
     let mut best_clamp = current_clamp;
-    let mut frontier_failure = None;
+    let mut frontier_failure: Option<DirectiveApplyFailure> = None;
 
     if total > 0 {
         for offset in 0..u64::from(curve.max_operations) {
@@ -3085,9 +3235,30 @@ fn apply_evolution_curve(
                 None,
                 corridor,
                 sampled_complexity_corridor(inputs, cycle),
+                Some(leash_budget.saturating_sub(symmetric_difference(
+                    &state_slots(&current),
+                    &leash_anchor_slots,
+                ))),
             ) {
                 Ok((next, clamp)) => {
                     trace.requested = trace.requested.saturating_add(1);
+                    if symmetric_difference(&state_slots(&next), &leash_anchor_slots) > leash_budget
+                    {
+                        // Leash-inadmissible: stay put and let the next offset
+                        // draw a different operator family.
+                        continue;
+                    }
+                    let next_count_gap =
+                        count_band_gap(next.onsets.len(), count_floor, count_ceiling);
+                    if next_count_gap > 0
+                        && next_count_gap
+                            >= count_band_gap(current.onsets.len(), count_floor, count_ceiling)
+                    {
+                        // Outside the authored count band and not approaching
+                        // it (an inherited out-of-band state may still recover
+                        // toward the band).
+                        continue;
+                    }
                     current = next;
                     if clamp.is_some() {
                         current_clamp = clamp;
@@ -3103,8 +3274,13 @@ fn apply_evolution_curve(
                     }
                 }
                 Err(failure) => {
-                    frontier_failure = Some(failure);
-                    break;
+                    // One inadmissible family must not end the walk: a sparse
+                    // state that rejects Remove can still recover through Add.
+                    // Keep the most informative frontier for the trace and let
+                    // the next offset draw a different operator.
+                    if frontier_failure.is_none() || failure.skipped == DirectiveSkip::Projection {
+                        frontier_failure = Some(failure);
+                    }
                 }
             }
         }
@@ -3203,6 +3379,7 @@ fn apply_property_steering(
     inputs: &EvolutionInputs<'_>,
     cycle: u64,
     corridor: DensityCorridor,
+    authored_count_anchor: usize,
     complexity_work_budget: &mut ComplexityNormalizationBudget,
 ) -> PropertySteeringOutcome {
     let slots = seed.total_beats * seed.required_subdivision;
@@ -3307,6 +3484,18 @@ fn apply_property_steering(
     );
     trace.corridor_clamp = density_clamp;
     trace.complexity_corridor_clamp = complexity_clamp;
+
+    // Same stochastic-leash fence as apply_evolution_curve: the pacing term in
+    // the objective must not be satisfiable by mass deletion. Corridor
+    // normalization above is leash-exempt (corridor > leash), so the budget is
+    // measured from the normalized state.
+    let leash_percent =
+        sampled_percent(inputs, DUMKA_DRIFT_LEASH_TARGET, inputs.drift_leash, cycle);
+    let leash_budget =
+        (leash_percent * u32::try_from(seed.events.len()).unwrap_or(u32::MAX)).div_ceil(100);
+    let leash_anchor_slots = state_slots(&normalized);
+    let (count_floor, count_ceiling) =
+        leashed_count_band(authored_count_anchor, leash_budget, effective_density);
 
     let context = PerceptualContext::new(
         seed.total_beats,
@@ -3415,8 +3604,28 @@ fn apply_property_steering(
                 None,
                 effective_density,
                 effective_complexity,
+                Some(leash_budget.saturating_sub(symmetric_difference(
+                    &state_slots(&current),
+                    &leash_anchor_slots,
+                ))),
             ) {
                 Ok((candidate, clamp)) => {
+                    if symmetric_difference(&state_slots(&candidate), &leash_anchor_slots)
+                        > leash_budget
+                    {
+                        // Leash-inadmissible; another family may still reduce
+                        // the error within this cycle's drift budget.
+                        continue;
+                    }
+                    let candidate_count_gap =
+                        count_band_gap(candidate.onsets.len(), count_floor, count_ceiling);
+                    if candidate_count_gap > 0
+                        && candidate_count_gap
+                            >= count_band_gap(current.onsets.len(), count_floor, count_ceiling)
+                    {
+                        // Outside the authored count band and not approaching it.
+                        continue;
+                    }
                     let candidate_profile = context.state_properties(&candidate);
                     let candidate_property_error = error_of(&candidate_profile);
                     let candidate_distance = pacing_target
@@ -3773,6 +3982,7 @@ fn apply_directive(
                     directive,
                     sampled_complexity_corridor(inputs, cycle),
                 ),
+                None,
             ) {
                 Ok((next, clamp)) => {
                     trace.requested = trace.requested.saturating_add(1);
@@ -3881,6 +4091,7 @@ fn apply_directive(
             window,
             corridor,
             directive_complexity_corridor(directive, sampled_complexity_corridor(inputs, cycle)),
+            None,
         ) {
             Ok((next, clamp)) => {
                 current = next;
@@ -4353,8 +4564,13 @@ pub fn evolved_seed_with_trace(
     // Authored directives and the composition curve establish persistent
     // musical state. The stochastic leash measures later drift from this
     // moving authored anchor instead of pulling every gap back to the
-    // original pattern.
+    // original pattern. The onset-count FLOOR, however, stays anchored to the
+    // seed until a directive explicitly changes it: curve/steering cycles
+    // re-anchor per cycle, and a moving floor lets a sustained large step
+    // target ratchet the pattern down to a single onset, one leash budget per
+    // cycle (see leashed_count_band).
     let mut leash_anchor = initial_state;
+    let mut authored_count_anchor = seed_onset_count;
     let mut accumulators = std::collections::BTreeMap::<u64, RangeAccumulator>::new();
     let mut requested_cycle_trace = Vec::new();
     let mut requested_curve_misses: Vec<CurveMiss> = Vec::new();
@@ -4390,6 +4606,7 @@ pub fn evolved_seed_with_trace(
                     inputs,
                     cycle,
                     corridor,
+                    authored_count_anchor,
                     &mut complexity_work_budget,
                 );
                 state = outcome.state;
@@ -4417,6 +4634,7 @@ pub fn evolved_seed_with_trace(
                         inputs,
                         cycle,
                         corridor,
+                        authored_count_anchor,
                         &mut complexity_work_budget,
                     );
                     state = next;
@@ -4506,6 +4724,7 @@ pub fn evolved_seed_with_trace(
             state = next;
             if scope_is_valid && directive.family != DirectiveFamily::Stochastic {
                 leash_anchor = state.clone();
+                authored_count_anchor = state.onsets.len();
             }
             if cycle == inputs.cycle {
                 requested_cycle_trace.push(trace);
@@ -4524,6 +4743,7 @@ pub fn evolved_seed_with_trace(
                     inputs,
                     cycle,
                     corridor,
+                    authored_count_anchor,
                     &mut complexity_work_budget,
                 );
                 state = outcome.state;
@@ -4547,6 +4767,7 @@ pub fn evolved_seed_with_trace(
                         inputs,
                         cycle,
                         corridor,
+                        authored_count_anchor,
                         &mut complexity_work_budget,
                     );
                     state = next;
@@ -4815,13 +5036,23 @@ mod tests {
     }
 
     #[test]
-    fn behavior_off_legacy_fold_keeps_trace_empty() {
+    fn legacy_fold_traces_fired_operations_and_stays_silent_at_cycle_zero() {
         let seed = compiled(SEED_TEXT);
         let s = spans(4, 4);
-        for cycle in [0, 1, 12] {
+        // Cycle 0 is the seed verbatim: nothing fires, nothing traces.
+        let verbatim = evolved_seed_with_trace(&seed, &inputs(7, 0, 100, 100, &s)).unwrap();
+        assert!(verbatim.trace.is_empty(), "cycle 0 must not trace");
+        // A fired stochastic cycle must be VISIBLE: requested/applied ride
+        // the legacy trace id. (Successful ops used to trace nothing, which
+        // made an applied op indistinguishable from a silent stall — the
+        // observability hole behind the pacing-collapse and figures escapes.)
+        for cycle in [1, 12] {
             let resolution =
                 evolved_seed_with_trace(&seed, &inputs(7, cycle, 100, 100, &s)).unwrap();
-            assert!(resolution.trace.is_empty(), "cycle {cycle}");
+            assert_eq!(resolution.trace.len(), 1, "cycle {cycle}");
+            let entry = &resolution.trace[0];
+            assert_eq!(entry.directive_id, LEGACY_EVOLUTION_TRACE_ID);
+            assert_eq!(entry.requested, 1, "cycle {cycle}");
         }
     }
 
@@ -6063,6 +6294,7 @@ mod tests {
                     floor_milli: 0,
                     ceiling_milli: 100_000,
                 },
+                None,
             )
             .expect("fragmentation creates another legal prefix")
             .0;

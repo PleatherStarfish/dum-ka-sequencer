@@ -2,11 +2,10 @@
 
 exports[`buildAutomationTargetDefs (characterization) > produces a stable, sorted, de-duplicated set of target defs 1`] = `
 {
-  "count": 115,
+  "count": 107,
   "groups": [
     "all",
     "Accent",
-    "Channel Entry",
     "Channel Euclid",
     "Channel Fallback",
     "Channel Hocket",
@@ -23,14 +22,6 @@ exports[`buildAutomationTargetDefs (characterization) > produces a stable, sorte
     "sequencer.accent.jathiStart.min",
     "sequencer.accent.sectionStartExtra.max",
     "sequencer.accent.sectionStartExtra.min",
-    "channelHocket.entry.first.1.weight",
-    "channelHocket.entry.first.2.weight",
-    "channelHocket.entry.first.3.weight",
-    "channelHocket.entry.first.4.weight",
-    "channelHocket.entry.first.5.weight",
-    "channelHocket.entry.first.6.weight",
-    "channelHocket.entry.first.7.weight",
-    "channelHocket.entry.first.8.weight",
     "channelHocket.euclid.steps",
     "channelHocket.euclid.layer.0.steps",
     "channelHocket.euclid.layer.0.maxRun",

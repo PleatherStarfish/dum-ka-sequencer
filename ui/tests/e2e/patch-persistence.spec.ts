@@ -949,13 +949,13 @@ test.describe("patch persistence", () => {
     // The delayed build already captured its coherent patch. This input event
     // advances the authoring generation, so the older structure action must
     // not overwrite the edit when score_get_current resolves.
-    await fillNumeric(page.getByLabel("Tempo"), "97");
+    await fillNumeric(page.getByLabel("Global BPM"), "97");
 
     await expect(page.locator(".success-banner")).toContainText(
       "Track changed while adding the track; try again"
     );
     await expect(page.locator(".parallel-track-cell")).toHaveCount(1);
-    await expect(page.getByLabel("Tempo")).toHaveValue(/^97(?:\.0)?$/);
+    await expect(page.getByLabel("Global BPM")).toHaveValue(/^97(?:\.0)?$/);
   });
 
   test("allows a coherent new-track snapshot across a transport-derived rerender", async ({
@@ -985,7 +985,7 @@ test.describe("patch persistence", () => {
         bpm: 97,
       });
     });
-    await expect(page.getByLabel("Tempo")).toHaveValue(/^97(?:\.0)?$/);
+    await expect(page.getByLabel("Global BPM")).toHaveValue(/^97(?:\.0)?$/);
 
     await expect(page.locator(".success-banner")).toContainText("Added track");
     await expect(page.locator(".parallel-track-cell")).toHaveCount(2);
@@ -1016,7 +1016,7 @@ test.describe("patch persistence", () => {
     await trackBpmInput.blur();
     await expect(page.locator(".success-banner")).toContainText("Updated track BPM");
     await expect(trackBpmInput).toHaveValue("123");
-    await expect(page.getByLabel("Tempo")).toHaveValue("80");
+    await expect(page.getByLabel("Global BPM")).toHaveValue("80");
 
     let driver = await getDriverState(page);
     const tempoSetCallsAfterCustomEdit = driver.calls.filter(
@@ -1056,7 +1056,7 @@ test.describe("patch persistence", () => {
     await page.getByTestId("transport-play").click();
     await waitForPlaying(page);
     await expect(trackBpmInput).toHaveValue("123");
-    await expect(page.getByLabel("Tempo")).toHaveValue("80");
+    await expect(page.getByLabel("Global BPM")).toHaveValue("80");
 
     driver = await getDriverState(page);
     const request = driver.lastParallelPlaybackRequest as
@@ -1090,7 +1090,7 @@ test.describe("patch persistence", () => {
       saveDialogResponses: [savePath],
     });
 
-    const globalTempoField = page.getByLabel("Tempo");
+    const globalTempoField = page.getByLabel("Global BPM");
     const trackBpmInput = page.getByLabel("Track custom BPM");
 
     await page
@@ -1215,7 +1215,7 @@ test.describe("patch persistence", () => {
     );
     await waitForTimelineReady(page);
 
-    const globalTempoField = page.getByLabel("Tempo");
+    const globalTempoField = page.getByLabel("Global BPM");
     const trackBpmInput = page.getByLabel("Track custom BPM");
     await expect(globalTempoField).toHaveValue("88");
     await expect(trackBpmInput).toHaveValue("123");
@@ -1634,7 +1634,7 @@ test.describe("patch persistence", () => {
       (request) => request.name === "beta active" && request.pitch === 76
     );
     await waitForTimelineReady(page);
-    await expect(page.getByLabel("Tempo")).toHaveValue("88");
+    await expect(page.getByLabel("Global BPM")).toHaveValue("88");
     await expect(page.getByLabel("Project cycle")).toHaveValue("12");
     await expect(page.getByLabel("Track custom BPM")).toHaveValue("123");
     await expect(page.getByLabel("Track custom cycle")).toHaveValue("5");
@@ -2068,9 +2068,16 @@ test.describe("patch persistence", () => {
       soloed: false,
     });
 
-    // D4: a second rule never blocks playback — an ambiguous (pair, channel)
-    // set is unrepresentable, so there is no conflict alert and Play stays live.
-    await page.getByRole("button", { name: "+ Add rule" }).click();
+    // D4 + UC-8: an ambiguous (pair, channel) set is unrepresentable, and now
+    // that every reachable shared slot ({1, 3}) carries a rule the Add button
+    // honestly disables (it used to stay enabled as a silent no-op with a
+    // false success banner). No conflict alert exists and Play stays live.
+    const addRule = page.getByRole("button", { name: "+ Add rule" });
+    await expect(addRule).toBeDisabled();
+    await expect(addRule).toHaveAttribute(
+      "title",
+      "All track pairs with shared channels already have rules."
+    );
     await expect(page.getByTestId("transport-channel-logic-warning")).toHaveCount(0);
     await expect(page.getByRole("alert")).toHaveCount(0);
     await waitForTimelineReady(page);

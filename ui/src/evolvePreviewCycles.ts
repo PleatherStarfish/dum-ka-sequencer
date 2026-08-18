@@ -1,4 +1,5 @@
 import type { EvolutionDirective } from "./bridge";
+import type { CachedCycleValue } from "./components/timelineRenderModel";
 
 export const EVOLVE_PREVIEW_CACHE_FLOOR = 128;
 export const EVOLVE_PREVIEW_CACHE_CEILING = 512;
@@ -68,4 +69,44 @@ export function selectEvolutionPreviewCycles(
   }
 
   return { cycles: [...requested].sort((a, b) => a - b), cacheLimit };
+}
+
+export interface EvolveCachedPreviewSelection<T> {
+  cycle: number;
+  preview: T;
+  stale: boolean;
+}
+
+/**
+ * Merge the evolve authoring cache and the timeline render cache into the
+ * per-cycle strip the Evolve editor draws. Entries under the current request
+ * key are authoritative; a cycle with only differently keyed entries keeps
+ * its last resolved value flagged `stale` instead of disappearing. Without
+ * the stale fallback, any edit that rotates the request key (drawing a
+ * property curve, nudging an operator weight) blanks every lane cell at once
+ * and the refill effect repaints them in batches — the whole strip flashes
+ * on each edit.
+ */
+export function selectEvolveCachedPreviews<T>(
+  currentRequestKey: string,
+  caches: ReadonlyArray<ReadonlyMap<number, CachedCycleValue<T>>>
+): EvolveCachedPreviewSelection<T>[] {
+  const byCycle = new Map<number, { preview: T; stale: boolean }>();
+  for (const cache of caches) {
+    for (const [cycle, cached] of cache) {
+      const fresh = cached.requestKey === currentRequestKey;
+      const existing = byCycle.get(cycle);
+      if (existing && !existing.stale) continue;
+      if (fresh || !existing) {
+        byCycle.set(cycle, { preview: cached.value, stale: !fresh });
+      }
+    }
+  }
+  return [...byCycle]
+    .map(([cycle, entry]) => ({
+      cycle,
+      preview: entry.preview,
+      stale: entry.stale,
+    }))
+    .sort((left, right) => left.cycle - right.cycle);
 }

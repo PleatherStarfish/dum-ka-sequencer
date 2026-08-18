@@ -18,11 +18,16 @@ import type { SeedPoolLogEntry } from "./SeedControls";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
 
+/** The generator stream's own mode union (no drift/morph pseudo-modes). */
+type GeneratorSeedModeName = "locked" | "perCycle" | "history";
+
 export interface SeedSetupDialogProps {
   channelHocketHistorySeedsInput: string;
   channelHocketMaxHistory: number;
   channelHocketSeed: number;
   channelHocketSeedBehavior: RhythmSeedBehaviorName;
+  generatorSeed: number;
+  generatorSeedMode: GeneratorSeedModeName;
   globalHistorySeeds: U64SeedDecimal[];
   globalSeedMode: SeedModeName;
   globalSeedStartupLocked: boolean;
@@ -30,13 +35,14 @@ export interface SeedSetupDialogProps {
   maxHistory: number;
   seed: number;
   seedLogScope: SeedLogScope;
-  seedPaths: SeedPath[];
   seedSetupOpen: boolean;
   seedSetupTab: SeedDialogTab;
   setChannelHocketHistorySeedsInput: Setter<string>;
   setChannelHocketMaxHistory: Setter<number>;
   setChannelHocketSeed: Setter<number>;
   setChannelHocketSeedBehavior: Setter<RhythmSeedBehaviorName>;
+  setGeneratorSeed: Setter<number>;
+  setGeneratorSeedMode: Setter<GeneratorSeedModeName>;
   setGlobalSeedStartupLocked: Setter<boolean>;
   setHistorySeedsInput: Setter<string>;
   setMaxHistory: Setter<number>;
@@ -47,10 +53,18 @@ export interface SeedSetupDialogProps {
   setSeedSetupTab: Setter<SeedDialogTab>;
   visibleSeedPaths: SeedPath[];
   visibleSeedPoolLogEntries: SeedPoolLogEntry[];
-  [key: string]: unknown;
 }
 
 const GLOBAL_MODES: readonly { value: SeedModeName; label: string }[] = [
+  { value: "locked", label: "Locked" },
+  { value: "perCycle", label: "Per cycle" },
+  { value: "history", label: "History" },
+];
+
+const GENERATOR_MODES: readonly {
+  value: GeneratorSeedModeName;
+  label: string;
+}[] = [
   { value: "locked", label: "Locked" },
   { value: "perCycle", label: "Per cycle" },
   { value: "history", label: "History" },
@@ -60,6 +74,9 @@ const STREAM_MODES: readonly {
   value: RhythmSeedBehaviorName;
   label: string;
 }[] = [
+  // followGlobal is the default behavior; without this entry a fresh session
+  // showed no active mode and one click was irreversible short of a reload.
+  { value: "followGlobal", label: "Follow global" },
   { value: "locked", label: "Locked" },
   { value: "perCycle", label: "Per cycle" },
   { value: "history", label: "History" },
@@ -167,8 +184,12 @@ export function SeedSetupDialog({
   seedSetupTab,
   setChannelHocketHistorySeedsInput,
   setChannelHocketMaxHistory,
+  generatorSeed,
+  generatorSeedMode,
   setChannelHocketSeed,
   setChannelHocketSeedBehavior,
+  setGeneratorSeed,
+  setGeneratorSeedMode,
   setGlobalSeedStartupLocked,
   setHistorySeedsInput,
   setMaxHistory,
@@ -263,18 +284,27 @@ export function SeedSetupDialog({
             <div className="seed-advanced-panel">
               <ModeButtons
                 label="Generator seed mode"
-                modes={GLOBAL_MODES}
-                value={globalSeedMode}
-                onChange={setSeedMode}
+                modes={GENERATOR_MODES}
+                value={generatorSeedMode}
+                onChange={setGeneratorSeedMode}
               />
-              <SeedEditor label="Generator seed" seed={seed} setSeed={setSeed} />
-              {globalSeedMode === "history" && (
-                <HistoryEditor
-                  input={historySeedsInput}
-                  maxHistory={maxHistory}
-                  setInput={setHistorySeedsInput}
-                  setMaxHistory={setMaxHistory}
-                />
+              <SeedEditor
+                label="Generator seed"
+                seed={generatorSeed}
+                setSeed={setGeneratorSeed}
+              />
+              {generatorSeedMode === "history" && (
+                <>
+                  <HistoryEditor
+                    input={historySeedsInput}
+                    maxHistory={maxHistory}
+                    setInput={setHistorySeedsInput}
+                    setMaxHistory={setMaxHistory}
+                  />
+                  <p className="seed-advanced-hint">
+                    The remembered-seed pool is shared with the Global stream.
+                  </p>
+                </>
               )}
             </div>
           )}

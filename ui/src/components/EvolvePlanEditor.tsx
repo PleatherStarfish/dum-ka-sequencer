@@ -153,6 +153,10 @@ const MISS_REASON_LABELS: Record<MissReason, string> = {
 
 export interface EvolutionCachedPreview {
   cycle: number;
+  /** True when this cycle's value was resolved under a previous request key
+   * and a refetch is in flight; the lanes keep drawing it (dimmed) instead of
+   * flashing the cell empty. */
+  stale?: boolean;
   preview: Pick<
     GeneratorPreview,
     | "spans"
@@ -292,7 +296,7 @@ function transitionHelp(row: EvolutionDirective): string {
 }
 
 function cycleFromPointer(
-  event: PointerEvent<HTMLElement>,
+  event: { clientX: number },
   scroller: HTMLElement,
   cellWidth: number
 ): number {
@@ -632,9 +636,44 @@ export function EvolvePlanEditor({
     onPropertyCurvesChange(next);
     return true;
   };
+  // A pointer drag previews its curve edits locally and commits once on
+  // release. Committing per pointermove pushes a new generator config to the
+  // app on every mouse movement, which rotates the preview request key and
+  // flushes/refetches the whole cached strip mid-drag — the "constant
+  // twitching" repaint loop.
+  const [draftPropertyCurves, setDraftPropertyCurves] = useState<
+    readonly PropertyCurve[] | null
+  >(null);
+  const previewPropertyCurves = (next: PropertyCurve[]) => {
+    if (!onPropertyCurvesChange) return false;
+    const message = validatePropertyCurveConfiguration(
+      next,
+      densityFloor,
+      densityCeiling,
+      complexityFloor,
+      complexityCeiling,
+      plan,
+      curve
+    );
+    if (message) {
+      setPropertyCurveError(message);
+      return false;
+    }
+    setPropertyCurveError(null);
+    setDraftPropertyCurves(next);
+    return true;
+  };
+  const commitDraftPropertyCurves = (
+    draft: readonly PropertyCurve[] | null
+  ) => {
+    setDraftPropertyCurves(null);
+    // Every stored draft already passed validation when it was previewed.
+    if (draft && onPropertyCurvesChange) onPropertyCurvesChange([...draft]);
+  };
+  const effectivePropertyCurves = draftPropertyCurves ?? propertyCurves;
   const propertyCurveByProperty = useMemo(
-    () => new Map(propertyCurves.map((entry) => [entry.property, entry])),
-    [propertyCurves]
+    () => new Map(effectivePropertyCurves.map((entry) => [entry.property, entry])),
+    [effectivePropertyCurves]
   );
   const [comparison, setComparison] = useState<"before" | "after">("after");
   const [selectedProperty, setSelectedProperty] =
@@ -645,7 +684,13 @@ export function EvolvePlanEditor({
     PROPERTY_LANES.find((lane) => lane.property === selectedProperty)?.label ??
     selectedProperty;
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [cellWidth, setCellWidth] = useState(CELL_WIDTH);
+  const [manualCellWidth, setManualCellWidth] = useState(CELL_WIDTH);
+  // Fit view: scale the whole authored plan into the viewport so a handful of
+  // clicks can sketch an evolution across an arbitrary cycle count — the
+  // engine already interpolates between drawn points, so seeing the full span
+  // at once is all that long-arc authoring needs.
+  const [fitView, setFitView] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null);
   const [visibleRange, setVisibleRange] = useState<VisibleCycleRange>({
     fromCycle: 0,
     toCycle: MIN_VIEW_CYCLES,
@@ -653,9 +698,9 @@ export function EvolvePlanEditor({
   const [rulerPanning, setRulerPanning] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   // In-progress freehand automation draw on a property lane. The draft
-  // accumulates points across the drag so each pointermove commits the latest
-  // line (not a stale render-time snapshot); bottom/height come from the
-  // captured cell, whose row bounds match the whole lane.
+  // accumulates points across the drag and previews locally; the accumulated
+  // line commits once on release. Bottom/height come from the captured cell,
+  // whose row bounds match the whole lane.
   const propertyDrawRef = useRef<{
     property: CurveProperty;
     pointerId: number;
@@ -677,6 +722,9 @@ export function EvolvePlanEditor({
     moved: boolean;
     draft: readonly PropertyCurve[];
   } | null>(null);
+  // Uninstalls the active handle drag's window listeners; see beginHandleDrag.
+  const handleDragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => handleDragCleanupRef.current?.(), []);
   const rulerPanRef = useRef<RulerPanState | null>(null);
   const pendingZoomScrollLeftRef = useRef<number | null>(null);
   const pendingTransitionFocusIdRef = useRef<number | null>(null);
@@ -716,6 +764,115 @@ export function EvolvePlanEditor({
     )
   );
   const extent = Math.min(MAX_STOPPED_PREVIEW_CYCLE, requestedExtent);
+  // Effective cycle width: manual zoom, or — in Fit view — the whole plan
+  // scaled into the measured viewport (floor 3px keeps cells clickable).
+  const fallbackViewportWidth =
+    LANE_LABEL_WIDTH + (MIN_VIEW_CYCLES + 1) * manualCellWidth;
+  const fitCellWidth = Math.max(
+    3,
+    Math.min(
+      MAX_CELL_WIDTH,
+      Math.floor(
+        ((viewportWidth ?? fallbackViewportWidth) - LANE_LABEL_WIDTH) /
+          (extent + 1)
+      )
+    )
+  );
+  const cellWidth = fitView ? fitCellWidth : manualCellWidth;
+  const denseView = cellWidth < 14;
+  // A point-handle drag listens on the window, not the handle element: the
+  // drafted point re-renders into another cycle's cell as it moves, which
+  // unmounts the original handle and would silently end an element-attached
+  // drag (and its pointer capture) after the first crossed cell.
+  const beginHandleDrag = (init: {
+    property: CurveProperty;
+    cycle: number;
+    pointerId: number;
+    bottom: number;
+    height: number;
+    startX: number;
+    startY: number;
+  }) => {
+    handleDragRef.current = {
+      ...init,
+      moved: false,
+      draft: propertyCurves,
+    };
+    const onMove = (event: globalThis.PointerEvent) => {
+      const drag = handleDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      // Ignore sub-threshold jitter so a plain click still reads as a click,
+      // not a tiny move.
+      if (
+        !drag.moved &&
+        Math.abs(event.clientX - drag.startX) < 4 &&
+        Math.abs(event.clientY - drag.startY) < 4
+      ) {
+        return;
+      }
+      drag.moved = true;
+      const fraction =
+        drag.height <= 0
+          ? 0
+          : Math.min(
+              1,
+              Math.max(0, (drag.bottom - event.clientY) / drag.height)
+            );
+      const level = Math.round(fraction * 100_000);
+      // Horizontal drag moves the point's cycle: follow the pointer's X
+      // across the lane, like the arrow keys do, and keep the level from
+      // this event's Y (UC-37).
+      const hoverCycle = scrollerRef.current
+        ? Math.min(
+            extent,
+            Math.max(
+              1,
+              cycleFromPointer(event, scrollerRef.current, cellWidth)
+            )
+          )
+        : drag.cycle;
+      const next = upsertPropertyCurvePoint(
+        hoverCycle !== drag.cycle
+          ? removePropertyCurvePoint(drag.draft, drag.property, drag.cycle)
+          : drag.draft,
+        drag.property,
+        hoverCycle,
+        level
+      );
+      if (previewPropertyCurves(next)) {
+        drag.draft = next;
+        drag.cycle = hoverCycle;
+      }
+    };
+    const finish = (event: globalThis.PointerEvent) => {
+      const drag = handleDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      cleanup();
+      handleDragRef.current = null;
+      // A release without a drag is a click: delete (but never on cancel).
+      if (!drag.moved) {
+        setDraftPropertyCurves(null);
+        if (event.type === "pointerup") {
+          applyPropertyCurves(
+            removePropertyCurvePoint(propertyCurves, drag.property, drag.cycle)
+          );
+        }
+        return;
+      }
+      commitDraftPropertyCurves(drag.draft);
+    };
+    const cleanup = () => {
+      handleDragCleanupRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    handleDragCleanupRef.current?.();
+    handleDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
   const outOfWindowDirectiveCount = plan.filter(
     (row) => row.fromCycle > extent || row.toCycle > extent
   ).length;
@@ -751,6 +908,7 @@ export function EvolvePlanEditor({
           entry.cycle,
           {
             ...previewMetrics(entry),
+            stale: entry.stale === true,
             corridor: entry.preview.densityCorridor ?? null,
             distanceMilli: entry.preview.cycleDistance?.distanceMilli ?? null,
             complexityMilli: entry.preview.stateComplexityMilli ?? null,
@@ -779,22 +937,26 @@ export function EvolvePlanEditor({
     () => new Map(plan.map((directive) => [directive.id, directive])),
     [plan]
   );
+  // Engine precedence mirrored: at cycles with any enabled directive the
+  // directives own the cycle (curve suppressed); elsewhere the curve's
+  // interpolated target is the band. The set also drives the pacing cells'
+  // "overridden by directive" state (UC-39).
+  const directiveCoveredCycles = useMemo(() => {
+    const covered = new Set<number>();
+    for (const row of plan) {
+      for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
+        if (directiveOwnsCycle(row, cycle, morphSeedBeats)) {
+          covered.add(cycle);
+        }
+      }
+    }
+    return covered;
+  }, [morphSeedBeats, plan]);
   // Perceptual step targets per cycle: the sum of every enabled perceptual
   // row covering the cycle (cross-family rows may stack; their increments
   // are sequential, so the whole-cycle intent is additive).
   const perceptualTargetByCycle = useMemo(() => {
-    const map = new Map<number, { targetMilli: number; toleranceMilli: number; rows: number }>();
-    // Engine precedence mirrored: at cycles with any enabled directive the
-    // directives own the cycle (curve suppressed); elsewhere the curve's
-    // interpolated target is the band.
-    const directiveCoveredCycles = new Set<number>();
-    for (const row of plan) {
-      for (let cycle = row.fromCycle; cycle <= row.toCycle; cycle += 1) {
-        if (directiveOwnsCycle(row, cycle, morphSeedBeats)) {
-          directiveCoveredCycles.add(cycle);
-        }
-      }
-    }
+    const map = new Map<number, { targetMilli: number; toleranceMilli: number }>();
     if (curve.enabled && curve.points.length > 0) {
       const first = curve.points[0]!.cycle;
       const last = curve.points[curve.points.length - 1]!.cycle;
@@ -804,7 +966,6 @@ export function EvolvePlanEditor({
         map.set(cycle, {
           targetMilli: target,
           toleranceMilli: curve.toleranceMilli,
-          rows: 0,
         });
       }
     }
@@ -815,16 +976,14 @@ export function EvolvePlanEditor({
         const current = map.get(cycle) ?? {
           targetMilli: 0,
           toleranceMilli: 0,
-          rows: 0,
         };
         current.targetMilli += row.magnitude.targetMilli;
         current.toleranceMilli += row.magnitude.toleranceMilli;
-        current.rows += 1;
         map.set(cycle, current);
       }
     }
     return map;
-  }, [curve, morphSeedBeats, plan]);
+  }, [curve, directiveCoveredCycles, morphSeedBeats, plan]);
   const maxVisibleStepMilli = useMemo(() => {
     let max = 1;
     for (const [cycle, metrics] of previewByCycle) {
@@ -868,6 +1027,7 @@ export function EvolvePlanEditor({
   const measureVisibleCycleRange = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    setViewportWidth(scroller.clientWidth > 0 ? scroller.clientWidth : null);
     const viewportWidth =
       scroller.clientWidth > 0
         ? scroller.clientWidth
@@ -1110,10 +1270,13 @@ export function EvolvePlanEditor({
         MIN_CELL_WIDTH,
         Math.min(MAX_CELL_WIDTH, Math.round(cellWidth * scale))
       );
-      if (nextWidth === cellWidth) return;
+      if (nextWidth === cellWidth && !fitView) return;
       pendingZoomScrollLeftRef.current =
         LANE_LABEL_WIDTH + anchoredCycle * nextWidth - pointerX;
-      setCellWidth(nextWidth);
+      // Zooming while fitted hands control back to manual zoom, starting
+      // from the fitted width so the gesture feels continuous.
+      setFitView(false);
+      setManualCellWidth(nextWidth);
       return;
     }
     scroller.scrollLeft = Math.max(
@@ -1221,6 +1384,21 @@ export function EvolvePlanEditor({
             onValueCommit={(value) => onPlanLengthCyclesChange?.(value)}
           />
         </label>
+        <button
+          type="button"
+          className={`evolve-plan-fit-toggle${fitView ? " is-active" : ""}`}
+          aria-pressed={fitView}
+          title="Scale the whole plan into the viewport so a few clicks sketch an evolution across every cycle; ⌘-wheel zoom returns to detail view."
+          onClick={() => {
+            const next = !fitView;
+            setFitView(next);
+            if (next && scrollerRef.current) {
+              scrollerRef.current.scrollLeft = 0;
+            }
+          }}
+        >
+          Fit view
+        </button>
       </header>
 
       {outOfWindowDirectiveCount > 0 ? (
@@ -1248,7 +1426,7 @@ export function EvolvePlanEditor({
 
       <div className="evolve-plan-workbench">
         <div
-          className="evolve-plan-scroll"
+          className={`evolve-plan-scroll${denseView ? " is-dense" : ""}`}
           ref={scrollerRef}
           aria-label="Evolution score timeline"
           style={
@@ -1286,16 +1464,22 @@ export function EvolvePlanEditor({
               const metrics = previewByCycle.get(cycle);
               const realized = metrics?.distanceMilli ?? null;
               const target = perceptualTargetByCycle.get(cycle) ?? null;
+              // A cycle owned by ≥1 enabled directive suppresses the curve
+              // there — say so instead of rendering unexplained (UC-39).
+              const directiveOwned = directiveCoveredCycles.has(cycle);
               const within =
                 realized !== null &&
                 target !== null &&
                 Math.abs(realized - target.targetMilli) <= target.toleranceMilli;
+              const ownedSuffix = directiveOwned
+                ? ", overridden by directive"
+                : "";
               const stepLabel =
                 realized === null
-                  ? `Cycle ${cycle} step size not cached`
+                  ? `Cycle ${cycle} step size not cached${ownedSuffix}`
                   : target === null
-                    ? `Cycle ${cycle} step size ${formatPerceptualScore(realized)}`
-                    : `Cycle ${cycle} step size ${formatPerceptualScore(realized)}, target ${formatPerceptualScore(target.targetMilli)} ±${formatPerceptualScore(target.toleranceMilli)}${within ? ", within tolerance" : ", outside tolerance"}`;
+                    ? `Cycle ${cycle} step size ${formatPerceptualScore(realized)}${ownedSuffix}`
+                    : `Cycle ${cycle} step size ${formatPerceptualScore(realized)}, target ${formatPerceptualScore(target.targetMilli)} ±${formatPerceptualScore(target.toleranceMilli)}${within ? ", within tolerance" : ", outside tolerance"}${ownedSuffix}`;
               const scale = (value: number) =>
                 Math.round(Math.min(1, value / maxVisibleStepMilli) * 100);
               return (
@@ -1309,7 +1493,7 @@ export function EvolvePlanEditor({
                           ? " is-outside-target"
                           : ""
                       : ""
-                  }${curve.enabled && onCurveChange ? " is-curve-editable" : ""}`}
+                  }${directiveOwned ? " is-directive-owned" : ""}${curve.enabled && onCurveChange ? " is-curve-editable" : ""}${metrics?.stale ? " is-stale" : ""}`}
                   role="group"
                   aria-label={stepLabel}
                   title={stepLabel}
@@ -1462,9 +1646,26 @@ export function EvolvePlanEditor({
                   const drawnPointHere =
                     laneCurve?.points.some((point) => point.cycle === cycle) ??
                     false;
-                  const bandFloor = drawnBand ? drawnBand[0] : railFloor;
-                  const bandCeil = drawnBand ? drawnBand[1] : railCeil;
-                  const hasBand = bandFloor !== null && bandCeil !== null;
+                  // The engine intersects a drawn band with the corridor rail
+                  // (Density/Complexity lanes carry a rail); the shading must
+                  // too. An empty intersection is a conflict, rendered as a
+                  // red marker instead of a fabricated positive band (UC-40).
+                  const bandFloor = drawnBand
+                    ? railFloor !== null
+                      ? Math.max(drawnBand[0], railFloor)
+                      : drawnBand[0]
+                    : railFloor;
+                  const bandCeil = drawnBand
+                    ? railCeil !== null
+                      ? Math.min(drawnBand[1], railCeil)
+                      : drawnBand[1]
+                    : railCeil;
+                  const bandConflict =
+                    bandFloor !== null &&
+                    bandCeil !== null &&
+                    bandFloor > bandCeil;
+                  const hasBand =
+                    bandFloor !== null && bandCeil !== null && !bandConflict;
                   const directiveOwned =
                     drawnBand !== null &&
                     plan.some((row) =>
@@ -1539,7 +1740,7 @@ export function EvolvePlanEditor({
                           : ""
                       }${drawnBand ? " is-drawn" : ""}${
                         drawnPointHere ? " has-point" : ""
-                      }`}
+                      }${metrics?.stale ? " is-stale" : ""}`}
                       role="group"
                       tabIndex={editable && cycle >= 1 ? 0 : undefined}
                       aria-label={label}
@@ -1657,7 +1858,7 @@ export function EvolvePlanEditor({
                                 cycle,
                                 Math.round(fraction * 100_000)
                               );
-                              if (applyPropertyCurves(draft)) {
+                              if (previewPropertyCurves(draft)) {
                                 propertyDrawRef.current = {
                                   property: lane.property,
                                   pointerId: event.pointerId,
@@ -1709,7 +1910,7 @@ export function EvolvePlanEditor({
                                 moveCycle,
                                 Math.round(fraction * 100_000)
                               );
-                              if (applyPropertyCurves(next)) {
+                              if (previewPropertyCurves(next)) {
                                 draw.draft = next;
                               }
                             }
@@ -1722,7 +1923,9 @@ export function EvolvePlanEditor({
                                 propertyDrawRef.current?.pointerId ===
                                 event.pointerId
                               ) {
+                                const { draft } = propertyDrawRef.current;
                                 propertyDrawRef.current = null;
+                                commitDraftPropertyCurves(draft);
                               }
                             }
                           : undefined
@@ -1734,13 +1937,30 @@ export function EvolvePlanEditor({
                                 propertyDrawRef.current?.pointerId ===
                                 event.pointerId
                               ) {
+                                const { draft } = propertyDrawRef.current;
                                 propertyDrawRef.current = null;
+                                commitDraftPropertyCurves(draft);
                               }
                             }
                           : undefined
                       }
                     >
-                      {hasBand ? (
+                      {bandConflict ? (
+                        // Drawn band and corridor rail do not overlap: mark
+                        // the empty gap between them instead of drawing a
+                        // band that exists nowhere (UC-40).
+                        <i
+                          className="evolve-plan-property-band is-conflict"
+                          aria-hidden="true"
+                          style={{
+                            bottom: `${bandCeil! / 1_000}%`,
+                            height: `${Math.max(
+                              1,
+                              (bandFloor! - bandCeil!) / 1_000
+                            )}%`,
+                          }}
+                        />
+                      ) : hasBand ? (
                         <i
                           className="evolve-plan-property-band"
                           aria-hidden="true"
@@ -1785,10 +2005,7 @@ export function EvolvePlanEditor({
                               event.currentTarget.parentElement as HTMLElement | null
                             )?.getBoundingClientRect();
                             if (!cellRect) return;
-                            event.currentTarget.setPointerCapture?.(
-                              event.pointerId
-                            );
-                            handleDragRef.current = {
+                            beginHandleDrag({
                               property: lane.property,
                               cycle,
                               pointerId: event.pointerId,
@@ -1796,70 +2013,7 @@ export function EvolvePlanEditor({
                               height: cellRect.height,
                               startX: event.clientX,
                               startY: event.clientY,
-                              moved: false,
-                              draft: propertyCurves,
-                            };
-                          }}
-                          onPointerMove={(event) => {
-                            const drag = handleDragRef.current;
-                            if (!drag || drag.pointerId !== event.pointerId) {
-                              return;
-                            }
-                            // Ignore sub-threshold jitter so a plain click still
-                            // reads as a click, not a tiny move.
-                            if (
-                              !drag.moved &&
-                              Math.abs(event.clientX - drag.startX) < 4 &&
-                              Math.abs(event.clientY - drag.startY) < 4
-                            ) {
-                              return;
-                            }
-                            drag.moved = true;
-                            const fraction =
-                              drag.height <= 0
-                                ? 0
-                                : Math.min(
-                                    1,
-                                    Math.max(
-                                      0,
-                                      (drag.bottom - event.clientY) /
-                                        drag.height
-                                    )
-                                  );
-                            const next = upsertPropertyCurvePoint(
-                              drag.draft,
-                              drag.property,
-                              drag.cycle,
-                              Math.round(fraction * 100_000)
-                            );
-                            if (applyPropertyCurves(next)) {
-                              drag.draft = next;
-                            }
-                          }}
-                          onPointerUp={(event) => {
-                            const drag = handleDragRef.current;
-                            if (!drag || drag.pointerId !== event.pointerId) {
-                              return;
-                            }
-                            handleDragRef.current = null;
-                            // A release without a drag is a click: delete.
-                            if (!drag.moved) {
-                              applyPropertyCurves(
-                                removePropertyCurvePoint(
-                                  propertyCurves,
-                                  drag.property,
-                                  drag.cycle
-                                )
-                              );
-                            }
-                          }}
-                          onLostPointerCapture={(event) => {
-                            if (
-                              handleDragRef.current?.pointerId ===
-                              event.pointerId
-                            ) {
-                              handleDragRef.current = null;
-                            }
+                            });
                           }}
                           onKeyDown={(event) => {
                             event.stopPropagation();

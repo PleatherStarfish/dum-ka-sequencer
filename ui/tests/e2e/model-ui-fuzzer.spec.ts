@@ -381,7 +381,7 @@ const fuzzActions: FuzzAction[] = [
     run: async ({ page, rng }) => {
       await closeMainEditor(page);
       const value = rng.pick(EDGE_TEMPO_VALUES);
-      const input = page.getByLabel("Tempo");
+      const input = page.getByLabel("Global BPM");
       await input.fill(`${value}`);
       await input.press("Enter");
       return `tempo=${value}`;

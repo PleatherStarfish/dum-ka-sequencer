@@ -231,6 +231,12 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
             Just(vec![2, 3]),
         ],
         property_curve_hints_strategy(),
+        // The pacing curve MUST be drawn here: it was hardcoded disabled
+        // while the curve walk shipped without a leash, so 2048-case sweeps
+        // never touched the exact surface that collapsed patterns to a
+        // single onset. Every authored feature flag belongs in this strategy
+        // the day it ships.
+        (prop::bool::ANY, 0_u32..=100_000, 0_u32..=20_000, 1_u64..=8),
         generator_seed_mode_strategy(),
     )
         .prop_map(
@@ -245,6 +251,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                 mut plan,
                 subdivision_palette,
                 property_curve_hints,
+                (curve_enabled, curve_target, curve_tolerance, curve_span),
                 seed_mode,
             )| {
                 for (index, directive) in plan.iter_mut().enumerate() {
@@ -328,7 +335,21 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     },
                     plan,
                     plan_length_cycles: 0,
-                    evolution_curve: rhythm::EvolutionCurve::default(),
+                    evolution_curve: rhythm::EvolutionCurve {
+                        enabled: curve_enabled,
+                        tolerance_milli: curve_tolerance,
+                        points: vec![
+                            rhythm::CurvePoint {
+                                cycle: 1,
+                                target_milli: curve_target,
+                            },
+                            rhythm::CurvePoint {
+                                cycle: 1 + curve_span,
+                                target_milli: curve_target / 2,
+                            },
+                        ],
+                        ..rhythm::EvolutionCurve::default()
+                    },
                     property_curves,
                     seed_mode,
                 }
@@ -539,6 +560,40 @@ fn offset_to_ticks(offset: model::Rational) -> u64 {
         quotient
     })
     .unwrap()
+}
+
+/// Sounding onsets (non-rest, non-tied) the generator resolves at `cycle`.
+fn sounding_onset_count(
+    score: &model::Score,
+    generator: &rhythm::GeneratorConfig,
+    cycle: u64,
+) -> usize {
+    let tree = cseq_transforms::apply_pipeline_for_cycle(score, cycle).expect("sections resolve");
+    let active = model::rhythm_accent_spans(&tree.pulse_spans);
+    let spans = active
+        .iter()
+        .map(|span| rhythm::GeneratorSpanInput::from(*span))
+        .collect::<Vec<_>>();
+    let mut generator = generator.clone();
+    let seed = rhythm::resolve_generator_seed(generator.seed_mode_mut(), cycle)
+        .expect("generator seed resolves")
+        .seed;
+    rhythm::resolve_generator_cycle(
+        &generator,
+        &rhythm::GeneratorCycleContext {
+            track_id: None,
+            cycle,
+            cycle_beats: 4,
+            spans: &spans,
+            seed,
+            automation: &|_, _, _| None,
+        },
+    )
+    .expect("generator resolves")
+    .iter()
+    .flat_map(|span| span.cells.iter())
+    .filter(|cell| !cell.rest && !cell.tied_from_previous)
+    .count()
 }
 
 fn expected_generator_onsets(
@@ -838,6 +893,42 @@ proptest! {
         ).expect("transport realization");
         let actual = note_on_ticks(&realized[0].queue);
         prop_assert_eq!(expected, actual);
+    }
+
+    /// The pacing-collapse regression, as a property over the whole fuzzed
+    /// config space: with directives absent and the density corridor open,
+    /// NO stochastic layer (classic step, pacing-curve walk, property
+    /// steering) may pull the sounding onset count below the seed anchor
+    /// minus the leash budget — however large the drawn step targets are.
+    /// The original escape was possible because the pacing curve was never
+    /// drawn by this strategy and no property asserted a musical bound.
+    #[test]
+    fn stochastic_layers_hold_the_leash_count_floor(
+        params in dumka_params_strategy(),
+        cycle in 4_u64..=14,
+    ) {
+        let mut params = params;
+        params.plan.clear();
+        params.density_floor = 0;
+        params.density_ceiling = 100;
+        params
+            .property_curves
+            .retain(|curve| curve.property != rhythm::CurveProperty::Density);
+        let generator = rhythm::GeneratorConfig::Dumka(params.clone());
+        let score = compatible_score(&generator, 1, None, 27);
+        let seed_onsets = sounding_onset_count(&score, &generator, 0);
+        let sounding = sounding_onset_count(&score, &generator, cycle);
+        let budget = (params.drift_leash as usize)
+            .saturating_mul(seed_onsets)
+            .div_ceil(100);
+        prop_assert!(
+            sounding >= seed_onsets.saturating_sub(budget),
+            "cycle {} sounded {} onsets; seed {} leash budget {}",
+            cycle,
+            sounding,
+            seed_onsets,
+            budget
+        );
     }
 
     #[test]

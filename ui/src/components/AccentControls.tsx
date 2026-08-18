@@ -74,14 +74,16 @@ export function VelocityAccentControl({
   label,
   min,
   max,
-  minAutomationTarget,
-  maxAutomationTarget,
   automationFocusButton,
   onChange,
 }: {
   label: string;
   min: number;
   max: number;
+  /** Accepted for call-site compatibility but intentionally unused: the center
+   * slider and margin field each edit BOTH endpoints of the accent range, so
+   * neither sub-control owns a single `…min`/`…max` automation lane (UC-29).
+   * The pair-aware `automationFocusButton` is the automation picker path. */
   minAutomationTarget?: string;
   maxAutomationTarget?: string;
   automationFocusButton?: ReactNode;
@@ -119,7 +121,6 @@ export function VelocityAccentControl({
           max={centerMax}
           value={center}
           aria-label={`${label} accent center`}
-          data-automation-target={minAutomationTarget}
           visualMode="native-overlay"
           onChange={(e) =>
             onChange(
@@ -134,7 +135,6 @@ export function VelocityAccentControl({
           max={64}
           value={margin}
           aria-label={`${label} random margin`}
-          data-automation-target={maxAutomationTarget}
           onValueCommit={(value) =>
             onChange(
               accentRangeFromCenterMargin(

@@ -243,12 +243,11 @@ describe("RhythmBuilder", () => {
     );
   });
 
-  it("does not turn a preview error into a mandatory articulation repair", () => {
+  it("keeps Articulate an optional tool, never a mandatory repair", () => {
     render(
       <RhythmBuilder
         pattern="[x x x x x]@2"
         disabled={false}
-        previewError="generator preview failed"
         projectionSpans={FIVE_GRID_TWO_BEATS}
         onCommit={vi.fn()}
       />
@@ -261,6 +260,27 @@ describe("RhythmBuilder", () => {
       screen.getByRole("button", { name: "group 0: 5 in the time of 2" })
     );
     expect(screen.getByRole("button", { name: "Articulate" })).toBeTruthy();
+  });
+
+  it("caps a top-level leaf weight at the remaining beat budget (UC-33)", () => {
+    render(
+      <RhythmBuilder pattern="dum . x ." disabled={false} onCommit={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "block 0: note" }));
+    // 4 beats used, the selected leaf holds 1 ⇒ 128 - (4 - 1) = 125 available.
+    expect(
+      screen.getByLabelText("Element weight").getAttribute("max")
+    ).toBe("125");
+  });
+
+  it("keeps the notation-level weight cap for nested leaves", () => {
+    render(
+      <RhythmBuilder pattern="[x x]@2 ." disabled={false} onCommit={vi.fn()} />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "block 1: note" }));
+    expect(
+      screen.getByLabelText("Element weight").getAttribute("max")
+    ).toBe("512");
   });
 
   it("rejects an illegal edit with the compiler's message and commits nothing", () => {

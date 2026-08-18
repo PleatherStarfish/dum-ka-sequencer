@@ -100,7 +100,42 @@ describe("trackFlowSpecFromChain", () => {
     expect(spec!.stateCount).toBe(2);
     expect(spec!.transitions).toEqual([{ from: [0], to: 1, weight: 7 }]);
     expect(spec!.entryWeights).toEqual([{ states: [1], weight: 3 }]);
-    expect(spec!.fallbackWeights).toEqual([]);
+    // No authored fallback pool survived, so the spec ships a uniform pool
+    // rather than an implied deterministic `fallback: 0` (UC-16).
+    expect(spec!.fallbackWeights).toEqual([
+      { state: 0, weight: 1 },
+      { state: 1, weight: 1 },
+    ]);
     expect(spec!.fallback).toBe(0);
+  });
+
+  it("emits a uniform fallback pool when weights are authored but no fallback is (UC-16)", () => {
+    // One authored transition leaves `b` and `c` with all-zero outgoing rows.
+    // The spec must carry a uniform fallback pool so those rows walk uniformly
+    // on the engine side instead of deterministically hitting member 0.
+    const chain = {
+      ...defaultTrackFlowChain(),
+      weights: { [trackFlowTransitionKey(["a"], "b")]: 2 },
+    };
+    const spec = trackFlowSpecFromChain(chain, ["a", "b", "c"]);
+    expect(spec!.stateCount).toBe(3);
+    expect(spec!.transitions).toEqual([{ from: [0], to: 1, weight: 2 }]);
+    expect(spec!.entryWeights).toEqual([]);
+    expect(spec!.fallbackWeights).toEqual([
+      { state: 0, weight: 1 },
+      { state: 1, weight: 1 },
+      { state: 2, weight: 1 },
+    ]);
+    expect(spec!.fallback).toBe(0);
+  });
+
+  it("keeps an authored fallback pool verbatim (no uniform overlay)", () => {
+    const chain = {
+      ...defaultTrackFlowChain(),
+      weights: { [trackFlowTransitionKey(["a"], "b")]: 1 },
+      fallbackWeights: { b: 4 },
+    };
+    const spec = trackFlowSpecFromChain(chain, ["a", "b"]);
+    expect(spec!.fallbackWeights).toEqual([{ state: 1, weight: 4 }]);
   });
 });

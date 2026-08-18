@@ -72,10 +72,23 @@ every other decision — never draw-order coupled.
   (k = 2, and divisor `k`s before non-divisors), 100 approaches uniform
   over 2..=n. Same integer-band construction as the temperature pool; no
   float transcendentals.
-- Interval choice reuses **barlowTemperature**: candidate intervals rank by
-  the indispensability of their strongest interior silent pulse (fragment)
-  or weakest interior onset (consolidate); the temperature pool widens the
-  candidate set exactly as it does for Add/Remove.
+- Interval choice reuses **barlowTemperature**: fragment candidates rank
+  sounding notes before silent runs (fragmentation divides a note; filling
+  silence is the secondary mode — and the pre-downbeat pickup slot's high
+  indispensability would otherwise make a trailing silence the deterministic
+  argmax on virtually every grid, so notes would never divide at
+  temperature 0), each group by the indispensability of its strongest
+  interior pulse; consolidate ranks by weakest interior onset. The
+  temperature pool widens the candidate set exactly as it does for
+  Add/Remove.
+- Fragment selection is **leash-aware**: the preferred figure stands when it
+  fits the remaining stochastic drift budget; otherwise it falls back
+  through the smaller admissible sizes of the same interval, then the
+  remaining ranked intervals, instead of silently no-opping. The
+  curve/steering walks pass their per-cycle budget into the same selection;
+  authored directives remain leash-exempt and draw exactly as before. A
+  fully inadmissible draw now traces `requested 1, applied 0` instead of
+  vanishing.
 
 ### Guards (unchanged machinery, new accounting)
 

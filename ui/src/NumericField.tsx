@@ -439,9 +439,13 @@ export function NumericField({
         }}
       />
       {showSteppers && (
-        <span className="numeric-field__steppers">
+        // The steppers are mouse-only duplicates of the input's own
+        // ArrowUp/ArrowDown handling (they are tabIndex -1 and unreachable by
+        // keyboard), so they are hidden from the accessibility tree entirely:
+        // screen readers get the spinbutton semantics on the input itself,
+        // and dozens of ambiguously-named "Increase …" buttons disappear.
+        <span className="numeric-field__steppers" aria-hidden="true">
           <button
-            aria-label="Increase value"
             type="button"
             tabIndex={-1}
             disabled={!canStepUp}
@@ -451,7 +455,6 @@ export function NumericField({
             ▲
           </button>
           <button
-            aria-label="Decrease value"
             type="button"
             tabIndex={-1}
             disabled={!canStepDown}

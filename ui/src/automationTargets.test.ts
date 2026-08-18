@@ -288,6 +288,38 @@ describe("buildAutomationTargetDefs (characterization)", () => {
     });
   });
 
+  it("emits no channelHocket.entry.* defs — the engine never samples that family (UC-47)", () => {
+    expect(
+      defs.filter((definition) => definition.target.startsWith("channelHocket.entry."))
+    ).toEqual([]);
+  });
+
+  it("floors accent-rule velocity automation at 1 to match every normalizer (UC-45)", () => {
+    const withRule = buildAutomationTargetDefs({
+      ...automationTargetBuildInput,
+      channelAccentRules: [
+        {
+          label: "Beat accents",
+          enabled: true,
+          minVelocity: 104,
+          maxVelocity: 116,
+          probabilityPercent: 75,
+          mode: "renderOnly",
+          weights: { "2": 1 },
+        },
+      ],
+    });
+    const byTarget = new Map(withRule.map((definition) => [definition.target, definition]));
+    expect(byTarget.get("channelHocket.accentRule.0.minVelocity")).toMatchObject({
+      min: 1,
+      max: 127,
+    });
+    expect(byTarget.get("channelHocket.accentRule.0.maxVelocity")).toMatchObject({
+      min: 1,
+      max: 127,
+    });
+  });
+
   it("adds per-note-group channel position automation targets", () => {
     const withPosition = buildAutomationTargetDefs({
       ...automationTargetBuildInput,

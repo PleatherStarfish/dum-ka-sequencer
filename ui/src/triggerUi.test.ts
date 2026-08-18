@@ -22,29 +22,16 @@ import {
   percentToPerMille,
   TRIGGER_PRESETS,
   TRIGGER_START_ALIGNMENTS,
-  TRIGGER_START_ALIGNMENTS_DEFERRED,
   TRIGGER_WHEN_SUBJECTS,
-  TRIGGER_WHEN_SUBJECTS_DEFERRED,
-  triggerConditionOfType,
   triggerLaunchAlignmentOfType,
   triggerQuantizeOfSelect,
   triggerQuantizeSelectValue,
   triggerWhenPredicateOfType,
   whenSpecToEditor,
-  whenSubjectValueKind,
 } from "./triggerUi";
 import type { TriggerDecisionEvent, TriggerWhenSpec } from "./bridge";
 
 describe("select↔config mappings", () => {
-  it("conditionOfType preserves beat and defaults to beatIsRest", () => {
-    expect(triggerConditionOfType("gatiIs", 3)).toEqual({ type: "gatiIs", beat: 3, gati: 4 });
-    expect(triggerConditionOfType("beatIsSounding", 2)).toEqual({
-      type: "beatIsSounding",
-      beat: 2,
-    });
-    expect(triggerConditionOfType("nonsense", 5)).toEqual({ type: "beatIsRest", beat: 5 });
-  });
-
   it("launchAlignmentOfType maps known types and defaults to atEvent", () => {
     expect(triggerLaunchAlignmentOfType("atSourceCycleStart")).toEqual({
       type: "atSourceCycleStart",
@@ -168,14 +155,6 @@ describe("WHEN-tree editor (Phase B)", () => {
     ]);
   });
 
-  it("whenSubjectValueKind classifies the extra value control", () => {
-    expect(whenSubjectValueKind("isRest")).toBe("none");
-    expect(whenSubjectValueKind("gatiIs")).toBe("gati");
-    expect(whenSubjectValueKind("matraIsSounding")).toBe("matra");
-    expect(whenSubjectValueKind("restCountInCycle")).toBe("count");
-    expect(whenSubjectValueKind("???")).toBe("none");
-  });
-
   it("triggerWhenPredicateOfType builds predicates and carries compatible fields", () => {
     expect(triggerWhenPredicateOfType("isSounding")).toEqual({ type: "isSounding" });
     expect(triggerWhenPredicateOfType("gatiIs")).toEqual({ type: "gatiIs", gati: 4 });
@@ -295,6 +274,16 @@ describe("GATE helpers (Phase C)", () => {
     expect(percentToPerMille(-10)).toBe(0);
   });
 
+  it("preserves per-mille precision through the 0.1%-step display (UC-21)", () => {
+    // An imported 655‰ shows as 65.5% and round-trips unchanged.
+    expect(perMilleToPercent(655)).toBe(65.5);
+    expect(percentToPerMille(perMilleToPercent(655))).toBe(655);
+    // Every per-mille value survives the display round-trip.
+    for (let perMille = 0; perMille <= 1000; perMille += 1) {
+      expect(percentToPerMille(perMilleToPercent(perMille))).toBe(perMille);
+    }
+  });
+
   it("defaultGateSpec is a neutral, always-accept gate", () => {
     expect(defaultGateSpec()).toEqual({
       probabilityPerMille: 1000,
@@ -332,30 +321,10 @@ describe("START helpers (Phase D)", () => {
   });
 });
 
-describe("deferred-but-visible roadmap options (Phase F)", () => {
-  it("deferred catalogs are non-empty and every entry carries a hint", () => {
-    expect(TRIGGER_WHEN_SUBJECTS_DEFERRED.length).toBeGreaterThan(0);
-    expect(TRIGGER_START_ALIGNMENTS_DEFERRED.length).toBeGreaterThan(0);
-    for (const entry of [...TRIGGER_WHEN_SUBJECTS_DEFERRED, ...TRIGGER_START_ALIGNMENTS_DEFERRED]) {
-      expect(entry.hint.length).toBeGreaterThan(0);
-      expect(entry.label).toMatch(/later/i);
-    }
-  });
-
-  it("no deferred type collides with a real engine option (nothing lies)", () => {
-    const realSubjects = new Set(TRIGGER_WHEN_SUBJECTS.map((s) => s.type));
-    for (const d of TRIGGER_WHEN_SUBJECTS_DEFERRED) {
-      expect(realSubjects.has(d.type as never)).toBe(false);
-    }
-    const realAligns = new Set(TRIGGER_START_ALIGNMENTS.map((a) => a.type));
-    for (const d of TRIGGER_START_ALIGNMENTS_DEFERRED) {
-      expect(realAligns.has(d.type)).toBe(false);
-    }
-  });
-
-  it("a deferred subject/alignment coerces to a safe real value if ever selected", () => {
-    // Disabled in the UI, but if a deferred type leaked through, the builders
-    // must fall back to a real engine variant — never fabricate one.
+describe("unknown roadmap options never fabricate engine config", () => {
+  it("an unknown subject/alignment coerces to a safe real value", () => {
+    // If a roadmap-only type ever leaked through, the builders must fall back
+    // to a real engine variant — never fabricate one.
     expect(triggerWhenPredicateOfType("ratchetFired")).toEqual({ type: "isRest" });
     expect(triggerLaunchAlignmentOfType("rotateToAccent")).toEqual({ type: "atEvent" });
   });

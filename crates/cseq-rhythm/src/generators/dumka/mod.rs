@@ -1221,3 +1221,482 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod curve_leash_tests {
+    use super::*;
+    use crate::generators::{resolve_generator_cycle, GeneratorConfig, GeneratorSpanInput};
+
+    fn per_beat_spans(beats: u64, subdivision: u32) -> Vec<GeneratorSpanInput> {
+        (0..beats)
+            .map(|i| GeneratorSpanInput {
+                span_id: i + 1,
+                span_len: subdivision,
+                label: None,
+                section_index: Some(1),
+                subdivision: Some(subdivision),
+            })
+            .collect()
+    }
+
+    /// Regression for the near-empty-cycle bug: a drawn pacing curve used to
+    /// satisfy large step targets by mass deletion (a near-empty cycle IS
+    /// maximally distant), because the curve walk ignored the drift leash and
+    /// its per-cycle re-anchoring let density ratchet away one budget per
+    /// cycle — leaving "a single note on the first beat and nothing else",
+    /// permanently. With the count floor anchored to the seed (8 onsets, 25%
+    /// leash ⇒ budget 2 ⇒ floor 6), every cycle must sound at least 6 onsets
+    /// no matter what step targets the curve demands; the 16-slot grid is the
+    /// natural ceiling.
+    #[test]
+    fn pacing_curve_cannot_empty_the_pattern() {
+        let curve_shapes: [(&str, Vec<plan::CurvePoint>); 2] = [
+            (
+                "big-flat",
+                vec![
+                    plan::CurvePoint {
+                        cycle: 1,
+                        target_milli: 40_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 40,
+                        target_milli: 40_000,
+                    },
+                ],
+            ),
+            (
+                "spike",
+                vec![
+                    plan::CurvePoint {
+                        cycle: 1,
+                        target_milli: 1_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 16,
+                        target_milli: 90_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 32,
+                        target_milli: 1_000,
+                    },
+                ],
+            ),
+        ];
+        for (shape, points) in curve_shapes {
+            for seed in [7u64, 16, 25] {
+                let params = DumkaGeneratorParams {
+                    pattern: "[x . x .] [x _ . x] [. x x .] [x . . x]".to_string(),
+                    evolution_rate: 60,
+                    seed_mode: GeneratorSeedMode::Locked { seed },
+                    weight_syncopate: 2,
+                    weight_desyncopate: 2,
+                    evolution_curve: plan::EvolutionCurve {
+                        enabled: true,
+                        points: points.clone(),
+                        ..plan::EvolutionCurve::default()
+                    },
+                    ..Default::default()
+                };
+                let config = GeneratorConfig::Dumka(params);
+                let spans = per_beat_spans(4, 4);
+                let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+                for cycle in 0u64..=40 {
+                    let context = GeneratorCycleContext {
+                        track_id: None,
+                        cycle,
+                        cycle_beats: 4,
+                        spans: &spans,
+                        seed,
+                        automation: sampler,
+                    };
+                    let resolved = resolve_generator_cycle(&config, &context)
+                        .expect("curve cycles must stay resolvable");
+                    let sounding: usize = resolved
+                        .iter()
+                        .flat_map(|span| span.cells.iter())
+                        .filter(|cell| !cell.rest && !cell.tied_from_previous)
+                        .count();
+                    assert!(
+                        (6..=16).contains(&sounding),
+                        "shape={shape} seed={seed} cycle={cycle}: sounding {sounding} left the \
+                         leashed count band [6, 16]"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod depth_reachability_tests {
+    use super::*;
+    use crate::generators::{resolve_generator_cycle, GeneratorConfig, GeneratorSpanInput};
+
+    fn spans_for(beats: u64, subdivision: u32) -> Vec<GeneratorSpanInput> {
+        (0..beats)
+            .map(|i| GeneratorSpanInput {
+                span_id: i + 1,
+                span_len: subdivision,
+                label: None,
+                section_index: Some(1),
+                subdivision: Some(subdivision),
+            })
+            .collect()
+    }
+
+    /// Onsets that leave the seed grid (offset within the working beat not a
+    /// multiple of the refinement step), per resolved cycle window.
+    fn deep_onsets(
+        config: &GeneratorConfig,
+        spans: &[GeneratorSpanInput],
+        working: u32,
+        seed_grid_step: u32,
+        seed: u64,
+        cycles: std::ops::RangeInclusive<u64>,
+    ) -> u32 {
+        let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        let mut deep = 0u32;
+        for cycle in cycles {
+            let context = GeneratorCycleContext {
+                track_id: None,
+                cycle,
+                cycle_beats: 4,
+                spans,
+                seed,
+                automation: sampler,
+            };
+            let resolved =
+                resolve_generator_cycle(config, &context).expect("depth configs must resolve");
+            let mut base = 0u32;
+            for span in &resolved {
+                for cell in &span.cells {
+                    if !cell.rest
+                        && !cell.tied_from_previous
+                        && ((base + cell.start) % working) % seed_grid_step != 0
+                    {
+                        deep += 1;
+                    }
+                }
+                base += span.span_len;
+            }
+        }
+        deep
+    }
+
+    /// Regression for "notes never divide into 3/4/5": at fillComplexity 0
+    /// the classic Fragment op must produce a CLEAN simplest tuplet of a
+    /// sounding note — historically it deterministically picked the
+    /// top-ranked trailing silence (the pickup slot outranks every note
+    /// interior), drew a figure the leash could not afford, and silently
+    /// no-opped every cycle, so depth material never appeared at all.
+    #[test]
+    fn fragment_divides_a_note_into_the_simplest_clean_tuplet() {
+        let params = DumkaGeneratorParams {
+            pattern: "x . x .".to_string(),
+            subdivision_palette: vec![3, 5],
+            evolution_rate: 100,
+            drift_leash: 100,
+            fill_complexity: 0,
+            weight_barlow_remove: 0,
+            weight_barlow_add: 0,
+            weight_rotate: 0,
+            weight_fragment: 100,
+            seed_mode: GeneratorSeedMode::Locked { seed: 3 },
+            ..Default::default()
+        };
+        let config = GeneratorConfig::Dumka(params);
+        let spans = spans_for(4, 15);
+        let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        let context = GeneratorCycleContext {
+            track_id: None,
+            cycle: 1,
+            cycle_beats: 4,
+            spans: &spans,
+            seed: 3,
+            automation: sampler,
+        };
+        let resolved = resolve_generator_cycle(&config, &context).expect("resolves");
+        let mut onsets = Vec::new();
+        let mut base = 0u32;
+        for span in &resolved {
+            for cell in &span.cells {
+                if !cell.rest && !cell.tied_from_previous {
+                    onsets.push(base + cell.start);
+                }
+            }
+            base += span.span_len;
+        }
+        // The strongest-interior sounding note (beat 3) splits into the
+        // simplest true tuplet its length affords: a triplet at slots
+        // 30/35/40. Divisions land on the 5-slot lattice — a clean 3-split,
+        // not an E(k,n) approximation.
+        assert_eq!(onsets, vec![0, 30, 35, 40]);
+    }
+
+    /// Drawing the Complexity lane upward must be able to pull palette depth
+    /// into the piece through steering alone — no operator weights touched.
+    #[test]
+    fn drawn_complexity_curve_reaches_palette_depth() {
+        let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
+            pattern: "[x . x .] [x _ . x] [. x x .] [x . . x]".to_string(),
+            subdivision_palette: vec![3],
+            seed_mode: GeneratorSeedMode::Locked { seed: 11 },
+            property_curves: vec![plan::PropertyCurve {
+                property: plan::CurveProperty::Complexity,
+                enabled: true,
+                tolerance_milli: 5_000,
+                weight: 70,
+                points: vec![
+                    plan::CurvePoint {
+                        cycle: 1,
+                        target_milli: 20_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 16,
+                        target_milli: 70_000,
+                    },
+                ],
+            }],
+            ..Default::default()
+        });
+        let spans = spans_for(4, 12);
+        let deep: u32 = (1u64..=4)
+            .map(|seed| deep_onsets(&config, &spans, 12, 3, seed, 1..=16))
+            .sum();
+        assert!(deep > 0, "complexity steering never left the seed grid");
+    }
+
+    /// The pacing curve with the figure pair opted in must reach depth too.
+    #[test]
+    fn pacing_curve_with_figures_reaches_palette_depth() {
+        let config = GeneratorConfig::Dumka(DumkaGeneratorParams {
+            pattern: "[x . x .] [x _ . x] [. x x .] [x . . x]".to_string(),
+            subdivision_palette: vec![3],
+            weight_fragment: 2,
+            fill_complexity: 50,
+            seed_mode: GeneratorSeedMode::Locked { seed: 11 },
+            evolution_curve: plan::EvolutionCurve {
+                enabled: true,
+                points: vec![
+                    plan::CurvePoint {
+                        cycle: 1,
+                        target_milli: 4_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 16,
+                        target_milli: 12_000,
+                    },
+                ],
+                ..plan::EvolutionCurve::default()
+            },
+            ..Default::default()
+        });
+        let spans = spans_for(4, 12);
+        let deep: u32 = (1u64..=4)
+            .map(|seed| deep_onsets(&config, &spans, 12, 3, seed, 1..=16))
+            .sum();
+        assert!(deep > 0, "pacing-curve figures never left the seed grid");
+    }
+}
+
+#[cfg(test)]
+mod operator_liveness_tests {
+    use super::*;
+    use crate::generators::{
+        resolve_generator_cycle_with_trace, GeneratorConfig, GeneratorSpanInput,
+    };
+
+    fn spans_for(beats: u64, subdivision: u32) -> Vec<GeneratorSpanInput> {
+        (0..beats)
+            .map(|i| GeneratorSpanInput {
+                span_id: i + 1,
+                span_len: subdivision,
+                label: None,
+                section_index: Some(1),
+                subdivision: Some(subdivision),
+            })
+            .collect()
+    }
+
+    /// Liveness: with the family enabled (solo weight, rate 100) on material
+    /// designed for it, the operator must APPLY — visibly, in the trace —
+    /// within the first 16 cycles for at least one of a handful of seeds.
+    /// This is the test shape that was missing when Fragment shipped able to
+    /// silently no-op on every cycle of every config: unit tests proved the
+    /// operator correct WHEN CALLED, nothing proved it was ever reached.
+    fn assert_family_lives(
+        label: &str,
+        pattern: &str,
+        subdivision: u32,
+        tweak: impl Fn(&mut DumkaGeneratorParams),
+    ) {
+        let mut applied_cycles = 0u32;
+        for seed in 1u64..=6 {
+            let mut params = DumkaGeneratorParams {
+                pattern: pattern.to_string(),
+                evolution_rate: 100,
+                drift_leash: 100,
+                weight_barlow_remove: 0,
+                weight_barlow_add: 0,
+                weight_rotate: 0,
+                seed_mode: GeneratorSeedMode::Locked { seed },
+                ..Default::default()
+            };
+            tweak(&mut params);
+            let config = GeneratorConfig::Dumka(params);
+            let spans = spans_for(4, subdivision);
+            let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+            for cycle in 1u64..=16 {
+                let context = GeneratorCycleContext {
+                    track_id: None,
+                    cycle,
+                    cycle_beats: 4,
+                    spans: &spans,
+                    seed,
+                    automation: sampler,
+                };
+                let resolution = resolve_generator_cycle_with_trace(&config, &context)
+                    .unwrap_or_else(|error| panic!("{label} must resolve: {error}"));
+                if resolution.trace.iter().any(|entry| entry.applied > 0) {
+                    applied_cycles += 1;
+                }
+            }
+        }
+        assert!(
+            applied_cycles > 0,
+            "{label}: enabled operator never applied over 6 seeds x 16 cycles"
+        );
+    }
+
+    #[test]
+    fn every_operator_family_is_reachable_when_enabled() {
+        assert_family_lives(
+            "remove",
+            "[x . x .] [x x . x] [. x x .] [x . x x]",
+            4,
+            |p| {
+                p.weight_barlow_remove = 100;
+            },
+        );
+        assert_family_lives("add", "[x . x .] [x x . x] [. x x .] [x . x x]", 4, |p| {
+            p.weight_barlow_add = 100;
+        });
+        assert_family_lives(
+            "rotate",
+            "[x . x .] [x x . x] [. x x .] [x . x x]",
+            4,
+            |p| {
+                p.weight_rotate = 100;
+            },
+        );
+        assert_family_lives(
+            "syncopate",
+            "[x . x .] [x . x .] [x . x .] [x . x .]",
+            4,
+            |p| {
+                p.weight_syncopate = 100;
+            },
+        );
+        assert_family_lives(
+            "desyncopate",
+            "[. x . x] [. x . x] [. x . x] [. x . x]",
+            4,
+            |p| {
+                p.weight_desyncopate = 100;
+            },
+        );
+        assert_family_lives(
+            "fragment",
+            "[x . x .] [x _ . x] [. x x .] [x . . x]",
+            4,
+            |p| {
+                p.weight_fragment = 100;
+                p.fill_complexity = 50;
+            },
+        );
+        assert_family_lives(
+            "consolidate",
+            "[x x x x] [x x . .] [x x x .] [. x x x]",
+            4,
+            |p| {
+                p.weight_consolidate = 100;
+            },
+        );
+        assert_family_lives(
+            "euclid",
+            "[x . x .] [x x . x] [. x x .] [x . x x]",
+            4,
+            |p| {
+                p.weight_euclid = 100;
+            },
+        );
+    }
+
+    /// A scoped Rotate directive at full intensity over tie-heavy material:
+    /// sustains crossing scope edges must skip HONESTLY (traced), never
+    /// corrupt span tiling, and still apply where containment allows.
+    #[test]
+    fn scoped_rotate_over_ties_applies_and_skips_honestly() {
+        let mut applied = 0u32;
+        let mut errors = 0u32;
+        for seed in 1u64..=8 {
+            for (start_beat, len_beats) in [(0u32, 2u32), (1, 2), (2, 2), (0, 4)] {
+                let params = DumkaGeneratorParams {
+                    pattern: "[x@2 _ .]@2 [x _ x .]@2".to_string(),
+                    seed_mode: GeneratorSeedMode::Locked { seed },
+                    plan: vec![plan::EvolutionDirective {
+                        id: 7,
+                        order: 0,
+                        enabled: true,
+                        from_cycle: 1,
+                        to_cycle: 16,
+                        family: plan::DirectiveFamily::Rotate,
+                        pacing: plan::DirectivePacing::PerCycle,
+                        magnitude: plan::DirectiveMagnitude::OperationQuota,
+                        intensity: 100,
+                        scope: Some(plan::BeatRange {
+                            start_beat,
+                            len_beats,
+                        }),
+                        options: plan::DirectiveOptions::default(),
+                    }],
+                    ..Default::default()
+                };
+                let config = GeneratorConfig::Dumka(params);
+                let spans = spans_for(4, 4);
+                let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+                for cycle in 1u64..=16 {
+                    let context = GeneratorCycleContext {
+                        track_id: None,
+                        cycle,
+                        cycle_beats: 4,
+                        spans: &spans,
+                        seed,
+                        automation: sampler,
+                    };
+                    match resolve_generator_cycle_with_trace(&config, &context) {
+                        Ok(resolution) => {
+                            for entry in &resolution.trace {
+                                applied += entry.applied;
+                            }
+                            for span in &resolution.spans {
+                                let mut cursor = 0u32;
+                                for cell in &span.cells {
+                                    assert_eq!(cell.start, cursor, "cell gap");
+                                    cursor += cell.len;
+                                }
+                                assert_eq!(cursor, span.span_len, "span underfilled");
+                            }
+                        }
+                        Err(_) => errors += 1,
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            errors, 0,
+            "scoped rotate over ties must never break resolve"
+        );
+        assert!(applied > 0, "scoped rotate never applied anywhere");
+    }
+}

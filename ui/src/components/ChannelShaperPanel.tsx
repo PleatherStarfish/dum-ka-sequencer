@@ -56,6 +56,7 @@ import {
 import {
   bjorklundMask,
   euclidLayerMask,
+  euclidPartitionLayerDomains,
   euclidPartitionTable,
   euclidStackPeriod,
   euclidStackTable,
@@ -249,7 +250,6 @@ export function ChannelShaperPanel({
   setChannelHocketEnabled,
   midiOutputChannel,
   setMidiOutputChannel,
-  channelHocketTab,
   setChannelHocketTab,
   channelHocketTabs,
   activeChannelHocketTab,
@@ -306,6 +306,12 @@ export function ChannelShaperPanel({
   renderAutomationControlLabel,
   renderAutomationFocusButton,
 }: ChannelShaperPanelProps) {
+  // UC-42: the raw `channelHocketTab` state can name a tab the current
+  // strategy does not offer (e.g. "matrix" right after loading a
+  // Euclid-authored patch). The bar and the body must both render from the
+  // clamped active tab, or the body shows one subpanel under another tab's
+  // highlight.
+  const activeChannelHocketTabId = activeChannelHocketTab.id;
   return (
         <details
           id="channel-shaper-panel"
@@ -341,6 +347,7 @@ export function ChannelShaperPanel({
               >
                 <input
                   type="checkbox"
+                  aria-label="Hocket enabled"
                   checked={channelHocketEnabled}
                   data-automation-target="channelHocket.enabled"
                   onChange={(e) => {
@@ -372,6 +379,7 @@ export function ChannelShaperPanel({
               <label className="channel-header-field">
                 Output
                 <select
+                  aria-label="Static output channel"
                   value={midiOutputChannel}
                   data-automation-target="channelHocket.outputChannel"
                   onChange={(e) =>
@@ -422,6 +430,7 @@ export function ChannelShaperPanel({
                   <label className="channel-header-field">
                     Order
                     <select
+                      aria-label="Markov order"
                       value={channelHocketOrder}
                       onChange={(e) => setChannelHocketOrder(e.target.value as MarkovOrder)}
                     >
@@ -450,6 +459,7 @@ export function ChannelShaperPanel({
               <label className="channel-header-field">
                 Fallback
                 <select
+                  aria-label="Fallback channel"
                   value={channelHocketFallback}
                   data-automation-target="channelHocket.fallback.staticChannel"
                   onChange={(e) => setChannelHocketFallback(parseInt(e.target.value, 10))}
@@ -519,10 +529,10 @@ export function ChannelShaperPanel({
               <nav className="ds-tab-bar" aria-label="Channel Shaper views">
                 {channelHocketTabs.map((tab) => (
                   <button
-                    className={channelHocketTab === tab.id ? "is-active" : ""}
+                    className={activeChannelHocketTabId === tab.id ? "is-active" : ""}
                     key={tab.id}
                     type="button"
-                    aria-pressed={channelHocketTab === tab.id}
+                    aria-pressed={activeChannelHocketTabId === tab.id}
                     onClick={() => setChannelHocketTab(tab.id)}
                   >
                     <strong>{tab.label}</strong>
@@ -535,7 +545,7 @@ export function ChannelShaperPanel({
                 className={`channel-workbench-panel is-${activeChannelHocketTab.id}`}
                 aria-label={`${activeChannelHocketTab.label} settings`}
               >
-                {channelHocketTab === "pattern" &&
+                {activeChannelHocketTabId === "pattern" &&
                   (() => {
                     const euclid = channelHocketEuclid;
                     const partition = euclid.placement === "partition";
@@ -609,6 +619,14 @@ export function ChannelShaperPanel({
                         );
                     const maskString = (bits: boolean[]) =>
                       bits.map((bit) => (bit ? "1" : "0")).join("");
+                    // UC-51/UC-52: in partition mode each layer's Bjorklund
+                    // runs over the slots earlier layers left behind, with
+                    // pulses clamped to that remaining budget — the readout
+                    // and the Pulses ceiling must describe that domain, not
+                    // the full shared cycle.
+                    const partitionDomains = partition
+                      ? euclidPartitionLayerDomains(euclid.steps, euclid.layers)
+                      : null;
                     return (
                       <>
                         <div className="channel-workbench-head">
@@ -755,9 +773,17 @@ export function ChannelShaperPanel({
                                         !slot.isFallback
                                     )
                                   : euclidLayerMask(layer, layer.steps, true);
+                                const layerDomain =
+                                  partitionDomains?.[index] ?? null;
+                                const necklacePulses = layerDomain
+                                  ? layerDomain.pulses
+                                  : layer.pulses;
+                                const necklaceSteps = layerDomain
+                                  ? layerDomain.domain
+                                  : layer.steps;
                                 const necklace = bjorklundMask(
-                                  layer.pulses,
-                                  partition ? euclid.steps : layer.steps
+                                  necklacePulses,
+                                  necklaceSteps
                                 );
                                 const intervals = intervalVector(necklace);
                                 const badge =
@@ -808,7 +834,11 @@ export function ChannelShaperPanel({
                                         <NumericField
                                           aria-label={`Euclid layer ${index + 1} pulses`}
                                           min={0}
-                                          max={EUCLID_CHANNEL_MAX_STEPS}
+                                          max={
+                                            layerDomain
+                                              ? layerDomain.domain
+                                              : EUCLID_CHANNEL_MAX_STEPS
+                                          }
                                           value={layer.pulses}
                                           size="compact"
                                           showSteppers={false}
@@ -923,8 +953,8 @@ export function ChannelShaperPanel({
                                       ))}
                                     </span>
                                     <span className="channel-euclid-readout">
-                                      E({layer.pulses},
-                                      {partition ? euclid.steps : layer.steps}) = (
+                                      E({necklacePulses},
+                                      {necklaceSteps}) = (
                                       {intervals.join("")})
                                       {badge ? (
                                         <em className="channel-euclid-badge">
@@ -932,6 +962,17 @@ export function ChannelShaperPanel({
                                         </em>
                                       ) : null}
                                     </span>
+                                    {layerDomain &&
+                                    layer.pulses > layerDomain.domain ? (
+                                      <p className="channel-euclid-hint channel-euclid-overbudget" role="alert">
+                                        Only {layerDomain.domain}{" "}
+                                        {layerDomain.domain === 1
+                                          ? "slot remains"
+                                          : "slots remain"}{" "}
+                                        for this layer — {layerDomain.pulses} of
+                                        its {layer.pulses} pulses will play.
+                                      </p>
+                                    ) : null}
                                   </div>
                                 );
                               })}
@@ -972,7 +1013,7 @@ export function ChannelShaperPanel({
                       </>
                     );
                   })()}
-                {channelHocketTab === "matrix" && (
+                {activeChannelHocketTabId === "matrix" && (
                   <>
                     <div className="channel-workbench-head">
                       <div>
@@ -1075,7 +1116,7 @@ export function ChannelShaperPanel({
                   </>
                 )}
 
-                {channelHocketTab === "entry" && (
+                {activeChannelHocketTabId === "entry" && (
                   <div className="channel-entry-stack">
                     <div className="rhythm-fallback-panel channel-entry-panel">
                       <div>
@@ -1162,7 +1203,7 @@ export function ChannelShaperPanel({
                   </div>
                 )}
 
-                {channelHocketTab === "accents" && (
+                {activeChannelHocketTabId === "accents" && (
                   <div className="channel-accent-panel">
                     <div className="channel-accent-head">
                       <strong>Accent routing</strong>
@@ -1246,7 +1287,7 @@ export function ChannelShaperPanel({
                                   [`channelHocket.accentRule.${ruleIndex}.minVelocity`]
                                 )}
                                 <NumericField
-                                  min={0}
+                                  min={1}
                                   max={127}
                                   value={rule.minVelocity}
                                   data-automation-target={`channelHocket.accentRule.${ruleIndex}.minVelocity`}
@@ -1264,7 +1305,7 @@ export function ChannelShaperPanel({
                                   [`channelHocket.accentRule.${ruleIndex}.maxVelocity`]
                                 )}
                                 <NumericField
-                                  min={0}
+                                  min={1}
                                   max={127}
                                   value={rule.maxVelocity}
                                   data-automation-target={`channelHocket.accentRule.${ruleIndex}.maxVelocity`}
@@ -1336,7 +1377,7 @@ export function ChannelShaperPanel({
                   </div>
                 )}
 
-                {channelHocketTab === "positions" && (
+                {activeChannelHocketTabId === "positions" && (
                   <div className="channel-position-panel">
                     <div className="channel-position-head">
                       <strong>Position routing</strong>
@@ -1430,7 +1471,7 @@ export function ChannelShaperPanel({
                                   )}
                                   <NumericField
                                     min={1}
-                                    max={256}
+                                    max={999}
                                     value={rule.nth}
                                     data-automation-target={nthTarget}
                                     onValueCommit={(value) =>

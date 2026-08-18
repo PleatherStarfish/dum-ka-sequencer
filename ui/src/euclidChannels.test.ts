@@ -5,6 +5,7 @@ import {
   bjorklundMask,
   canonicalEuclidLayersForChannels,
   euclidLayerMask,
+  euclidPartitionLayerDomains,
   euclidPartitionTable,
   euclidStackPeriod,
   euclidStackTable,
@@ -104,6 +105,32 @@ describe("euclidPartitionTable", () => {
         (slot) => slot.channel
       )
     ).toEqual([2, 3, 1, 1]);
+  });
+});
+
+describe("euclidPartitionLayerDomains", () => {
+  it("walks the same shrinking remaining-slot budget as euclidPartitionTable", () => {
+    expect(euclidPartitionLayerDomains(8, [layer(2, 3), layer(3, 2)])).toEqual([
+      { domain: 8, pulses: 3 },
+      { domain: 5, pulses: 2 },
+    ]);
+  });
+
+  it("clamps over-budget layers and starves later ones (the truncation the readout must show)", () => {
+    expect(
+      euclidPartitionLayerDomains(4, [layer(2, 3), layer(3, 3), layer(4, 1)])
+    ).toEqual([
+      { domain: 4, pulses: 3 },
+      { domain: 1, pulses: 1 },
+      { domain: 0, pulses: 0 },
+    ]);
+  });
+
+  it("skips no budget for zero-pulse layers", () => {
+    expect(euclidPartitionLayerDomains(6, [layer(2, 0), layer(3, 4)])).toEqual([
+      { domain: 6, pulses: 0 },
+      { domain: 6, pulses: 4 },
+    ]);
   });
 });
 

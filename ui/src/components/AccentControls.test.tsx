@@ -44,10 +44,20 @@ describe("VelocityAccentControl", () => {
         label="Beat"
         min={range.min}
         max={range.max}
+        minAutomationTarget="sequencer.accent.beatStart.min"
+        maxAutomationTarget="sequencer.accent.beatStart.max"
         onChange={setRange}
       />
     );
   }
+
+  it("never marks a sub-control as a single-endpoint automation target (UC-29)", () => {
+    // The center slider and margin field each rewrite BOTH endpoints, so
+    // neither may advertise ownership of one `…min`/`…max` lane; the
+    // pair-aware focus button is the only automation picker path.
+    const { container } = render(<Harness />);
+    expect(container.querySelector("[data-automation-target]")).toBeNull();
+  });
 
   it("keeps a typed margin after blur when the current center is at the edge", async () => {
     const user = userEvent.setup();

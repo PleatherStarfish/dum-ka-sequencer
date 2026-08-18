@@ -6345,6 +6345,51 @@ input:disabled {
   min-height: 420px;
 }
 
+.evolve-plan-fit-toggle {
+  padding: 4px 10px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.evolve-plan-fit-toggle.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Fit view packs the whole plan into the viewport; below ~14px/cycle the
+   per-cell chrome becomes noise, so the drawable lanes flatten into
+   continuous surfaces: no per-cell borders, ruler labels every 10th cycle,
+   smaller point handles. */
+.evolve-plan-scroll.is-dense .evolve-plan-step-cell,
+.evolve-plan-scroll.is-dense .evolve-plan-property-cell,
+.evolve-plan-scroll.is-dense .evolve-plan-events-cell {
+  border-left: none;
+}
+
+.evolve-plan-scroll.is-dense .evolve-plan-ruler > span:not(.evolve-plan-corner) {
+  visibility: hidden;
+}
+
+.evolve-plan-scroll.is-dense
+  .evolve-plan-ruler
+  > span:not(.evolve-plan-corner):nth-child(10n + 2) {
+  visibility: visible;
+  overflow: visible;
+}
+
+.evolve-plan-scroll.is-dense .evolve-plan-property-handle {
+  width: 8px;
+  height: 8px;
+  margin-bottom: -4px;
+}
+
 .evolve-plan-scroll {
   position: relative;
   min-width: 0;
@@ -6486,6 +6531,14 @@ input:disabled {
   background: var(--red);
 }
 
+/* A cell whose preview was resolved under a previous request key keeps its
+   last value dimmed while the refetch replaces it — cells never flash empty
+   when an edit rotates the request key. */
+.evolve-plan-property-cell.is-stale .evolve-plan-property-mark,
+.evolve-plan-step-cell.is-stale .evolve-plan-step-bar {
+  opacity: 0.45;
+}
+
 /* Drawable property curves (M3.97 §6): an editable lane shows a crosshair; a
    click places a target point, shift-click removes it. */
 .evolve-plan-property-lane.is-editable .evolve-plan-property-cell {
@@ -6493,7 +6546,7 @@ input:disabled {
 }
 
 /* The drawn tolerance band is the authored steering target — tinted stronger
-   than the faint global corridor it overrides. */
+   than the faint global corridor it intersects. */
 .evolve-plan-property-cell.is-drawn .evolve-plan-property-band {
   background: color-mix(
     in srgb,
@@ -6505,6 +6558,16 @@ input:disabled {
     var(--lane-accent, var(--accent)) 60%,
     transparent
   );
+}
+
+/* Drawn band and corridor rail do not overlap (UC-40): the marker spans the
+   empty gap between them, tinted red — no reachable band exists there. */
+.evolve-plan-property-cell .evolve-plan-property-band.is-conflict,
+.evolve-plan-property-cell.is-drawn .evolve-plan-property-band.is-conflict {
+  background: color-mix(in srgb, var(--red) 22%, transparent);
+  border-top: 1px dashed color-mix(in srgb, var(--red) 65%, transparent);
+  border-bottom: 1px dashed color-mix(in srgb, var(--red) 65%, transparent);
+  border-color: color-mix(in srgb, var(--red) 65%, transparent);
 }
 
 /* The drawn automation line: a continuous accent polyline, one segment per
@@ -6615,6 +6678,16 @@ button.evolve-plan-property-handle:hover:not(:disabled),
 
 .evolve-plan-step-cell.is-within-target .evolve-plan-step-bar {
   background: var(--green);
+}
+
+/* A cycle owned by ≥1 enabled directive: the curve is suppressed there, so
+   the cell reads as directive territory instead of an unexplained gap. */
+.evolve-plan-step-cell.is-directive-owned {
+  background: color-mix(in srgb, var(--violet) 9%, transparent);
+}
+
+.evolve-plan-step-cell.is-directive-owned .evolve-plan-step-bar {
+  opacity: 0.62;
 }
 
 .evolve-plan-step-cell.is-curve-editable {
@@ -7910,8 +7983,10 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   display: grid;
   grid-template-columns: minmax(96px, 0.38fr) minmax(132px, 1fr) max-content;
   align-items: center;
-  gap: 7px;
-  padding: 5px 6px;
+  /* Keep clear air between the group label, center slider, and margin field
+     (UC-35: labels crowded into the slider boxes). */
+  gap: 7px 10px;
+  padding: 5px 7px;
   background: var(--surface-0);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -8756,16 +8831,17 @@ button.evolve-plan-property-handle:hover:not(:disabled),
 .section-accent-controls {
   display: grid;
   grid-template-columns: repeat(3, minmax(150px, 1fr));
-  gap: 6px;
+  gap: 9px;
   align-items: center;
 }
 
 .section-accent-strip .velocity-accent-control {
   grid-template-columns: minmax(54px, 0.46fr) minmax(74px, 1fr) max-content;
-  gap: 5px;
+  /* UC-35: modest column gap so the label, slider, and ± field don't abut. */
+  gap: 5px 8px;
   min-width: 0;
   min-height: 36px;
-  padding: 4px;
+  padding: 4px 6px;
 }
 
 .section-accent-strip .velocity-accent-head {

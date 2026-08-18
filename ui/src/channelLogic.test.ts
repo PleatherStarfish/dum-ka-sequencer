@@ -320,7 +320,6 @@ describe("buildChannelLogicOverrideRows", () => {
     expect(row.outputChannels).toEqual([2, 3]);
     expect(row.includesAllShared).toBe(false);
     expect(row.sharedChannels).toEqual([2]);
-    expect(row.inspectableSharedChannels).toEqual([2, 3]);
     expect(row.selectedLabel).toBe("Ch 2-3");
     expect(row.titleA).toBe("Track 1 · Lead");
     expect(row.titleB).toBe("Track 2");

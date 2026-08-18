@@ -66,6 +66,7 @@ export function ModalFrame({
 }: ModalFrameProps) {
   const [closing, setClosing] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -99,10 +100,29 @@ export function ModalFrame({
     }, MODAL_TRANSITION_MS);
   }, [closing, onClose]);
 
+  // Escape closes the dialog (the shared utility-dialog contract). A field
+  // that consumed Escape to cancel its draft calls preventDefault first, so
+  // one press cancels the draft and the next closes the dialog; with stacked
+  // modals only the topmost open frame responds, unwinding one at a time.
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const frames = document.querySelectorAll(".modal-backdrop.is-open");
+      if (frames.length === 0) return;
+      if (frames[frames.length - 1] !== backdropRef.current) return;
+      event.preventDefault();
+      close();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, close]);
+
   if (!open && !closing) return null;
 
   return (
     <div
+      ref={backdropRef}
       className={`modal-backdrop modal-backdrop--${layer} modal-backdrop--${placement}${
         closing ? " is-closing" : " is-open"
       }${className ? ` ${className}` : ""}`}

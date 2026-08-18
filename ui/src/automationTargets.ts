@@ -14,7 +14,6 @@ import type {
   MarkovOrder,
 } from "./bridge";
 import {
-  channelEntryWeightKey,
   clamp,
   cloneAutomationSet,
   MIDI_CHANNELS,
@@ -716,18 +715,10 @@ export function buildAutomationTargetDefs(
       "cycleStart"
     )
   );
-  for (const entry of channelCtx) {
-    add(
-      makeWeightTarget(
-        channelEntryAutomationTarget(input.channelHocketOrder, entry),
-        `Channel entry ${entry.map((item) => `Ch ${item}`).join(" to ")}`,
-        "Channel Entry",
-        input.channelHocketEntryWeights[
-          channelEntryWeightKey(input.channelHocketOrder, entry)
-        ] ?? 0
-      )
-    );
-  }
+  // `channelHocket.entry.*` targets are deliberately NOT emitted (UC-47): the
+  // engine never samples that family, so offering the lanes in the picker
+  // authored automation that could never play. Re-emit only once engine
+  // sampling exists (deferred follow-up in docs/UI_CONTROL_AUDIT.md).
   channels.forEach((channel) => {
     add(
       makeWeightTarget(
@@ -830,7 +821,7 @@ export function buildAutomationTargetDefs(
         `${rule.label} minimum velocity`,
         group,
         rule.minVelocity,
-        0,
+        1,
         127
       )
     );
@@ -840,7 +831,7 @@ export function buildAutomationTargetDefs(
         `${rule.label} maximum velocity`,
         group,
         rule.maxVelocity,
-        0,
+        1,
         127
       )
     );

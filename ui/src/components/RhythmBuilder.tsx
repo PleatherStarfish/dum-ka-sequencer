@@ -24,7 +24,11 @@ import {
   type BuilderOpResult,
   type BuilderProjectionSpan,
 } from "../dumkaRhythmBuilder";
-import { DUMKA_MAX_EUCLID_SLOTS, DUMKA_MAX_WEIGHT } from "../dumkaPattern";
+import {
+  DUMKA_MAX_EUCLID_SLOTS,
+  DUMKA_MAX_TOTAL_BEATS,
+  DUMKA_MAX_WEIGHT,
+} from "../dumkaPattern";
 import { NumericField } from "../NumericField";
 
 function leafGlyph(node: BuilderNode): string {
@@ -151,7 +155,6 @@ export function RhythmBuilder({
 }: {
   pattern: string;
   disabled: boolean;
-  previewError?: string | null;
   projectionSpans?: readonly BuilderProjectionSpan[];
   onCommit: (pattern: string) => void;
 }) {
@@ -228,6 +231,16 @@ export function RhythmBuilder({
           .reduce((sum, node) => sum + node.weight, 0)
       )
     : DUMKA_MAX_WEIGHT;
+  // A top-level leaf's weight spends whole beats, and patterns compile to at
+  // most DUMKA_MAX_TOTAL_BEATS beats — cap the field at the remaining beat
+  // budget so it cannot offer weights that always fail to compile (UC-33).
+  // Nested leaves stay parent-relative, so they keep the notation-level cap.
+  const topLevelLeaf = leaf && nodes.includes(leaf) ? leaf : null;
+  const singleWeightMax = topLevelGroup
+    ? topLevelSpanMax
+    : topLevelLeaf
+      ? Math.max(1, DUMKA_MAX_TOTAL_BEATS - (totalBeats - topLevelLeaf.weight))
+      : DUMKA_MAX_WEIGHT;
   const canUngroup =
     group !== null &&
     group.children.reduce((sum, child) => sum + child.weight, 0) ===
@@ -286,7 +299,7 @@ export function RhythmBuilder({
                 topLevelGroup ? "rhythm-builder-span-help" : undefined
               }
               min={1}
-              max={topLevelSpanMax}
+              max={singleWeightMax}
               value={single.weight}
               disabled={disabled}
               title={

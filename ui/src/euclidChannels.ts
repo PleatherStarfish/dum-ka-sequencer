@@ -168,6 +168,34 @@ export function euclidPartitionTable(
   return table;
 }
 
+export interface EuclidPartitionLayerDomain {
+  /** Remaining unclaimed slots this layer's Bjorklund distributes over. */
+  domain: number;
+  /** The layer's pulse count after clamping to the remaining budget. */
+  pulses: number;
+}
+
+/**
+ * The per-layer remaining-slot domains of partition placement — the same
+ * shrinking budget walk as [`euclidPartitionTable`], surfaced so the editor's
+ * per-layer `E(k,n)` readout and Pulses budget describe the mask the engine
+ * actually computes (layer i distributes over the slots layers 0..i-1 left
+ * behind, with pulses clamped to that budget), not the full-length necklace.
+ */
+export function euclidPartitionLayerDomains(
+  steps: number,
+  layers: EuclidLayerConfig[]
+): EuclidPartitionLayerDomain[] {
+  const n = Math.max(1, Math.floor(steps));
+  let remaining = n;
+  return layers.map((layer) => {
+    const domain = remaining;
+    const pulses = Math.min(Math.max(0, Math.floor(layer.pulses)), remaining);
+    remaining -= pulses;
+    return { domain, pulses };
+  });
+}
+
 /**
  * Stack placement, evaluated over `length` steps for display: at each step
  * the first layer (priority order) whose own mask is on wins, else the

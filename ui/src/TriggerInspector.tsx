@@ -8,14 +8,19 @@
  * rest" path is one glance and power features are one click away. The **Trace**
  * group renders the engine's decision trace in plain language.
  *
- * "Nothing lies": every enabled control maps to a real engine capability;
- * deferred capabilities are present but disabled; the summary and log are
+ * "Nothing lies": every enabled control maps to a real engine capability
+ * (roadmap-only presets appear disabled with a hint); the summary and log are
  * generated from the same normalized config/trace the engine compiles, so they
  * can never drift from what plays.
  */
 import { useState } from "react";
 import { NumericField } from "./NumericField";
-import { clamp, MAX_START_OPTIONS, MAX_START_WEIGHT } from "./patchIo";
+import {
+  clamp,
+  GATE_COOLDOWN_CYCLES_CAP,
+  MAX_START_OPTIONS,
+  MAX_START_WEIGHT,
+} from "./patchIo";
 import {
   buildTriggerPreset,
   defaultGateSpec,
@@ -372,7 +377,17 @@ export function TriggerInspector({
                     className="trigger-when-reset"
                     data-testid="track-trigger-when-reset"
                     disabled={locked}
-                    onClick={() => onUpdate((t) => ({ ...t, when: DEFAULT_WHEN }))}
+                    onClick={() =>
+                      // Replace only the condition tree; the authored beat
+                      // selector survives the reset (UC-22).
+                      onUpdate((t) => ({
+                        ...t,
+                        when: {
+                          ...DEFAULT_WHEN,
+                          beats: (t.when ?? DEFAULT_WHEN).beats,
+                        },
+                      }))
+                    }
                   >
                     Replace with simple condition
                   </button>
@@ -616,7 +631,7 @@ export function TriggerInspector({
                       <NumericField
                         min={0}
                         max={100}
-                        step={1}
+                        step={0.1}
                         value={perMilleToPercent(trigger.gate.probabilityPerMille)}
                         aria-label="Gate probability percent"
                         data-testid="track-trigger-gate-probability"
@@ -634,14 +649,14 @@ export function TriggerInspector({
                       <span>Min gap</span>
                       <NumericField
                         min={0}
-                        max={64}
+                        max={GATE_COOLDOWN_CYCLES_CAP}
                         step={1}
                         value={trigger.gate.cooldownCycles}
                         aria-label="Gate cooldown cycles"
                         data-testid="track-trigger-gate-cooldown"
                         disabled={locked}
                         onValueCommit={(value) => {
-                          const c = clamp(value, 0, 64);
+                          const c = clamp(value, 0, GATE_COOLDOWN_CYCLES_CAP);
                           updateGate((g) => ({ ...g, cooldownCycles: c }));
                         }}
                       />
@@ -654,7 +669,7 @@ export function TriggerInspector({
                       <NumericField
                         min={0}
                         max={100}
-                        step={1}
+                        step={0.1}
                         value={perMilleToPercent(trigger.gate.missBoostPerMille)}
                         aria-label="Gate miss boost percent"
                         data-testid="track-trigger-gate-miss-boost"
@@ -1023,7 +1038,7 @@ export function TriggerInspector({
                     <span>Beats</span>
                     <NumericField
                       min={1}
-                      max={64}
+                      max={256}
                       step={1}
                       value={trigger.length.beats}
                       aria-label="Trigger length beats"
@@ -1033,7 +1048,8 @@ export function TriggerInspector({
                           ...t,
                           length: {
                             type: "fixedBeats",
-                            beats: clamp(value, 1, 64),
+                            // Engine accepts `beats.clamp(1, 256)`.
+                            beats: clamp(value, 1, 256),
                           },
                         }))
                       }

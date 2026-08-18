@@ -47,10 +47,15 @@ pub struct ConsolidateRun {
     pub count: usize,
 }
 
-/// Every fragmentable interval, ordered strongest-interior-pulse first
-/// (descending Barlow rank of the best pulse the figure would newly
-/// articulate, ties by start). The temperature pool then widens over this
-/// order exactly as it does for the Add/Remove candidate lists.
+/// Every fragmentable interval: sounding notes first (fragmentation in the
+/// Mongeau–Sankoff sense divides a note; filling a silent run is the
+/// operator's secondary mode), each group ordered strongest-interior-pulse
+/// first (descending Barlow rank of the best pulse the figure would newly
+/// articulate, ties by start). Without the sounding-first split, the
+/// pre-downbeat pickup slot's high indispensability makes a trailing silent
+/// run the deterministic argmax on virtually every grid, and at temperature
+/// 0 notes are never divided at all. The temperature pool then widens over
+/// this order exactly as it does for the Add/Remove candidate lists.
 pub fn ranked_fragment_intervals(
     state: &EvolutionState,
     slots: u32,
@@ -105,7 +110,13 @@ pub fn ranked_fragment_intervals(
             .max()
             .unwrap_or(0)
     };
-    intervals.sort_by_key(|interval| (std::cmp::Reverse(interior_best(interval)), interval.start));
+    intervals.sort_by_key(|interval| {
+        (
+            interval.onset_index.is_none(),
+            std::cmp::Reverse(interior_best(interval)),
+            interval.start,
+        )
+    });
     intervals
 }
 

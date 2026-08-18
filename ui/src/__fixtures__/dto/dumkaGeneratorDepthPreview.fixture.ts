@@ -17,15 +17,7 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
         {
           "index": 0,
           "start": 0,
-          "len": 2,
-          "rest": true,
-          "tiedFromPrevious": false,
-          "tiedToNext": false
-        },
-        {
-          "index": 1,
-          "start": 2,
-          "len": 1,
+          "len": 3,
           "rest": false,
           "tiedFromPrevious": false,
           "tiedToNext": false
@@ -111,20 +103,14 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
     {
       "cycle": 1,
       "directiveId": 9007199254740991,
-      "family": "euclid",
-      "requested": 16,
-      "applied": 1,
-      "skipped": "exhausted",
+      "family": "stochastic",
+      "requested": 8,
+      "applied": 0,
+      "skipped": "projection",
       "corridorClamp": {
         "limit": "floor",
         "densityPercent": 50
-      },
-      "steeringChoices": [
-        {
-          "family": "euclid",
-          "chosenFor": "syncopation"
-        }
-      ]
+      }
     }
   ],
   "densityCorridor": {
@@ -135,28 +121,28 @@ export const dumkaGeneratorDepthPreviewFixture: GeneratorPreview = {
   },
   "cycleDistance": {
     "modelVersion": "v1",
-    "distanceMilli": 48407
+    "distanceMilli": 33881
   },
   "workingSubdivision": 3,
   "complexityCorridor": {
     "floor": 0,
     "ceiling": 100000
   },
-  "stateComplexityMilli": 50000,
-  "stateDepthDiversityMilli": 100000,
+  "stateComplexityMilli": 33333,
+  "stateDepthDiversityMilli": 91829,
   "propertyProfile": {
     "densityMilli": 50000,
-    "complexityMilli": 50000,
-    "syncopationMilli": 16666,
-    "evennessMilli": 97222,
-    "occupancyMilli": 66667,
-    "diversityMilli": 100000
+    "complexityMilli": 33333,
+    "syncopationMilli": 0,
+    "evennessMilli": 100000,
+    "occupancyMilli": 83333,
+    "diversityMilli": 91829
   },
   "curveMisses": [
     {
       "property": "syncopation",
-      "gapMilli": 4321,
-      "reason": "noReducingCandidate"
+      "gapMilli": 12345,
+      "reason": "projection"
     }
   ]
 };

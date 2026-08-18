@@ -10,7 +10,6 @@
  */
 import type {
   TriggerBeatSelector,
-  TriggerCondition,
   TriggerConditionNode,
   TriggerConfig,
   TriggerCountOp,
@@ -32,11 +31,13 @@ export function defaultStartSelect(alignment: TriggerLaunchAlignment): TriggerSt
   return { options: [{ alignment, weight: 1 }], seed: 0 };
 }
 
-/** Per-mille ⇄ percent helpers for the GATE band (engine stores per-mille). */
+/** Per-mille ⇄ percent helpers for the GATE band (engine stores per-mille).
+ * Display is exact (655‰ ⇒ 65.5%), not rounded to whole percent, so a
+ * per-mille value round-trips unchanged through the 0.1%-step fields. */
 export const GATE_PROBABILITY_MAX_PER_MILLE = 1000;
 
 export function perMilleToPercent(perMille: number): number {
-  return Math.round(perMille / 10);
+  return perMille / 10;
 }
 
 export function percentToPerMille(percent: number): number {
@@ -56,22 +57,6 @@ export function defaultGateSpec(): TriggerGateSpec {
 const REFERENCE_BEAT_TICKS = 960;
 
 // --- select-value ↔ config mappings (used by the inspector) ----------------
-
-/** Build a fresh `TriggerCondition` of `type`, preserving the current beat. */
-export function triggerConditionOfType(type: string, beat: number): TriggerCondition {
-  switch (type) {
-    case "beatIsSounding":
-      return { type: "beatIsSounding", beat };
-    case "sectionStartAtBeat":
-      return { type: "sectionStartAtBeat", beat };
-    case "gatiIs":
-      return { type: "gatiIs", beat, gati: 4 };
-    case "jathiPulseAtBeat":
-      return { type: "jathiPulseAtBeat", beat };
-    default:
-      return { type: "beatIsRest", beat };
-  }
-}
 
 // --- WHEN-tree editor model (Phase B) ---------------------------------------
 //
@@ -112,11 +97,6 @@ export const TRIGGER_WHEN_SUBJECTS: readonly WhenSubject[] = [
   { type: "restCountInCycle", label: "rest count", value: "count" },
   { type: "soundingCountInCycle", label: "sounding count", value: "count" },
 ] as const;
-
-/** The value-control kind a subject needs ("none" when it is a bare flag). */
-export function whenSubjectValueKind(type: string): "none" | "gati" | "matra" | "count" {
-  return TRIGGER_WHEN_SUBJECTS.find((s) => s.type === type)?.value ?? "none";
-}
 
 /**
  * Build a fresh predicate of `type`, carrying over compatible numeric fields
@@ -232,51 +212,6 @@ export const TRIGGER_START_ALIGNMENTS: readonly { type: string; label: string }[
   { type: "afterEventTicks", label: "tick offset after trigger" },
   { type: "centerInRest", label: "center of matched beat" },
   { type: "atSourceReturn", label: "source return" },
-] as const;
-
-/** An entry the UI shows **disabled** because the engine cannot honor it yet
- * (Phase F "deferred-but-visible"). Carries a roadmap hint; never selectable,
- * never sent to the engine. */
-export interface DeferredOption {
-  type: string;
-  label: string;
-  hint: string;
-}
-
-/** Roadmap START placements shown disabled (Phase F): musical rotations the
- * engine cannot place yet. */
-export const TRIGGER_START_ALIGNMENTS_DEFERRED: readonly DeferredOption[] = [
-  {
-    type: "rotateToAccent",
-    label: "rotate to accent (later)",
-    hint: "Needs accent-rotation placement — a later phase.",
-  },
-  {
-    type: "rotateToCadence",
-    label: "rotate to cadence (later)",
-    hint: "Needs cadence-rotation placement — a later phase.",
-  },
-] as const;
-
-/** Roadmap WHEN subjects shown disabled (Phase F): post-score / cross-track
- * predicates the engine cannot observe yet (Observe is locked to structure +
- * rhythm). Surfaced so the roadmap is legible without faking behavior. */
-export const TRIGGER_WHEN_SUBJECTS_DEFERRED: readonly DeferredOption[] = [
-  {
-    type: "ratchetFired",
-    label: "ratchet fired (later)",
-    hint: "Post-score subject — needs the Observe = post-score layer.",
-  },
-  {
-    type: "ornamentAtBeat",
-    label: "ornament at beat (later)",
-    hint: "Post-score subject — needs the Observe = post-score layer.",
-  },
-  {
-    type: "sourceRunning",
-    label: "source running (later)",
-    hint: "Cross-track subject — needs multi-level trigger observation.",
-  },
 ] as const;
 
 /** The "Snap" select value for a quantize config ("off" when none). */

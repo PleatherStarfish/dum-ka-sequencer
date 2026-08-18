@@ -2106,4 +2106,82 @@ test.describe("real backend parity", () => {
     );
     expect(driver.invokeErrors).toEqual([]);
   });
+
+  test("a property-curve edit repaints the evolve strip in place, without blanking", async ({
+    page,
+  }) => {
+    await openCaesuraReal(page);
+    const generator = await openMainEditor(page, "generator");
+    await generator.getByLabel("Generator kind").selectOption("dumka");
+    const field = generator.getByLabel("Dum-Ka pattern");
+    await field.fill("[x x x x x]@2");
+    await field.blur();
+    await expect(generator.getByLabel("Required structure")).toHaveText(
+      "needs 2 beats · Subdivision 5"
+    );
+    await generator.getByRole("button", { name: "Apply structure" }).click();
+    await expect(
+      generator.getByRole("button", { name: "Structure ready" })
+    ).toBeDisabled();
+    await closeMainEditor(page);
+
+    await openMainEditor(page, "evolve");
+    // Wait for the preview fill effect to cache the visible strip.
+    await expect(
+      page.locator(
+        '[aria-label^="Cycle 2 step size"]:not([aria-label*="not cached"])'
+      )
+    ).toBeVisible();
+
+    // Record any transient blank: no previously cached pacing cell may flip
+    // back to "not cached" when a curve edit rotates the request key.
+    await page.evaluate(() => {
+      const log: string[] = [];
+      (window as unknown as { __evolveBlankLog: string[] }).__evolveBlankLog =
+        log;
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target as HTMLElement;
+          const label = target.getAttribute?.("aria-label") ?? "";
+          if (/^Cycle \d+ step size not cached/.test(label)) log.push(label);
+        }
+      });
+      observer.observe(document.querySelector("#evolve-plan-editor")!, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-label"],
+      });
+    });
+
+    // Draw a density steering point at cycle 6.
+    await page.getByRole("group", { name: /^Cycle 6 density/ }).click();
+    await expect(
+      page.getByRole("button", {
+        name: "Move or remove density point at cycle 6",
+      })
+    ).toBeVisible();
+
+    // The real resolver folds the steered cycles, so the strip converges
+    // back to fresh values under the new request key (stale marks clear).
+    await expect
+      .poll(
+        async () =>
+          page
+            .locator(
+              ".evolve-plan-step-cell.is-stale, .evolve-plan-property-cell.is-stale"
+            )
+            .count(),
+        { timeout: 20_000 }
+      )
+      .toBe(0);
+
+    const blankLog = await page.evaluate(
+      () =>
+        (window as unknown as { __evolveBlankLog: string[] }).__evolveBlankLog
+    );
+    expect(blankLog).toEqual([]);
+
+    const driver = await readRealDriverState(page);
+    expect(driver.invokeErrors).toEqual([]);
+  });
 });

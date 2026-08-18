@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
   type SetStateAction,
@@ -152,6 +151,7 @@ import {
   type SetupTab,
   type TrackCycleLengthMode,
   type TrackTempoMode,
+  MAX_SAFE_SEED,
   NEUTRAL_PITCH,
 } from "./patchIo";
 import {
@@ -267,6 +267,7 @@ import {
   buildEffectiveChannelSummaries,
   buildParallelPriorityRows,
   channelLogicGlobalsForDefaultPolicy,
+  hasUnruledChannelLogicSlot,
   nextChannelLogicMatrixForAddedPair,
   nextChannelLogicMatrixForGroupPolicy,
   nextChannelLogicMatrixForGroupTrack,
@@ -406,7 +407,10 @@ import {
   selectPlaybackAvailability,
   type GeneratorPreviewFailure,
 } from "./playbackAvailability";
-import { selectEvolutionPreviewCycles } from "./evolvePreviewCycles";
+import {
+  selectEvolutionPreviewCycles,
+  selectEvolveCachedPreviews,
+} from "./evolvePreviewCycles";
 import {
   gatePosition,
   promoteTimeline,
@@ -682,6 +686,7 @@ export default function App() {
   const resetTransportSyncMenuRef = useRef<(() => Promise<void>) | null>(null);
   const midiPanicMenuRef = useRef<(() => Promise<void>) | null>(null);
   const toggleAutosaveMenuRef = useRef<(() => void) | null>(null);
+  const toggleGeneratorEditorMenuRef = useRef<(() => void) | null>(null);
   const isApplyingPatchRef = useRef(false);
   const skipNextGlobalSeedStartupPersistRef = useRef(false);
   // A view-only track hydration suppresses transport effects until the next
@@ -1329,6 +1334,14 @@ export default function App() {
       : null;
   const handleApplyDumkaStructure = useCallback(() => {
     if (!dumkaRequired) {
+      return;
+    }
+    // Patterns compile up to 128 beats, but scores (and the transport
+    // command) cap at 64 — writing a larger cycle would brick every preview.
+    if (dumkaRequired.cycleBeats > 64) {
+      setPatchStatus(
+        `Pattern needs ${dumkaRequired.cycleBeats} beats; scores support up to 64. Shorten the pattern before applying its structure.`
+      );
       return;
     }
     setCycleBeats(dumkaRequired.cycleBeats);
@@ -3931,19 +3944,11 @@ export default function App() {
     generatorEnabled: rhythmPlaybackEnabled,
   });
   const evolveCachedPreviews = useMemo(
-    () => {
-      const byCycle = new Map<number, GeneratorPreview>();
-      for (const cache of [evolvePreviewCache, rhythmResultCache]) {
-        for (const [cycle, cached] of cache) {
-          if (cached.requestKey === evolveRhythmPreviewRequestKey) {
-            byCycle.set(cycle, cached.value);
-          }
-        }
-      }
-      return [...byCycle]
-        .map(([cycle, preview]) => ({ cycle, preview }))
-        .sort((left, right) => left.cycle - right.cycle);
-    },
+    () =>
+      selectEvolveCachedPreviews(evolveRhythmPreviewRequestKey, [
+        evolvePreviewCache,
+        rhythmResultCache,
+      ]),
     [evolvePreviewCache, evolveRhythmPreviewRequestKey, rhythmResultCache]
   );
   const evolveTrace = useMemo(
@@ -5713,7 +5718,8 @@ export default function App() {
         ...channelLogicGlobalsForDefaultPolicy(
           project.global.channelLogicMatrix,
           project.tracks,
-          policy
+          policy,
+          runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
         ),
       },
     }), "Updated default channel logic").catch((e) => setError(String(e)));
@@ -5737,7 +5743,8 @@ export default function App() {
           project.tracks,
           project.global.channelConflictPolicy,
           { trackAId, trackBId, outputChannels, includesAllShared, policy: currentPolicy },
-          nextPolicy
+          nextPolicy,
+          runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
         ),
       },
     }), "Updated channel logic override").catch((e) => setError(String(e)));
@@ -5749,7 +5756,8 @@ export default function App() {
       const channelLogicMatrix = nextChannelLogicMatrixForAddedPair(
         project.global.channelLogicMatrix,
         project.tracks,
-        project.global.channelConflictPolicy
+        project.global.channelConflictPolicy,
+        runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
       );
       if (!channelLogicMatrix) return project;
       return {
@@ -5779,7 +5787,8 @@ export default function App() {
           trackBId,
           policy,
           outputChannel,
-          selected
+          selected,
+          runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
         ),
       },
     }), selected ? "Removed channel from logic rule" : "Added channel to logic rule").catch(
@@ -5803,7 +5812,8 @@ export default function App() {
           project.global.channelLogicMatrix,
           project.tracks,
           project.global.channelConflictPolicy,
-          { trackAId, trackBId, outputChannels, includesAllShared, policy }
+          { trackAId, trackBId, outputChannels, includesAllShared, policy },
+          runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
         ),
       },
     }), "Removed channel logic override").catch((e) => setError(String(e)));
@@ -5829,7 +5839,8 @@ export default function App() {
         project.global.channelConflictPolicy,
         { trackAId, trackBId, outputChannels, includesAllShared, policy },
         side,
-        nextTrackId
+        nextTrackId,
+        runtimeEndpointTrackIds(project.tracks, project.global.trackFlowBoxes)
       );
       if (!channelLogicMatrix) return project;
       return {
@@ -6414,6 +6425,9 @@ export default function App() {
   resetTransportSyncMenuRef.current = handleResetTransportSync;
   toggleAutosaveMenuRef.current = handleToggleAutosave;
   midiPanicMenuRef.current = handlePanic;
+  toggleGeneratorEditorMenuRef.current = () => {
+    setMainEditorOpen(activeMainEditorId === "generator" ? null : "generator");
+  };
 
   useEffect(() => {
     const handleNativeMenuAction = (action: NativeMenuAction) => {
@@ -6444,6 +6458,10 @@ export default function App() {
         setSynthPropertiesOpen(true);
       } else if (action === "midiPanic") {
         void midiPanicMenuRef.current?.();
+      } else if (action === "toggleRhythmShaper") {
+        // Historical event name; the item now toggles the Generator editor,
+        // which hosts the rhythm/pattern authoring surface.
+        toggleGeneratorEditorMenuRef.current?.();
       }
     };
 
@@ -6963,8 +6981,10 @@ export default function App() {
     {
       scope: "rhythm",
       title: "Generator history",
-      mode: "inherits global",
-      baseSeed: seed,
+      // The generator stream has its own mode and base seed; only the
+      // remembered-seed pool is shared with (and labeled as) Global.
+      mode: generatorSeedMode,
+      baseSeed: generatorSeed,
       seeds: globalHistorySeeds,
       historyWeight,
       newSeedWeight,
@@ -7147,8 +7167,31 @@ export default function App() {
     }
     return capacity;
   }, [parallelTrackTabs]);
-  const hasAvailableChannelLogicPair =
-    parallelTrackTabs.length > 1 && channelLogicRuleCapacity > 0;
+  // The Add rule button enables only while an UNRULED shared (pair, channel)
+  // slot exists — total capacity alone left the button live after every slot
+  // was ruled, turning further clicks into silent no-ops with a false
+  // success banner.
+  const hasAvailableChannelLogicPair = useMemo(() => {
+    if (!parallelProject || parallelTrackTabs.length <= 1) return false;
+    if (channelLogicRuleCapacity === 0) return false;
+    // Scan the live track-tab channel sets (the same source as the capacity
+    // count) so the active track's unsynced hocket edits are visible; only
+    // the authored matrix comes from project state.
+    return hasUnruledChannelLogicSlot(
+      parallelProject.global.channelLogicMatrix,
+      parallelTrackTabs,
+      channelConflictPolicy,
+      runtimeEndpointTrackIds(
+        parallelProject.tracks,
+        parallelProject.global.trackFlowBoxes
+      )
+    );
+  }, [
+    parallelProject,
+    parallelTrackTabs,
+    channelLogicRuleCapacity,
+    channelConflictPolicy,
+  ]);
   const parallelPriorityRows = useMemo(() => {
     if (!parallelProject) return [];
     return buildParallelPriorityRows(
@@ -7675,26 +7718,10 @@ export default function App() {
     []
   );
 
-  const boxDropHandlers = (boxId: string) => ({
-    onDragOver: (e: ReactDragEvent) => {
-      if (!draggingTrackId) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (dragOverTarget !== boxId) setDragOverTarget(boxId);
-    },
-    onDragLeave: () => {
-      setDragOverTarget((cur) => (cur === boxId ? null : cur));
-    },
-    onDrop: (e: ReactDragEvent) => {
-      if (!draggingTrackId) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handleAssignTrackToBox(draggingTrackId, boxId);
-      setDraggingTrackId(null);
-      setDragOverTarget(null);
-    },
-  });
-
+  // Track dragging is delivered entirely by the pointer path
+  // (beginPointerTrackDrag + laneDropTargetFromPoint); the HTML5 drag/drop
+  // handlers that used to sit here were unreachable (the cell is
+  // draggable={false}, so no native dragstart ever fired) and are removed.
   const renderTrackCell = (
     track: LaneTrackTab,
     index: number,
@@ -7719,15 +7746,6 @@ export default function App() {
         style={{ "--track-color": track.color } as CSSProperties}
         draggable={false}
         onPointerDown={(e) => beginPointerTrackDrag(e, track.id)}
-        onDragStart={(e) => {
-          setDraggingTrackId(track.id);
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", track.id);
-        }}
-        onDragEnd={() => {
-          setDraggingTrackId(null);
-          setDragOverTarget(null);
-        }}
       >
         <button
           id={`parallel-track-tab-${track.id}`}
@@ -7871,7 +7889,6 @@ export default function App() {
           data-testid={`track-flow-box-${box.id}`}
           data-track-flow-drop-target={box.id}
           style={{ "--track-color": "var(--violet)" } as CSSProperties}
-          {...boxDropHandlers(box.id)}
         >
           <button
             className="parallel-track-tab tf-box-tab"
@@ -7908,7 +7925,6 @@ export default function App() {
             type="button"
             aria-label={`Edit ${box.name} transition matrix`}
             title="Box transition matrix"
-            disabled={count < 2}
             data-testid={`track-flow-box-matrix-${box.id}`}
             onClick={() => setMatrixBoxId(box.id)}
           >
@@ -7943,7 +7959,6 @@ export default function App() {
         data-testid={`track-flow-box-${box.id}`}
         data-track-flow-drop-target={box.id}
         style={{ "--track-color": "var(--violet)" } as CSSProperties}
-        {...boxDropHandlers(box.id)}
       >
         <div className="tf-box-head">
           <button
@@ -7975,7 +7990,6 @@ export default function App() {
             type="button"
             aria-label={`Edit ${box.name} transition matrix`}
             title="Box transition matrix"
-            disabled={count < 2}
             data-testid={`track-flow-box-matrix-${box.id}`}
             onClick={() => setMatrixBoxId(box.id)}
           >
@@ -8156,6 +8170,8 @@ export default function App() {
         channelHocketMaxHistory={channelHocketMaxHistory}
         channelHocketSeed={channelHocketSeed}
         channelHocketSeedBehavior={channelHocketSeedBehavior}
+        generatorSeed={generatorSeed}
+        generatorSeedMode={generatorSeedMode}
         globalHistorySeeds={globalHistorySeeds}
         globalSeedMode={globalSeedMode}
         globalSeedStartupLocked={globalSeedStartupLocked}
@@ -8163,13 +8179,14 @@ export default function App() {
         maxHistory={maxHistory}
         seed={seed}
         seedLogScope={seedLogScope}
-        seedPaths={seedPaths}
         seedSetupOpen={seedSetupOpen}
         seedSetupTab={seedSetupTab}
         setChannelHocketHistorySeedsInput={setChannelHocketHistorySeedsInput}
         setChannelHocketMaxHistory={setChannelHocketMaxHistory}
         setChannelHocketSeed={setChannelHocketSeed}
         setChannelHocketSeedBehavior={setChannelHocketSeedBehavior}
+        setGeneratorSeed={setGeneratorSeed}
+        setGeneratorSeedMode={setGeneratorSeedMode}
         setGlobalSeedStartupLocked={setGlobalSeedStartupLocked}
         setHistorySeedsInput={setHistorySeedsInput}
         setMaxHistory={setMaxHistory}
@@ -8276,7 +8293,7 @@ export default function App() {
               max={400}
               step={0.5}
               value={hasMultipleParallelTracks ? globalTempoFieldValue : tempoInput}
-              aria-label="Tempo"
+              aria-label="Global BPM"
               onFocus={() => {
                 if (!hasMultipleParallelTracks) {
                   tempoEditingRef.current = true;
@@ -8427,16 +8444,6 @@ export default function App() {
             role="group"
             aria-label="Tracks"
             data-track-flow-drop-target="parallel"
-            onDragOver={(e) => {
-              if (draggingTrackId) e.preventDefault();
-            }}
-            onDrop={(e) => {
-              if (!draggingTrackId) return;
-              e.preventDefault();
-              handleAssignTrackToBox(draggingTrackId, "");
-              setDraggingTrackId(null);
-              setDragOverTarget(null);
-            }}
           >
             {laneItems.map((item) =>
               item.kind === "track"
@@ -9152,6 +9159,7 @@ export default function App() {
                 <span>Seed</span>
                 <NumericField
                   min={0}
+                  max={MAX_SAFE_SEED}
                   step={1}
                   numericMode="integer"
                   size="compact"
@@ -9210,7 +9218,7 @@ export default function App() {
                                   trackFlowEntryKey([member.id])
                                 ] ?? 0
                               }
-                              disabled={playbackTransitionKind !== "idle"}
+                              disabled={playbackStructureLocked}
                               onValueCommit={(value) =>
                                 setBoxEntryWeight(matrixBox.id, member.id, value)
                               }
@@ -9273,7 +9281,7 @@ export default function App() {
                                       numericMode="weight"
                                       step={1}
                                       value={weight}
-                                      disabled={playbackTransitionKind !== "idle"}
+                                      disabled={playbackStructureLocked}
                                       onValueCommit={(value) =>
                                         setBoxTransitionWeight(
                                           matrixBox.id,

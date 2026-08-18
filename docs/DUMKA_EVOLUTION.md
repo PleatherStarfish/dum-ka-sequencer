@@ -240,6 +240,17 @@ Rust-generated `dumka_metrics_contract.json`); see
   historical cycle start. If automation tightens it below inherited drift,
   deterministic, trial-projectable removals/restorations contract the state
   before that cycle's stochastic operator is considered.
+  The pacing-curve and property-steering walks are the stochastic layer under
+  another name, so they obey the same budget per cycle (measured from the
+  cycle's corridor-normalized inherited state), plus an **anchored onset-count
+  floor**: `last authored count − budget`, where the anchor is the seed until
+  a directive changes it. The floor exists because those walks re-anchor every
+  cycle, and without it a sustained large step target deletes one budget of
+  onsets per cycle until a single note remains — a near-empty state is an
+  absorbing attractor under the distance model. Growth has no anchored
+  ceiling (added material saturates rather than compounds distance); the
+  density corridor remains the authored rail in both directions and outranks
+  the floor when they disagree.
 - **Trial projection**: every candidate result is projected against the
   actual structural spans. Paired cross-span tie chains are legal; malformed
   ties, overlap, incompatible grids, or broken tiling are not. Evolution can

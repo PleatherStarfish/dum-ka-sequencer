@@ -162,13 +162,17 @@ describe("subdivision switch preview fixture semantics", () => {
 
 describe("Dum-Ka directive trace fixture semantics", () => {
   it("carries Rust-owned requested/applied attribution into the TS preview", () => {
+    // The steered cycles 1-8 run under the drift leash with leash-aware
+    // fragment selection, so the state entering cycle 13 carries figure
+    // material above the corridor floor: the remove directive applies 2 of
+    // its 3 requested operations before the floor clamps the third.
     expect(dumkaGeneratorPreviewFixture.trace).toEqual([
       {
         cycle: 13,
         directiveId: 101,
         family: "barlowRemove",
         requested: 3,
-        applied: 1,
+        applied: 2,
         skipped: "none",
         corridorClamp: {
           limit: "floor",

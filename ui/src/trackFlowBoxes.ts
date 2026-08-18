@@ -146,7 +146,10 @@ export function boxForTrack(
  * audible member ids** (in `sources` order). Returns `null` when the box has no
  * authored chain (⇒ the backend uses its uniform first-order default) or has no
  * audible members. Transitions/entries that reference a removed (muted/absent)
- * member are dropped; the fallback is remapped to a surviving member, else 0.
+ * member are dropped; the fallback is remapped to a surviving member. When no
+ * fallback pool survives (and no fallback member is authored), a uniform pool
+ * (weight 1 per member) is emitted so zero-weight rows walk uniformly instead
+ * of deterministically routing to state 0.
  * This mirrors how the rhythm/channel-hocket request builders emit indexed
  * transitions and keeps the generated spec valid against the box's source count.
  */
@@ -197,6 +200,20 @@ export function trackFlowSpecFromChain(
 
   const fallback =
     chain.fallback && index.has(chain.fallback) ? index.get(chain.fallback)! : 0;
+
+  // An authored chain with no surviving fallback pool and no authored fallback
+  // member must not deterministically route zero-weight rows to state 0 (the
+  // implied `fallback: 0`). Emit a uniform pool over every audible member so a
+  // zero row genuinely walks uniformly — the behavior the reference doc and
+  // the in-app hint promise.
+  if (
+    fallbackWeights.length === 0 &&
+    !(chain.fallback && index.has(chain.fallback))
+  ) {
+    for (let state = 0; state < stateCount; state += 1) {
+      fallbackWeights.push({ state, weight: 1 });
+    }
+  }
 
   return {
     order: chain.order,

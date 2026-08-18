@@ -665,16 +665,13 @@ export type ChannelLogicOverrideRow = {
   outputChannels: number[];
   includesAllShared: boolean;
   policy: ChannelConflictPolicy;
-  labelA: string;
-  labelB: string;
-  channelsA: number[];
-  channelsB: number[];
   sharedChannels: number[];
-  inspectableSharedChannels: number[];
   channelOptions: ChannelLogicChannelOption[];
+  /** Human summary of the rule's channel scope ("Ch 2-3", "all shared channels"). */
   selectedLabel: string;
   titleA: string;
   titleB: string;
+  /** Tooltip for the rule row: where (and whether) the pair can overlap. */
   channelTitle: string;
 };
 
@@ -785,12 +782,7 @@ export function buildChannelLogicOverrideRows(
         outputChannels,
         includesAllShared: group.includesAllShared,
         policy: group.policy,
-        labelA,
-        labelB,
-        channelsA: trackA.midiChannels,
-        channelsB: trackB.midiChannels,
         sharedChannels,
-        inspectableSharedChannels,
         channelOptions,
         selectedLabel,
         titleA: customA && customA !== labelA ? `${labelA} · ${customA}` : labelA,
@@ -957,11 +949,20 @@ export type ChannelLogicGroupRef = {
   policy: ChannelConflictPolicy;
 };
 
+/**
+ * The endpoint set matrix normalization must survive against: every authored
+ * track PLUS every Track Flow box lane. Normalizing against tracks alone
+ * silently deletes authored lane rules (the runtime treats lanes as real
+ * conflict participants — see patchIo's endpoint-survival contract).
+ */
+type ChannelLogicEndpoint = Pick<ParallelTrackPatch, "id">;
+
 /** New global default policy + the matrix re-normalized against it. */
 export function channelLogicGlobalsForDefaultPolicy(
   matrix: ChannelLogicMatrixEntry[],
   tracks: ParallelTrackPatch[],
-  policy: ChannelConflictPolicy
+  policy: ChannelConflictPolicy,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): {
   channelConflictPolicy: ChannelConflictPolicy;
   channelLogicMatrix: ChannelLogicMatrixEntry[];
@@ -969,7 +970,7 @@ export function channelLogicGlobalsForDefaultPolicy(
   const defaultPolicy = musicalChannelLogicDefaultPolicy(policy);
   return {
     channelConflictPolicy: defaultPolicy,
-    channelLogicMatrix: normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy),
+    channelLogicMatrix: normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy),
   };
 }
 
@@ -979,9 +980,10 @@ export function nextChannelLogicMatrixForGroupPolicy(
   tracks: ParallelTrackPatch[],
   defaultPolicy: ChannelConflictPolicy,
   group: ChannelLogicGroupRef,
-  nextPolicy: ChannelConflictPolicy
+  nextPolicy: ChannelConflictPolicy,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): ChannelLogicMatrixEntry[] {
-  const entries = normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy);
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
   const nextEntries = entries.flatMap((entry) => {
     if (
       !channelLogicGroupMatchesEntry(
@@ -1000,7 +1002,7 @@ export function nextChannelLogicMatrixForGroupPolicy(
     const musicalNextPolicy = musicalChannelLogicRulePolicy(nextPolicy);
     return [{ ...entry, policy: musicalNextPolicy }];
   });
-  return normalizeChannelLogicMatrix(nextEntries, tracks, defaultPolicy);
+  return normalizeChannelLogicMatrix(nextEntries, endpoints, defaultPolicy);
 }
 
 /**
@@ -1011,9 +1013,10 @@ export function nextChannelLogicMatrixForGroupPolicy(
 export function nextChannelLogicMatrixForAddedPair(
   matrix: ChannelLogicMatrixEntry[],
   tracks: ParallelTrackPatch[],
-  defaultPolicy: ChannelConflictPolicy
+  defaultPolicy: ChannelConflictPolicy,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): ChannelLogicMatrixEntry[] | null {
-  const entries = normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy);
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
   const existingPolicies = new Map<string, Set<ChannelConflictPolicy>>();
   for (const entry of entries) {
     const outputChannel = normalizeChannelLogicOutputChannel(entry.outputChannel);
@@ -1023,9 +1026,12 @@ export function nextChannelLogicMatrixForAddedPair(
     policies.add(entry.policy);
     existingPolicies.set(key, policies);
   }
+  // The next rule goes to the first shared (pair, channel) slot with no rule
+  // yet — already-ruled slots are skipped, so repeated Add clicks walk the
+  // remaining slots instead of silently re-writing the first one.
   let nextRule: [string, string, number, ChannelConflictPolicy] | null = null;
-  for (let left = 0; left < tracks.length; left += 1) {
-    for (let right = left + 1; right < tracks.length; right += 1) {
+  for (let left = 0; left < tracks.length && !nextRule; left += 1) {
+    for (let right = left + 1; right < tracks.length && !nextRule; right += 1) {
       const trackA = tracks[left];
       const trackB = tracks[right];
       if (!trackA || !trackB) continue;
@@ -1035,20 +1041,16 @@ export function nextChannelLogicMatrixForAddedPair(
       );
       for (const channel of sharedChannels) {
         const key = channelLogicRuleKey(trackA.id, trackB.id, channel);
+        if (existingPolicies.has(key)) continue;
         nextRule = [
           trackA.id,
           trackB.id,
           channel,
-          nextChannelLogicRulePolicy(
-            defaultPolicy,
-            existingPolicies.get(key) ?? new Set<ChannelConflictPolicy>()
-          ),
+          nextChannelLogicRulePolicy(defaultPolicy, new Set<ChannelConflictPolicy>()),
         ];
         break;
       }
-      if (nextRule) break;
     }
-    if (nextRule) break;
   }
   if (!nextRule) return null;
   return normalizeChannelLogicMatrix(
@@ -1061,9 +1063,51 @@ export function nextChannelLogicMatrixForAddedPair(
         policy: nextRule[3],
       },
     ],
-    tracks,
+    endpoints,
     defaultPolicy
   );
+}
+
+/**
+ * True when at least one shared (pair, channel) slot has no authored rule —
+ * the honest enablement predicate for the Add rule button. `participants`
+ * carries live, already-resolved channel sets (the track-tab view model), so
+ * the predicate agrees with the capacity gate even while the active track has
+ * unsynced hocket edits; the matrix itself only changes through project
+ * metadata updates and is read from project state.
+ */
+export function hasUnruledChannelLogicSlot(
+  matrix: ChannelLogicMatrixEntry[],
+  participants: readonly { id: string; midiChannels: number[] }[],
+  defaultPolicy: ChannelConflictPolicy,
+  endpoints: ChannelLogicEndpoint[] = participants.map(({ id }) => ({ id }))
+): boolean {
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
+  const ruled = new Set(
+    entries.flatMap((entry) => {
+      const outputChannel = normalizeChannelLogicOutputChannel(entry.outputChannel);
+      return outputChannel === null
+        ? []
+        : [channelLogicRuleKey(entry.trackAId, entry.trackBId, outputChannel)];
+    })
+  );
+  for (let left = 0; left < participants.length; left += 1) {
+    for (let right = left + 1; right < participants.length; right += 1) {
+      const trackA = participants[left];
+      const trackB = participants[right];
+      if (!trackA || !trackB) continue;
+      const sharedChannels = intersectMidiChannels(
+        trackA.midiChannels,
+        trackB.midiChannels
+      );
+      for (const channel of sharedChannels) {
+        if (!ruled.has(channelLogicRuleKey(trackA.id, trackB.id, channel))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /** Add or remove a single (trackA, trackB, channel, policy) rule. */
@@ -1075,9 +1119,10 @@ export function nextChannelLogicMatrixForToggledChannel(
   trackBId: string,
   policy: ChannelConflictPolicy,
   outputChannel: number,
-  selected: boolean
+  selected: boolean,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): ChannelLogicMatrixEntry[] {
-  const entries = normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy);
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
   const [a, b] = trackAId < trackBId ? [trackAId, trackBId] : [trackBId, trackAId];
   const key = channelLogicRuleKey(a, b, outputChannel);
   // D4: a (pair, channel) can be owned by at most one rule, so toggling a
@@ -1104,9 +1149,10 @@ export function nextChannelLogicMatrixForRemovedGroup(
   matrix: ChannelLogicMatrixEntry[],
   tracks: ParallelTrackPatch[],
   defaultPolicy: ChannelConflictPolicy,
-  group: ChannelLogicGroupRef
+  group: ChannelLogicGroupRef,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): ChannelLogicMatrixEntry[] {
-  const entries = normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy);
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
   return normalizeChannelLogicMatrix(
     entries.filter(
       (entry) =>
@@ -1119,7 +1165,7 @@ export function nextChannelLogicMatrixForRemovedGroup(
           group.includesAllShared
         )
     ),
-    tracks,
+    endpoints,
     defaultPolicy
   );
 }
@@ -1135,9 +1181,10 @@ export function nextChannelLogicMatrixForGroupTrack(
   defaultPolicy: ChannelConflictPolicy,
   group: ChannelLogicGroupRef,
   side: "a" | "b",
-  nextTrackId: string
+  nextTrackId: string,
+  endpoints: ChannelLogicEndpoint[] = tracks
 ): ChannelLogicMatrixEntry[] | null {
-  const entries = normalizeChannelLogicMatrix(matrix, tracks, defaultPolicy);
+  const entries = normalizeChannelLogicMatrix(matrix, endpoints, defaultPolicy);
   const nextA = side === "a" ? nextTrackId : group.trackAId;
   const nextB = side === "b" ? nextTrackId : group.trackBId;
   if (nextA === nextB) return null;
@@ -1165,7 +1212,7 @@ export function nextChannelLogicMatrixForGroupTrack(
         policy: group.policy,
       })),
     ],
-    tracks,
+    endpoints,
     defaultPolicy
   );
 }

@@ -3950,7 +3950,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let toggle_rhythm_shaper = MenuItem::with_id(
         app,
         MENU_TOGGLE_RHYTHM_SHAPER,
-        "Toggle Rhythm Shaper",
+        "Toggle Generator Editor",
         true,
         Some("CmdOrCtrl+Shift+R"),
     )?;
@@ -4082,8 +4082,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[&minimize, &maximize, &window_separator, &window_close],
     )?;
 
-    let help_menu = Submenu::with_items(app, "Help", true, &[])?;
-
     #[cfg(target_os = "macos")]
     {
         let about = PredefinedMenuItem::about(app, None, None)?;
@@ -4120,7 +4118,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 &setup_menu,
                 &playback_menu,
                 &window_menu,
-                &help_menu,
             ],
         )
     }
@@ -4140,7 +4137,6 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 &setup_menu,
                 &playback_menu,
                 &window_menu,
-                &help_menu,
             ],
         )
     }
@@ -6741,8 +6737,8 @@ mod dto_fixtures {
         let depth_preview = resolve_generator_preview(depth_request, &[])
             .expect("non-empty palette fixture must resolve on its working grid");
         assert_eq!(depth_preview.working_subdivision, Some(3));
-        assert_eq!(depth_preview.state_complexity_milli, Some(50_000));
-        assert_eq!(depth_preview.state_depth_diversity_milli, Some(100_000));
+        assert_eq!(depth_preview.state_complexity_milli, Some(33_333));
+        assert_eq!(depth_preview.state_depth_diversity_milli, Some(91_829));
         assert!(depth_preview
             .curve_misses
             .iter()

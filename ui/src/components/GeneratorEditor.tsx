@@ -382,7 +382,6 @@ export function GeneratorEditor({
                 <RhythmBuilder
                   pattern={dumkaPattern}
                   disabled={playbackStructureLocked}
-                  previewError={dumkaPreviewError}
                   projectionSpans={dumkaProjectionSpans}
                   onCommit={onDumkaPatternCommit}
                 />

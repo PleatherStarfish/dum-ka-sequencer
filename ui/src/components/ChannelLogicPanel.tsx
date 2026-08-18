@@ -201,6 +201,7 @@ export function ChannelLogicPanel(props: ChannelLogicPanelProps) {
                   row.sharedChannels.length ? "" : " is-disjoint"
                 }`}
                 key={row.id}
+                title={row.channelTitle}
               >
                 <select
                   aria-label={`Channel logic rule ${index + 1} first track`}
@@ -280,6 +281,9 @@ export function ChannelLogicPanel(props: ChannelLogicPanelProps) {
                       {option.active ? null : <em>idle</em>}
                     </button>
                   ))}
+                  <small className="channel-logic-scope-summary">
+                    {row.selectedLabel}
+                  </small>
                 </div>
                 <span className="channel-logic-rule-arrow" aria-hidden="true">
                   →

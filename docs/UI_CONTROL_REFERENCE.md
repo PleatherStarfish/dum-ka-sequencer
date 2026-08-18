@@ -56,7 +56,7 @@ authoritative if this inventory falls out of date.
 | Save Patch (`⌘S`) | Command | Projects current in-memory state into the strict `.dumka` v1 envelope and writes the current path, or opens Save As when no path exists. |
 | Save Patch As (`⇧⌘S`) | Command | Opens the native destination chooser and writes a `.dumka` v1 file. |
 | Recall Patch (`⌘O`) | Command | Opens the native source chooser and replaces the project with a validated `.dumka` file. |
-| Recall Most Recent Patch (`⇧⌘O`) | Command | Loads the most recently saved patch path recorded by the app. |
+| Recall Most Recent Patch (`⇧⌘O`) | Command | Loads the most recent patch path recorded by the app (saved or recalled); refuses while the transport is running. |
 | Export Cycle JSON (`⇧⌘E`) | Command | Writes the current active-track cycle realization as JSON. |
 | Toggle Autosave Recovery (`⌥⌘A`) | Preference | Toggles `autosaveEnabled`, the machine preference for temporary crash-recovery writes. |
 | Close Window | Command | Invokes the standard macOS close-window action. |
@@ -66,7 +66,7 @@ authoritative if this inventory falls out of date.
 | Menu item | Kind | Property or effect it owns |
 | --- | --- | --- |
 | Undo, Redo, Cut, Copy, Paste, Select All | Command | Standard macOS text-editing actions for the currently focused native/web text control. They do not operate as a project-wide musical undo stack. |
-| Toggle Rhythm Shaper (`⇧⌘R`) | Command with current gap | Tauri emits `toggleRhythmShaper`, but the mounted React menu-action handler currently has no corresponding state transition. The visible menu item therefore controls no UI property at present. |
+| Toggle Generator Editor (`⇧⌘R`) | View | Toggles `mainEditorOpen` between `"generator"` and closed. (Historic event name `toggleRhythmShaper` is retained on the wire.) |
 | Enter/Exit Full Screen | Command | Standard macOS window fullscreen state. |
 | Audio & MIDI Setup | View | Opens `setupOpen` on the Audio/MIDI/Files setup dialog. |
 | Seed Strategy | View | Opens `seedSetupOpen` on the seed-domain dialog. |
@@ -74,7 +74,7 @@ authoritative if this inventory falls out of date.
 | Reset Timeline Sync (`⌥⌘R`) | Command | Rebuilds/resynchronizes scheduler-to-timeline transport state; it does not edit the score. |
 | Built-in Synth Properties (`⇧⌘P`) | View | Opens `synthPropertiesOpen`. |
 | Toggle Built-in Synth (`⌥⌘S`) | Command/Edit | Toggles `synthEnabled` through the synth bridge command. |
-| Minimize, Zoom, Bring All to Front, window list | Command | Standard macOS window-management state. |
+| Minimize, Zoom, Close Window | Command | Standard macOS window-management state. |
 
 ### Application and Help menus
 
@@ -84,7 +84,6 @@ authoritative if this inventory falls out of date.
 | Services | Command/View | Opens the standard macOS Services submenu for the current system and focus context. |
 | Hide Dum-Ka / Hide Others | Command | Changes standard macOS application visibility. |
 | Quit Dum-Ka | Command | Terminates the application through the standard macOS quit action. |
-| Help | Readout | The Help submenu is mounted but currently contains no items. |
 
 ## Masthead and global status
 
@@ -96,7 +95,7 @@ authoritative if this inventory falls out of date.
 | Score ID | Readout | Reports the current preview/transport score snapshot ID (`currentScoreId`). |
 | Theme toggle | Preference | Sets `themeMode` to `light` or `dark`; this is presentation state, not patch content. |
 | Error banner | Readout | Reports the latest bridge/action error. |
-| Preview status banner | Readout | Reports preview pending, rejection, or stale-generation state for the active authored fingerprint/cycle. |
+| Preview status banner | Readout | Reports preview rejection or stale-generation state; pending/waiting copy is reported by the patch status banner and transport warning. |
 | Patch status banner | Readout | Reports save, recall, import, export, autosave, and recovery outcomes. |
 
 ## Transport, monitor, and patch toolbar
@@ -126,14 +125,15 @@ assigned output channels.
 | --- | --- | --- |
 | Help button | View | Toggles the local Channel Logic explanation and operator legend. |
 | Default channel logic | Edit | Sets project `channelConflictPolicy`: Layer all, Random one, Alternate, Priority, One only/XOR, Overlap only/XNOR, All tracks/AND, Majority, Minority. |
-| Add rule | Edit | Appends one pair/channel override to `channelConflictRules`. |
+| Add rule | Edit | Appends one pair/channel override to `global.channelLogicMatrix`, targeting the first shared (pair, channel) slot without a rule; disabled when every slot is ruled. |
 | First track / Second track, per rule | Edit | Sets the two distinct conflict participants addressed by that override. A Track Flow box is one synthetic participant. |
 | `All shared`, per wildcard rule | Readout | Indicates a wildcard pair rule loaded for all shared channels. While present, the individual channel chips are disabled. |
 | Channel chip, per explicit rule/channel | Edit | Adds or removes that MIDI channel from the pair override's scope. |
 | Operator, per rule | Edit | Sets its pair policy: Layer all, Mute overlap, Random one, Alternate, or Priority. |
 | Remove, per rule | Edit | Deletes that pair override. |
-| Priority up/down, per participant | Edit | Reorders `parallelPriority`, used wherever Priority is the effective policy. |
-| Effective-rule summaries and pictograms | Readout | Resolve and explain the default, pair override, channel scope, and participant result for each shared channel. |
+| Priority up/down, per participant | Edit | Reorders `global.conflictPriority`, used wherever Priority is the effective policy. |
+| Overlap pictogram | Readout | Static head illustration of the current default policy. |
+| Effective-rule summaries | Readout | Per shared channel, resolve the default and pair-override policy into one line of text. |
 
 ## Track strip and active-track controls
 
@@ -239,7 +239,7 @@ The following controls edit `track.trigger` for the active follower.
 
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
-| Collapsed box tab / expand chevron | View | Sets that box's local expanded state. |
+| Collapsed box tab / expand chevron | Edit | Sets the box's persisted `collapsed` state (display-only, saved in the patch, never sent to the backend). |
 | Box name / rename input | Edit | Sets `trackFlowBoxes[].name`; double-click or Rename starts the draft. |
 | Delete box | Edit | Removes the box; former members return safely to continuous parallel participation. |
 | Matrix | View | Opens the transition-matrix dialog for that box. |
@@ -254,10 +254,10 @@ The following controls edit `track.trigger` for the active follower.
 
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
-| Sections and Subdivisions | View | Sets `mainEditorOpen = "sections"`. Its badges summarize cycle, section, and structure state. |
-| Generator | View | Sets `mainEditorOpen = "generator"`. Its badges summarize kind, enablement, and density/evolution state. |
-| Evolve | View | Sets `mainEditorOpen = "evolve"`. Its badges summarize directives, curves, and current cycle insight. |
-| Channel Shaper | View | Sets `mainEditorOpen = "channel"`. Its badges summarize static/Markov/Euclidean routing. |
+| Sections and Subdivisions | View | Sets `mainEditorOpen = "boundaries"`. Its badges summarize cycle, section, and structure state. |
+| Generator | View | Sets `mainEditorOpen = "generator"`. Its badges summarize kind, enablement, density/beats, and seed mode. |
+| Evolve | View | Sets `mainEditorOpen = "evolve"`. Its badges summarize the directive count and the last directive cycle. |
+| Channel | View | Sets `mainEditorOpen = "channel"`. Its badges summarize static/Markov/Euclidean routing. |
 
 Only one main editor is open at a time. Launcher badges are readouts and do not
 toggle the represented feature.
@@ -277,7 +277,7 @@ toggle the represented feature.
 | Section accent center / random margin | Edit | Together set `sectionAccentMin` and `sectionAccentMax`, the extra velocity range at authored section starts. |
 | Subdivision accent center / random margin | Edit | Together set `beatAccentMin` and `beatAccentMax`, the velocity range at per-beat subdivision starts. |
 | Grouping accent center / random margin | Edit | Together set `jathiAccentMin` and `jathiAccentMax`, the velocity range at grouping starts. |
-| Accent range bars and absolute-velocity summaries | Readout | Report the resulting min/max velocity bands; they do not write another property. |
+| Accent range bars | Readout | Report the relative accent band per family; the absolute-velocity guide lives in Channel Shaper's Accents tab. |
 
 ### Section map and boundary detail
 
@@ -304,7 +304,7 @@ toggle the represented feature.
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
 | Panel summary | View | Opens/closes the focused Generator editor. |
-| Algorithm | Edit | Sets `generator.kind` to Example or Dum-Ka; parameters for the inactive kind remain stored. |
+| Algorithm | Edit | Sets `generator.kind` to Example or Dum-Ka; parameters for the inactive kind are kept within the session but only the active kind's parameters are saved in a patch. |
 | Generator enabled | Edit | Sets `generator.enabled`. Off preserves the feature-off transport identity contract. |
 | Example Density | Edit | Sets `generator.example.densityPercent`; automation target `generator.example.density`. |
 | Seed mode | Edit | Sets generator seed behavior to Locked, Per Cycle, or History. |
@@ -338,7 +338,7 @@ All rows below operate on the currently selected node(s) of the same
 | Weight | Edit | Sets a selected leaf's relative duration weight. |
 | Group relative span | Edit | Sets a nested group's relative span weight. |
 | Top-level group span | Edit | Sets how many existing cycle beats a top-level group consumes. |
-| Group count | Edit | Sets how many selected siblings the next Group action will wrap. |
+| Group count | Edit | Resizes the selected group to that many children (appends notes / trims from the end). |
 | Group | Edit | Wraps the selected compatible siblings in one group. |
 | Ungroup | Edit | Replaces the selected group with its children. |
 | Articulate | Edit | Converts a compatible hold/tie region into explicit articulation. |
@@ -379,6 +379,7 @@ All rows below operate on the currently selected node(s) of the same
 | Depth diversity | Readout | Reports `stateDepthDiversityMilli` for the stopped preview cycle. |
 | Used lanes only | View | Hides directive-family lanes with no authored directives. |
 | View cycles | Edit/View | Sets the stored Evolve plan authoring extent (`dumkaPlanLengthCycles`); it does not truncate directives beyond the visible window. |
+| Fit view | View | Scales the entire authored plan into the viewport (dense continuous lanes) so a few clicks sketch a whole-composition curve; `⌘`-wheel zoom exits back to detail view. |
 | Cycle ruler drag | View | Pans the workbench horizontally. |
 | Mouse wheel / `⌘`-wheel | View | Pans / zooms the cycle grid. |
 | Out-of-window, capacity, validation, and budget notices | Readout | Report authored data beyond the view, directive capacity, invalid edits, or work-budget constraints. |
@@ -387,7 +388,7 @@ All rows below operate on the currently selected node(s) of the same
 
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
-| Pacing lane click/drag | Edit | Adds or changes an aggregate evolution-curve breakpoint: cycle and target perceptual step size. |
+| Pacing lane click | Edit | Adds or changes an aggregate evolution-curve breakpoint: cycle and target perceptual step size. |
 | Pacing lane Shift-click | Edit | Removes the breakpoint at that cycle. |
 | Curve enabled | Edit | Sets `generator.dumka.evolutionCurve.enabled`. |
 | Curve tolerance | Edit | Sets `.toleranceMilli`, the acceptable distance around the aggregate step-size target. |
@@ -408,8 +409,8 @@ owns one target-band curve in `generator.dumka.propertyCurves[]`.
 | Evenness lane | Edit/Readout | Reports `propertyProfile.evennessMilli`; authored points target inter-onset spacing evenness. |
 | Occupancy lane | Edit/Readout | Reports `propertyProfile.occupancyMilli`; authored points target the proportion of the cycle occupied by sounding duration. |
 | Diversity lane | Edit/Readout | Reports `propertyProfile.diversityMilli`; authored points target rhythmic interval/duration variety. |
-| Empty lane cell click or Enter/Space | Edit | Adds/updates a point at that cycle and vertical 0–100 level. |
-| Point drag / Up/Down | Edit | Changes `propertyCurves[].points[].levelMilli`. |
+| Empty lane cell click | Edit | Adds/updates a point at that cycle and pointer-height level; Enter/Space adds one at the realized level (default 50), adjustable afterwards with Up/Down. |
+| Point drag / Up/Down | Edit | Changes `propertyCurves[].points[].targetMilli`. |
 | Point horizontal drag / Left/Right | Edit | Changes `propertyCurves[].points[].cycle`. |
 | Shift-click or Delete | Edit | Removes the point at that cycle. |
 | Property selector | View | Chooses which property's settings are shown in the inspector. |
@@ -467,14 +468,14 @@ Channel Logic.
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
 | Panel summary | View | Opens/closes the focused Channel Shaper editor. |
-| Hocket enabled | Edit | Sets `channelHocket.enabled`; off uses static output routing. |
+| Hocket enabled | Edit | Sets `channelHocket.enabled`; off uses static output routing. Enabling with an empty channel set seeds two channels and the fallback. |
 | Output | Edit | Sets the track's static/default output channel (`channelHocket.outputChannel`). |
 | Assignment Markov/Euclidean | Edit | Sets the channel-assignment engine. |
 | Markov order First/Second | Edit | Sets `channelHocket.order`, the context length for the transition matrix. |
-| Axis count | Edit | Sets how many channels are in the active Markov channel set. |
+| Axis count | Edit | Resets the Markov channel set to the first N MIDI channels (replacing any custom selection). |
 | Fallback | Edit | Sets `channelHocket.fallback`, the static channel used when a weighted choice cannot resolve. |
 | Channel chips 1–16 | Edit | Toggle membership in `channelHocket.channels`; other-track usage marks are read-only collision hints. |
-| Matrix / Entry & Fallback / Euclid Pattern / Accents / Positions tabs | View | Select the local Channel Shaper subpanel; they do not switch assignment mode. |
+| Matrix / Entry & Fallback tabs (Markov mode), Pattern tab (Euclidean mode), Accents / Positions tabs | View | Select the local Channel Shaper subpanel; they do not switch assignment mode. |
 
 ### Markov assignment
 
@@ -483,7 +484,7 @@ Channel Logic.
 | Transition weight, per context→channel cell | Edit | Sets `channelHocket.weights[context,to]`. |
 | Entry weight, per initial context | Edit | Sets `channelHocket.entryWeights[context]`. |
 | Fallback weight, per channel | Edit | Sets `channelHocket.fallbackWeights[channel]`. |
-| Context labels, heat, row sums, and fallback explanation | Readout | Report the active matrix and deterministic fallback behavior. |
+| Context labels, heat, and per-cell row-share tooltips | Readout | Report the active matrix; the deterministic fallback explanation lives in the Entry & Fallback tab. |
 
 ### Euclidean assignment
 
@@ -508,7 +509,7 @@ Channel Logic.
 
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
-| Velocity preset | Edit | Replaces `channelHocket.accentRules` with the selected preset mapped to current score/accent velocity bands. |
+| Velocity preset | Edit | Replaces `channelHocket.accentRules` with the preset mapped to the current accent velocity bands and the authored channel set. |
 | Clear | Edit | Resets accent routing rules to their default/off state. |
 | Edit base / Edit accents | View | Opens Sections at base velocity / accent controls. |
 | Routing velocity guide | Readout | Reports final velocity bands after base, section, subdivision, and grouping accents. |
@@ -527,7 +528,7 @@ Channel Logic.
 | Label, per rule | Edit | Sets `positionRules[].label`. |
 | Remove, per rule | Edit | Deletes that position rule. |
 | Scope Beat/Section | Edit | Sets the counter reset scope used to identify the nth note group. |
-| Nth note | Edit | Sets `positionRules[].nth`. |
+| Nth note | Edit | Sets `positionRules[].nth` (1–999). |
 | Reset mode Static fallback/Weighted fallback/Custom weights | Edit | Sets how a Reset action chooses the new Markov context. |
 | Normal / Render / Reset action weights | Edit | Set the lottery among normal assignment, render-only override, and Markov reset. |
 | Render channel weights | Edit | Set the output-channel pool for Render. |
@@ -544,9 +545,9 @@ automation visibility, and the shared boundary rail.
 | --- | --- | --- |
 | Previous / next stopped cycle | View/Command | Decrements/increments `userPreviewCycle` and requests that cycle's deterministic preview. Disabled during playback. |
 | Automation layers | View | Opens the timeline automation-layer picker. |
-| Target checkbox, per automation track | View | Adds/removes that target ID from `timelineAutomationTargetIds`; it does not enable the automation track. |
+| Target checkbox, per automation track | View | Adds/removes that target ID from `timelineAutomationTargetIds`; only enabled automation lanes are listed, and the checkbox does not enable the lane. |
 | Hide | View | Clears all visible automation target IDs. |
-| Timeline info `i` | View | Toggles the timeline legend and truth/parity explanation. |
+| Timeline info `i` | View | Toggles the beat/section legend and the resolved history-seed list. |
 | Boundary rail and marker actions | Edit/View | Own the same boundary properties documented under Sections; disabled during transport locks. |
 | Active track, cycle, section/boundary counts | Readout | Report which track and stopped/live cycle the rows represent. |
 | Syncing/suppression/lock notices | Readout | Report pending realization, conflict suppression, and transport mutation lock state. |
@@ -585,7 +586,7 @@ Automation is stored per authored track in `track.automation`.
 | Marker phase, per existing marker | Edit | Changes that marker's normalized time. Anchored points follow it. |
 | Marker label, per existing marker | Edit | Changes that marker's displayed label. |
 | Remove marker, per marker | Edit | Deletes the marker and releases point anchors that referred to it. |
-| Y min / Y max | View | Set the selected weight lane's editor graph range only; they do not clamp automation data. |
+| Y min / Y max | Edit | Set the weight lane's persisted graph range (`track.graphRange`); points edited or added afterwards are clamped into it. |
 | Reset axis | View | Restores the graph's derived display range. |
 | Empty graph click | Edit | Adds a point to the selected curve at that phase/value, snapping to a nearby marker when applicable. |
 | Point drag | Edit | Changes point phase, value, and marker anchor according to the gesture. |
@@ -596,7 +597,7 @@ Automation is stored per authored track in `track.automation`.
 | Snap marker / Free | Edit | Sets or clears `point.anchorId`. |
 | Remove point | Edit | Deletes that point, subject to the two-point minimum. |
 | Segment | View | Selects which adjacent point pair owns the interpolation settings. |
-| Curve | Edit | Sets segment kind: Linear, Smooth, Ease in, Ease out, Ease in/out, Exponential, or Hold. |
+| Curve | Edit | Sets segment kind — labels Line, Smooth, Ease in, Ease out, Ease S, Expo, Step (wire kinds linear/smooth/easeIn/easeOut/easeInOut/exponential/hold). |
 | Bend | Edit | Sets the selected segment's curve amount. |
 
 ### Automatable target catalog
@@ -617,7 +618,6 @@ channel set, Euclidean layers, accent rules, and position rules.
 | Example Density — `generator.example.density` | Example-generator density sampled at cycle start. |
 | Dum-Ka evolution rate, drift leash, density floor/ceiling, complexity floor/ceiling, placement bias, Barlow temperature, fill complexity — `generator.dumka.*` | The named Dum-Ka global parameter sampled at cycle start. |
 | Channel Hocket enabled/output/static fallback — `channelHocket.enabled`, `.outputChannel`, `.fallback.staticChannel` | Markov/Euclidean enable and static/fallback output channels. |
-| Channel entry, per context — `channelHocket.entry.{order}.{context}.weight` | Initial Markov-context weight. |
 | Channel matrix, per context→channel — `channelHocket.matrix.{order}.{context}.to.{channel}.weight` | Transition weight. |
 | Channel fallback, per channel — `channelHocket.fallback.channel.{channel}.weight` | Weighted fallback pool. |
 | Channel seed history/new/max — `channelHocket.seed.*` | History-vs-new selection weights and maximum history length. |
@@ -641,14 +641,14 @@ catalog and source of truth.
 | --- | --- | --- |
 | Synth monitor | Edit/Command | Sets `synthEnabled`. External MIDI remains independent. |
 | Channel voices | View | Opens Built-in Synth Properties. |
-| Engine/output/voice-count fields | Readout | Report audio engine availability, output configuration, and active voice counts. |
+| Engine/output/voice-count fields | Readout | Static engine/output labels plus live configured melodic/percussion voice counts. |
 
 ### MIDI
 
 | Element | Kind | Property or effect it owns |
 | --- | --- | --- |
 | Destination | Preference/Edit | Sets the desired CoreMIDI destination; Virtual-only chooses the app's virtual source rather than an external destination. |
-| Route status | Readout | Reports desired, resolved, connected, missing, or disconnected route state. |
+| Route status | Readout | Reports virtual-only, connected-to-destination, or destination-missing state (with the last route error). |
 | Rescan | Command | Refreshes CoreMIDI destinations and route status. |
 | Default channel | Edit | Sets `midiOutputChannel` / `transport.midiOutputChannel`. |
 | MIDI debug | View | Shows/hides the MIDI Debug panel; it does not enable MIDI itself. |
@@ -678,13 +678,14 @@ catalog and source of truth.
 | Lock for new sessions | Preference | Sets `globalSeedStartupLocked`. |
 | Global remembered seeds | Edit | Replaces the global seed-history pool from comma-separated decimal values. |
 | Global history length | Edit | Sets the global `maxHistory`. |
-| Generator mode | Edit with current gap | Despite its label, the current Seed Strategy **Generator** tab writes the same `globalSeedMode` property as the Global tab. It does not write the active generator's distinct `generatorSeedMode`; that property is controlled in the Generator editor. |
-| Generator seed / Roll / remembered seeds / history length | Edit with current gap | These currently alias the Global tab's `seed`, `historySeedsInput`, and `maxHistory`. They do not write the active generator's distinct seed fields in the Generator editor. |
-| Channel mode | Edit | Sets `channelHocketSeedBehavior`: Locked, Per cycle, or History. |
+| Generator mode | Edit | Sets `generatorSeedMode` — the same property the Generator editor's seed-mode select owns. |
+| Generator seed / Roll | Edit | Set the generator's distinct base seed (`generatorSeed`). |
+| Generator remembered seeds / history length | Edit | Edit the remembered-seed pool, which is shared with the Global stream by design (the generator draws from the global history). |
+| Channel mode | Edit | Sets `channelHocketSeedBehavior`: Follow global (default), Locked, Per cycle, or History. |
 | Channel seed / Roll | Edit | Set the Channel Shaper base seed. |
 | Channel remembered seeds / history length | Edit | Set the Channel Shaper history pool and maximum history. |
 | Log filter All/Global/Generator/Channel/Paths | View | Filters visible seed trace records. |
-| Seed counts, path rows, recurrence flags | Readout | Report stored histories and decimal seed-path trace/replay data. |
+| Seed-event and saved-take counts | Readout | Report the filtered seed-event count and saved seed-path count. |
 
 ## Built-in Synth Properties
 
@@ -707,7 +708,7 @@ catalog and source of truth.
 | Active track only | View | Filters the ledger to the active track. |
 | MIDI ledger table | Readout | Reports sequence, cycle, tick, channel, message, track/source, conflict group, data bytes, monitor, and raw bytes. |
 | Parallel conflicts disclosure | View | Opens/closes the Channel Logic decision ledger. |
-| Conflict Rows | View | Uses the diagnostic row limit for visible conflict decisions. |
+| Conflict row limit | Readout | The conflict ledger inherits the MIDI Debug row limit; it has no separate control. |
 | Conflict table | Readout | Reports overlap components, effective policy, winners/suppressed notes, and participant/channel identity. |
 | Automation Debug disclosure | View | Opens/closes sampled automation diagnostics. |
 | Automation Debug Rows | View | Sets the visible tail-row limit. |

@@ -14,6 +14,7 @@ import {
 import { defaultTriggerConfig } from "./triggerUi";
 import {
   buildParallelPlaybackRequest,
+  channelAccentRulesToRequest,
   channelHocketSpecFromPatch,
   clonePatchJson,
   defaultParallelTrackName,
@@ -770,5 +771,61 @@ describe("parallelPushDedupKey", () => {
     expect(parallelPushDedupKey(request(["t1", "t2"], 120))).not.toBe(
       parallelPushDedupKey(request(["t1", "t2"], 121))
     );
+  });
+});
+
+describe("channelAccentRulesToRequest (UC-48: wire indices == authored indices)", () => {
+  const rule = (
+    overrides: Partial<Parameters<typeof channelAccentRulesToRequest>[0][number]>
+  ) => ({
+    label: "Rule",
+    enabled: true,
+    minVelocity: 100,
+    maxVelocity: 120,
+    probabilityPercent: 75,
+    mode: "renderOnly" as const,
+    weights: { "2": 1 },
+    ...overrides,
+  });
+
+  it("emits one entry per authored rule so accentRule.{index}.* automation binds the right rule", () => {
+    const wire = channelAccentRulesToRequest(
+      [rule({ enabled: false, label: "Off" }), rule({ label: "On" })],
+      [1, 2]
+    );
+    expect(wire).toHaveLength(2);
+    // The disabled first rule holds slot 0 with probability 0 …
+    expect(wire[0]!.probability).toBe(0);
+    // … so the enabled second rule stays at its authored index 1.
+    expect(wire[1]!.probability).toBeCloseTo(0.75, 9);
+    expect(wire[1]!.weights).toEqual([{ channel: 2, weight: 1 }]);
+  });
+
+  it("zeroes probability for zero-chance rules and keeps enabled ones live", () => {
+    const wire = channelAccentRulesToRequest(
+      [rule({ probabilityPercent: 0 }), rule({ probabilityPercent: 100 })],
+      [1, 2]
+    );
+    expect(wire.map((entry) => entry.probability)).toEqual([0, 1]);
+  });
+
+  it("ships out-of-palette rules with empty weights instead of dropping them", () => {
+    const wire = channelAccentRulesToRequest(
+      [rule({ weights: { "9": 5 } }), rule({})],
+      [1, 2]
+    );
+    expect(wire).toHaveLength(2);
+    expect(wire[0]!.weights).toEqual([]);
+    expect(wire[0]!.probability).toBeCloseTo(0.75, 9);
+    expect(wire[1]!.weights).toEqual([{ channel: 2, weight: 1 }]);
+  });
+
+  it("clamps velocities to the engine's 1..127 band", () => {
+    const wire = channelAccentRulesToRequest(
+      [rule({ minVelocity: 0, maxVelocity: 300 })],
+      [2]
+    );
+    expect(wire[0]!.minVelocity).toBe(1);
+    expect(wire[0]!.maxVelocity).toBe(127);
   });
 });

@@ -306,6 +306,33 @@ describe("EvolvePlanEditor", () => {
     expect(onCurveChange).toHaveBeenCalledTimes(2);
   });
 
+  it("fit view scales the whole plan into the viewport as a dense surface", () => {
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={100}
+        totalBeats={4}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const scroller = screen.getByLabelText("Evolution score timeline");
+    expect(scroller.getAttribute("style")).toContain("--evolve-cycle-width: 54px");
+    expect(scroller.className).not.toContain("is-dense");
+
+    const toggle = screen.getByRole("button", { name: "Fit view" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // 100 cycles fit the (fallback) viewport: 9px cells, dense chrome on.
+    expect(scroller.getAttribute("style")).toContain("--evolve-cycle-width: 9px");
+    expect(scroller.className).toContain("is-dense");
+
+    // Toggling back restores the manual zoom width.
+    fireEvent.click(toggle);
+    expect(scroller.getAttribute("style")).toContain("--evolve-cycle-width: 54px");
+    expect(scroller.className).not.toContain("is-dense");
+  });
+
   it("draws a property curve by clicking a lane and clears points with shift-click", () => {
     const onPropertyCurvesChange = vi.fn();
     const { rerender } = render(
@@ -323,7 +350,11 @@ describe("EvolvePlanEditor", () => {
     fireEvent.pointerDown(cell, { button: 2, clientY: 0 });
     expect(onPropertyCurvesChange).not.toHaveBeenCalled();
     // A primary click creates the syncopation curve with a point at cycle 6.
+    // The press only previews a local draft; the commit lands on release so
+    // in-progress drawing never rotates the app's preview request key.
     fireEvent.pointerDown(cell, { button: 0, clientY: 0 });
+    expect(onPropertyCurvesChange).not.toHaveBeenCalled();
+    fireEvent.pointerUp(cell, {});
     expect(onPropertyCurvesChange).toHaveBeenCalledTimes(1);
     const created = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
       property: string;
@@ -385,6 +416,11 @@ describe("EvolvePlanEditor", () => {
       clientY: 0,
     });
     fireEvent.pointerUp(cell, { pointerId: 1 });
+    // The whole freehand stroke lands as ONE commit on release. Per-move
+    // commits pushed a new generator config into the app on every mouse
+    // movement, invalidating and refetching the entire cached preview strip
+    // mid-drag (the Evolve "constant twitching" bug).
+    expect(onPropertyCurvesChange).toHaveBeenCalledTimes(1);
     const drawn = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
       property: string;
       points: Array<{ cycle: number }>;
@@ -589,6 +625,78 @@ describe("EvolvePlanEditor", () => {
     expect(miss.querySelector(".is-miss")).not.toBeNull();
   });
 
+  it("intersects the drawn band with the corridor rail and flags an empty intersection (UC-40)", () => {
+    const propertyCurves = [
+      {
+        property: "density" as const,
+        enabled: true,
+        toleranceMilli: 1_000,
+        weight: 50,
+        points: [{ cycle: 5, targetMilli: 90_000 }],
+      },
+    ];
+    const previewAt = (corridor: { floor: number; ceiling: number }) => [
+      {
+        cycle: 5,
+        preview: {
+          spans: [],
+          densityCorridor: corridor,
+          cycleDistance: null,
+          workingSubdivision: 4,
+          stateComplexityMilli: null,
+          stateDepthDiversityMilli: null,
+          complexityCorridor: null,
+          propertyProfile: {
+            densityMilli: 88_000,
+            complexityMilli: 0,
+            syncopationMilli: 0,
+            evennessMilli: 0,
+            occupancyMilli: 0,
+            diversityMilli: 0,
+          },
+          curveMisses: [],
+        },
+      },
+    ];
+    // Rail 0–89%: the drawn 89–91% band intersects it only at 89–89%. The
+    // realized 88.0 sits inside the drawn band but OUTSIDE the intersection,
+    // and the verdict follows the engine's intersected band.
+    const { rerender } = render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={8}
+        totalBeats={4}
+        propertyCurves={propertyCurves}
+        cachedPreviews={previewAt({ floor: 0, ceiling: 89 })}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const clipped = screen.getByRole("group", {
+      name: /Cycle 5 density 88\.0, target 90\.0 band 89\.0 through 91\.0, outside band/,
+    });
+    expect(clipped.querySelector(".evolve-plan-property-band.is-conflict")).toBeNull();
+    expect(clipped.querySelector(".evolve-plan-property-band")).not.toBeNull();
+
+    // Rail 0–55%: no overlap with the drawn 89–91% band at all — the cell
+    // renders a conflict marker instead of a fabricated positive band.
+    rerender(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={8}
+        totalBeats={4}
+        propertyCurves={propertyCurves}
+        cachedPreviews={previewAt({ floor: 0, ceiling: 55 })}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const conflicted = screen.getByRole("group", {
+      name: /Cycle 5 density 88\.0, target 90\.0 band 89\.0 through 91\.0, outside band/,
+    });
+    expect(
+      conflicted.querySelector(".evolve-plan-property-band.is-conflict")
+    ).not.toBeNull();
+  });
+
   it("keeps DOM focus order aligned with the visible calibration-first layout", () => {
     render(
       <EvolvePlanEditor
@@ -636,16 +744,17 @@ describe("EvolvePlanEditor", () => {
       name: "Move or remove density point at cycle 3",
     });
     // A press-and-drag past the click threshold repositions the point; a
-    // release after moving must NOT be read as a delete.
+    // release after moving must NOT be read as a delete. The X stays inside
+    // cycle 3's column (LANE_LABEL_WIDTH 112 + cellWidth 54).
     fireEvent.pointerDown(handle, {
       button: 0,
       pointerId: 5,
-      clientX: 100,
+      clientX: 112 + 3.5 * 54,
       clientY: 100,
     });
     fireEvent.pointerMove(handle, {
       pointerId: 5,
-      clientX: 100,
+      clientX: 112 + 3.5 * 54,
       clientY: 132,
     });
     fireEvent.pointerUp(handle, { pointerId: 5 });
@@ -655,6 +764,59 @@ describe("EvolvePlanEditor", () => {
     }>;
     // Both points survive — the dragged one moved, it was not removed.
     expect(next[0]?.points.map((point) => point.cycle)).toEqual([3, 8]);
+  });
+
+  it("moves a point's cycle when its handle is dragged horizontally", () => {
+    const onPropertyCurvesChange = vi.fn();
+    render(
+      <EvolvePlanEditor
+        plan={[]}
+        planLengthCycles={16}
+        totalBeats={4}
+        propertyCurves={[
+          {
+            property: "density",
+            enabled: true,
+            toleranceMilli: 5_000,
+            weight: 50,
+            points: [
+              { cycle: 3, targetMilli: 40_000 },
+              { cycle: 8, targetMilli: 70_000 },
+            ],
+          },
+        ]}
+        onPropertyCurvesChange={onPropertyCurvesChange}
+        onPlanChange={vi.fn()}
+      />
+    );
+    const handle = screen.getByRole("button", {
+      name: "Move or remove density point at cycle 3",
+    });
+    // Grab the cycle-3 point and drag right into cycle 5's column. The point
+    // must follow the pointer — removed at 3, upserted at 5 — matching the
+    // Left/Right arrow behavior (UC-37). Moving the drafted point re-renders
+    // its handle into cycle 5's cell, so the drag listens on the window; the
+    // move and release are dispatched there, as a real pointer would.
+    fireEvent.pointerDown(handle, {
+      button: 0,
+      pointerId: 6,
+      clientX: 112 + 3.5 * 54,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(window, {
+      pointerId: 6,
+      clientX: 112 + 5.5 * 54,
+      clientY: 100,
+    });
+    fireEvent.pointerUp(window, { pointerId: 6 });
+    // Exactly one commit: the drag previewed locally and committed on release.
+    expect(onPropertyCurvesChange).toHaveBeenCalledTimes(1);
+    const next = onPropertyCurvesChange.mock.calls.at(-1)?.[0] as Array<{
+      property: string;
+      points: Array<{ cycle: number }>;
+    }>;
+    // The grabbed point now lives at cycle 5; the other point is untouched.
+    expect(next[0]?.points.map((point) => point.cycle)).toEqual([5, 8]);
   });
 
   it("plots the step-size lane with target bands and tolerance verdicts", () => {
@@ -705,17 +867,21 @@ describe("EvolvePlanEditor", () => {
       />
     );
 
-    // Realized inside target ± tolerance reads as within.
+    // Realized inside target ± tolerance reads as within. The cycle is owned
+    // by an enabled directive, and the cell says so (UC-39).
     const within = screen.getByRole("group", {
-      name: "Cycle 13 step size 6.2, target 5.0 ±1.5, within tolerance",
+      name: "Cycle 13 step size 6.2, target 5.0 ±1.5, within tolerance, overridden by directive",
     });
     expect(within.classList.contains("is-within-target")).toBe(true);
-    // No perceptual row at cycle 14: a plain realized readout, no verdict.
+    expect(within.classList.contains("is-directive-owned")).toBe(true);
+    // No perceptual row at cycle 14: a plain realized readout, no verdict,
+    // and no directive-owned state.
     const plain = screen.getByRole("group", {
       name: "Cycle 14 step size 9.0",
     });
     expect(plain.classList.contains("is-within-target")).toBe(false);
     expect(plain.classList.contains("is-outside-target")).toBe(false);
+    expect(plain.classList.contains("is-directive-owned")).toBe(false);
     // The verbatim cycle before the pin reads an honest zero.
     expect(
       screen.getByRole("group", { name: "Cycle 12 step size 0.0" })
@@ -759,7 +925,7 @@ describe("EvolvePlanEditor", () => {
       />
     );
     const outside = screen.getByRole("group", {
-      name: "Cycle 7 step size 0.8, target 5.0 ±0.5, outside tolerance",
+      name: "Cycle 7 step size 0.8, target 5.0 ±0.5, outside tolerance, overridden by directive",
     });
     expect(outside.classList.contains("is-outside-target")).toBe(true);
   });
