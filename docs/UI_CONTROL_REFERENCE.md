@@ -354,7 +354,12 @@ All rows below operate on the currently selected node(s) of the same
 | Complexity Floor / Ceiling | Edit | Set `generator.dumka.complexityFloor` and `.complexityCeiling` in fixed-point milli-units. |
 | Placement | Edit | Sets `generator.dumka.placementBias`, from metric to void placement. |
 | Evolution rate | Edit | Sets `generator.dumka.evolutionRate`, the per-cycle chance of attempting change. |
+| Algorithm switches (checkbox per family) | Edit | Track-wide master switch per operator family (`enableBarlowRemove` … `enableEuclid`). Off excludes the algorithm from every stochastic layer — the weighted draws AND property-curve steering (which ignores weights) — so the switch, not a zero weight, is the authoritative "is this algorithm affecting the track" answer. Odds readouts re-normalize over the enabled families; a switched-off row shows "off". Authored directives keep their own per-directive enable. |
 | Remove / Add weights | Edit | Set the Remove/Add operator lottery weights. |
+| Metric velocity mode | Edit | Off (flat authored accents) / Auto (Barlow-rank tiers) / Manual (per-seed-slot tiers). Active modes stamp every generated note-on with a velocity drawn from its tier's range, deterministically seeded per (seed, cycle, slot). |
+| Strong / Medium / Weak velocity ranges | Edit | Inclusive MIDI ranges (1-127, min ≤ max) each tier draws from; a single-value range plays that exact velocity. |
+| Strong / Medium notes percents | Edit | Auto mode: notes are scored by a composite of grid Barlow rank, their tuplet-run's internal accent profile, and the underlying beat accents at their temporal position; the strongest N% of the cycle's notes are Strong, the next N% Medium, the rest Weak (sum capped at 100). |
+| Manual tier strip | Edit | Manual mode: one cell per seed-grid slot cycling weak → Medium → Strong; palette-refined slots between seed slots are always weak. |
 | Barlow temperature | Edit | Sets candidate-pool breadth for Barlow-ranked operations. |
 | Density floor / ceiling | Edit | Set the global hard onset corridor. |
 | Syncopate / Desyncopate weights | Edit | Set the corresponding displacement operator weights. |

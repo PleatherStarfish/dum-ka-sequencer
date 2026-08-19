@@ -107,6 +107,31 @@ export interface DumkaOpWeights {
 }
 
 /** Engine defaults: the historical 3/3/2 draw; displacement opt-in at 0. */
+/** Track-wide per-family switches; keys mirror DumkaOpWeights. */
+export type DumkaOpEnabled = Record<keyof DumkaOpWeights, boolean>;
+
+export const DEFAULT_DUMKA_OP_ENABLED: DumkaOpEnabled = {
+  barlowRemove: true,
+  barlowAdd: true,
+  rotate: true,
+  syncopate: true,
+  desyncopate: true,
+  fragment: true,
+  consolidate: true,
+  euclid: true,
+};
+
+/** Mirrors velocity.rs defaults exactly (mode off = legacy flat output). */
+export const DEFAULT_METRIC_VELOCITY: import("./bridge").MetricVelocity = {
+  mode: "off",
+  strong: { min: 100, max: 116 },
+  medium: { min: 76, max: 92 },
+  weak: { min: 52, max: 68 },
+  autoStrongPercent: 25,
+  autoMediumPercent: 35,
+  manualTiers: [],
+};
+
 export const DEFAULT_DUMKA_OP_WEIGHTS: DumkaOpWeights = {
   barlowRemove: 3,
   barlowAdd: 3,

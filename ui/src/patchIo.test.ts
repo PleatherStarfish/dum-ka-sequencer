@@ -39,6 +39,7 @@ import {
   normalizePatchGeneratorConfig,
   normalizePatchEvolutionPlan,
   FALLBACK_GLOBAL_SEED,
+  normalizeMetricVelocity,
 } from "./patchIo";
 import { DEFAULT_DUMKA_PATTERN } from "./dumkaPattern";
 import { normalizeEvolutionPlan, validateEvolutionPlan } from "./dumkaEvolvePlan";
@@ -1498,6 +1499,56 @@ describe("patchIo", () => {
     ]);
   });
 
+  it("normalizes metric velocity fail-open: junk means off, ranges clamp", () => {
+    expect(normalizeMetricVelocity(undefined)).toEqual({
+      mode: "off",
+      strong: { min: 100, max: 116 },
+      medium: { min: 76, max: 92 },
+      weak: { min: 52, max: 68 },
+      autoStrongPercent: 25,
+      autoMediumPercent: 35,
+      manualTiers: [],
+    });
+    const normalized = normalizeMetricVelocity({
+      mode: "manual",
+      strong: { min: 300, max: -4 },
+      medium: { min: 80, max: 90 },
+      autoStrongPercent: 80,
+      autoMediumPercent: 60,
+      manualTiers: ["strong", "junk", "weak", 7, "medium"],
+    });
+    expect(normalized.mode).toBe("manual");
+    // min clamps into 1-127; max clamps to at least min.
+    expect(normalized.strong).toEqual({ min: 127, max: 127 });
+    expect(normalized.medium).toEqual({ min: 80, max: 90 });
+    // Percent pair keeps strong+medium ≤ 100.
+    expect(normalized.autoStrongPercent).toBe(80);
+    expect(normalized.autoMediumPercent).toBe(20);
+    // Junk tiers drop; valid ones survive in order.
+    expect(normalized.manualTiers).toEqual(["strong", "weak", "medium"]);
+  });
+
+  it("persists algorithm switches: only a literal false disables, absent means on", () => {
+    const raw = makeProjectFixture() as unknown as Record<string, unknown>;
+    const project = raw.project as { tracks: Array<Record<string, unknown>> };
+    const target = project.tracks.find((track) => track.id === "track-active")!;
+    target.generatorEnabled = true;
+    target.generator = {
+      kind: "dumka",
+      pattern: "x . x .",
+      enableFragment: false,
+      enableRotate: "yes-please", // junk must fail open, not off
+    };
+    const loaded = readPatchDocument(raw);
+    const generator = loaded.project.tracks.find(
+      (track) => track.id === "track-active"
+    )!.generator;
+    if (generator.kind !== "dumka") throw new Error("expected dumka");
+    expect(generator.enableFragment).toBe(false);
+    expect(generator.enableRotate).toBe(true);
+    expect(generator.enableBarlowRemove).toBe(true);
+  });
+
   it("persists a dumka generator verbatim and keeps it enabled", () => {
     const pattern = "[dum@3  ka] | [. ka]  [dum ka dum ka dum]@2  # keep";
     const raw = makeProjectFixture() as unknown as Record<string, unknown>;
@@ -1529,6 +1580,23 @@ describe("patchIo", () => {
       complexityCeiling: 100_000,
       placementBias: 0,
       barlowTemperature: 0,
+      metricVelocity: {
+        mode: "off" as const,
+        strong: { min: 100, max: 116 },
+        medium: { min: 76, max: 92 },
+        weak: { min: 52, max: 68 },
+        autoStrongPercent: 25,
+        autoMediumPercent: 35,
+        manualTiers: [],
+      },
+      enableBarlowRemove: true,
+      enableBarlowAdd: true,
+      enableRotate: true,
+      enableSyncopate: true,
+      enableDesyncopate: true,
+      enableFragment: true,
+      enableConsolidate: true,
+      enableEuclid: true,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,
       weightRotate: 2,
@@ -2416,6 +2484,23 @@ describe("patchIo", () => {
       complexityCeiling: 100_000,
       placementBias: 0,
       barlowTemperature: 0,
+      metricVelocity: {
+        mode: "off" as const,
+        strong: { min: 100, max: 116 },
+        medium: { min: 76, max: 92 },
+        weak: { min: 52, max: 68 },
+        autoStrongPercent: 25,
+        autoMediumPercent: 35,
+        manualTiers: [],
+      },
+      enableBarlowRemove: true,
+      enableBarlowAdd: true,
+      enableRotate: true,
+      enableSyncopate: true,
+      enableDesyncopate: true,
+      enableFragment: true,
+      enableConsolidate: true,
+      enableEuclid: true,
       weightBarlowRemove: 3,
       weightBarlowAdd: 3,
       weightRotate: 2,

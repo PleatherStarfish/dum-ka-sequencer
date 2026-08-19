@@ -231,6 +231,31 @@ Rust-generated `dumka_metrics_contract.json`); see
   Shannon entropy of the reduced-denominator multiset. It answers whether
   several levels coexist; it is insight only, not a fourth rail. A uniformly
   deep state can therefore have high complexity and zero diversity.
+- **Metric velocity** (`metricVelocity`): the strong/weak hierarchy reaches
+  loudness. Active modes classify every generated note-on into a
+  strong/medium/weak tier — Auto by percentiles of a composite strength
+  (pinned integer weights 40/30/30: working-grid Barlow rank; the note's
+  position in its maximal equal-spacing run scored by that run-length's own
+  Barlow ordering, so quintuplets carry the quintuplet profile; and the
+  underlying beat strengths linearly interpolated at the note's temporal
+  position — the accent the meter would give that moment if the beats were
+  not spanned), Manual by an authored per-seed-slot map (palette-refined
+  slots are weak) —
+  and draw its MIDI velocity uniformly from that tier's authored 1-127
+  range, identity-seeded per (seed, cycle, slot) under a pinned salt.
+  Transport realization and preview display honor the stamped value over
+  the authored-leaf inheritance; `off` (the default) preserves the
+  historical accent path byte-for-byte. Validation is pinned
+  (`dumka metricVelocity invalid: …`); auto mode requires a
+  Barlow-supported grid and manual tiers must cover the seed grid exactly.
+- **Algorithm switches** (`enableBarlowRemove` … `enableEuclid`): track-wide
+  master switch per operator family. Off excludes the family from every
+  stochastic layer — the weighted classic/pacing draws AND property-curve
+  steering, which ignores weights by design (so a zero weight alone never
+  meant "off" once a curve was drawn). Authored directives are not gated:
+  they carry their own per-directive `enabled` flag and remain the explicit
+  override. Serde defaults are all-on, so absent keys replay history
+  byte-for-byte.
 - **Drift leash** (`driftLeash`, `generator.dumka.driftLeash`): the
   symmetric difference between the current and seed onset sets may never
   exceed `⌈leash% × seed onsets⌉`. Add, Remove, and the M3 displacement

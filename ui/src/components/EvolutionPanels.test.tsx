@@ -2,7 +2,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_DUMKA_OP_WEIGHTS } from "../dumkaPattern";
+import { DEFAULT_DUMKA_OP_WEIGHTS,
+  DEFAULT_DUMKA_OP_ENABLED,
+} from "../dumkaPattern";
 import { EvolutionPanels, type EvolutionPanelsProps } from "./EvolutionPanels";
 
 afterEach(cleanup);
@@ -32,6 +34,18 @@ function props(overrides: Partial<EvolutionPanelsProps> = {}): EvolutionPanelsPr
     setEuclidRestPolicy: vi.fn(),
     opWeights: { ...DEFAULT_DUMKA_OP_WEIGHTS },
     setOpWeights: vi.fn(),
+    opEnabled: { ...DEFAULT_DUMKA_OP_ENABLED },
+    setOpEnabled: vi.fn(),
+    metricVelocity: {
+      mode: "off" as const,
+      strong: { min: 100, max: 116 },
+      medium: { min: 76, max: 92 },
+      weak: { min: 52, max: 68 },
+      autoStrongPercent: 25,
+      autoMediumPercent: 35,
+      manualTiers: [],
+    },
+    setMetricVelocity: vi.fn(),
     ...overrides,
   };
 }
@@ -136,6 +150,38 @@ describe("EvolutionPanels", () => {
       ...DEFAULT_DUMKA_OP_WEIGHTS,
       syncopate: 2,
     });
+  });
+
+  it("switches an algorithm off track-wide: field disabled, odds read off, draw re-normalized", () => {
+    const setOpEnabled = vi.fn();
+    const { rerender } = render(<EvolutionPanels {...props({ setOpEnabled })} />);
+    // Toggle Remove off through the switch.
+    fireEvent.click(screen.getByLabelText("Dum-Ka remove enabled"));
+    const updater = setOpEnabled.mock.calls.at(-1)![0] as (
+      enabled: typeof DEFAULT_DUMKA_OP_ENABLED
+    ) => typeof DEFAULT_DUMKA_OP_ENABLED;
+    expect(updater({ ...DEFAULT_DUMKA_OP_ENABLED })).toEqual({
+      ...DEFAULT_DUMKA_OP_ENABLED,
+      barlowRemove: false,
+    });
+
+    // Rendered off: its weight field disables, its odds read "off", and the
+    // remaining families' odds re-normalize over the gated total (Add 3 of 5).
+    rerender(
+      <EvolutionPanels
+        {...props({
+          opEnabled: { ...DEFAULT_DUMKA_OP_ENABLED, barlowRemove: false },
+        })}
+      />
+    );
+    expect(
+      (screen.getByLabelText("Dum-Ka remove weight") as HTMLInputElement).disabled
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Dum-Ka remove enabled") as HTMLInputElement).checked
+    ).toBe(false);
+    expect(screen.getAllByText("off").length).toBe(1);
+    expect(screen.getAllByText("3/5 ≈ 60%").length).toBe(1);
   });
 
   it("renders the rank lane with the temperature-widened pools outlined", () => {

@@ -219,7 +219,23 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
         0_u32..=100,
         0_u32..=100,
         0_u32..=100,
-        prop::array::uniform8(0_u32..=100),
+        (
+            prop::array::uniform8(0_u32..=100),
+            // Track-wide per-family switches (drawn per the same-commit rule
+            // the pacing-curve escape established: every new feature flag
+            // joins the strategy in the commit that ships it).
+            prop::array::uniform8(prop::bool::ANY),
+            // Metric velocity (same rule): mode, one drawn range applied to
+            // all three tiers, auto thresholds, and a manual-tier seed.
+            (
+                0_usize..3,
+                1_u8..=127,
+                1_u8..=127,
+                0_u32..=100,
+                0_u32..=100,
+                prop::num::u64::ANY,
+            ),
+        ),
         (1_u32..=8, 0_u32..=100, prop::bool::ANY),
         evolution_plan_strategy(),
         prop_oneof![
@@ -246,7 +262,7 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                 drift_leash,
                 barlow_temperature,
                 fill_complexity,
-                weights,
+                (weights, enables, velocity_hint),
                 (euclid_max_run, euclid_invert, euclid_tied),
                 mut plan,
                 subdivision_palette,
@@ -318,6 +334,14 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                     complexity_floor,
                     complexity_ceiling,
                     placement_bias: euclid_invert,
+                    enable_barlow_remove: enables[0],
+                    enable_barlow_add: enables[1],
+                    enable_rotate: enables[2],
+                    enable_syncopate: enables[3],
+                    enable_desyncopate: enables[4],
+                    enable_fragment: enables[5],
+                    enable_consolidate: enables[6],
+                    enable_euclid: enables[7],
                     weight_barlow_remove: weights[0],
                     weight_barlow_add: weights[1],
                     weight_rotate: weights[2],
@@ -332,6 +356,46 @@ fn dumka_params_strategy() -> impl Strategy<Value = rhythm::DumkaGeneratorParams
                         rhythm::EuclidRestPolicy::Tied
                     } else {
                         rhythm::EuclidRestPolicy::Silent
+                    },
+                    metric_velocity: {
+                        let (mode, a, b, p1, p2, tier_seed) = velocity_hint;
+                        let lo = a.min(b);
+                        let hi = a.max(b);
+                        let range =
+                            rhythm::generators::dumka::velocity::VelocityRange { min: lo, max: hi };
+                        let strong_percent = p1.min(100);
+                        let medium_percent = p2.min(100 - strong_percent);
+                        let compiled = rhythm::generators::dumka::tree::compile(
+                            &rhythm::generators::dumka::dsl::parse(DUMKA_FUZZ_PATTERNS[index])
+                                .expect("fuzz patterns parse"),
+                        )
+                        .expect("fuzz patterns compile");
+                        let required = compiled.required_structure();
+                        let seed_slots = (u64::from(required.cycle_beats)
+                            * u64::from(required.subdivision))
+                            as usize;
+                        let manual_tiers = (0..seed_slots)
+                            .map(|slot| match (tier_seed >> (2 * (slot % 32))) & 0b11 {
+                                0 => rhythm::generators::dumka::velocity::MetricTier::Strong,
+                                1 => rhythm::generators::dumka::velocity::MetricTier::Medium,
+                                _ => rhythm::generators::dumka::velocity::MetricTier::Weak,
+                            })
+                            .collect();
+                        rhythm::generators::dumka::velocity::MetricVelocity {
+                            mode: match mode {
+                                0 => rhythm::generators::dumka::velocity::MetricVelocityMode::Off,
+                                1 => rhythm::generators::dumka::velocity::MetricVelocityMode::Auto,
+                                _ => {
+                                    rhythm::generators::dumka::velocity::MetricVelocityMode::Manual
+                                }
+                            },
+                            strong: range,
+                            medium: range,
+                            weak: range,
+                            auto_strong_percent: strong_percent,
+                            auto_medium_percent: medium_percent,
+                            manual_tiers,
+                        }
                     },
                     plan,
                     plan_length_cycles: 0,
@@ -929,6 +993,79 @@ proptest! {
             seed_onsets,
             budget
         );
+    }
+
+    /// Metric velocity contract over the fuzzed space: rests and tied
+    /// continuations never carry a generated velocity; with the feature off
+    /// nothing does (the byte-compat anchor); active modes stamp only values
+    /// inside the authored tier ranges.
+    #[test]
+    fn metric_velocity_stays_inside_authored_ranges(
+        params in dumka_params_strategy(),
+        cycle in 0_u64..=6,
+    ) {
+        let generator = rhythm::GeneratorConfig::Dumka(params.clone());
+        let score = compatible_score(&generator, 1, None, 29);
+        let tree =
+            cseq_transforms::apply_pipeline_for_cycle(&score, cycle).expect("sections resolve");
+        let active = model::rhythm_accent_spans(&tree.pulse_spans);
+        let spans = active
+            .iter()
+            .map(|span| rhythm::GeneratorSpanInput::from(*span))
+            .collect::<Vec<_>>();
+        let mut generator_config = generator.clone();
+        let seed = rhythm::resolve_generator_seed(generator_config.seed_mode_mut(), cycle)
+            .expect("generator seed resolves")
+            .seed;
+        let resolved = rhythm::resolve_generator_cycle(
+            &generator_config,
+            &rhythm::GeneratorCycleContext {
+                track_id: None,
+                cycle,
+                cycle_beats: 4,
+                spans: &spans,
+                seed,
+                automation: &|_, _, _| None,
+            },
+        )
+        .expect("generator resolves");
+        let active_mode = params.metric_velocity.is_active();
+        let lo = params
+            .metric_velocity
+            .strong
+            .min
+            .min(params.metric_velocity.medium.min)
+            .min(params.metric_velocity.weak.min);
+        let hi = params
+            .metric_velocity
+            .strong
+            .max
+            .max(params.metric_velocity.medium.max)
+            .max(params.metric_velocity.weak.max);
+        for span in &resolved {
+            for cell in &span.cells {
+                if cell.rest || cell.tied_from_previous {
+                    prop_assert_eq!(cell.generated_velocity, None);
+                    continue;
+                }
+                match cell.generated_velocity {
+                    // A sounding cell may legitimately stay unstamped: off
+                    // mode, or a position off the working grid (structural
+                    // multiplier). The active assertions live in Some.
+                    None => {}
+                    Some(velocity) => {
+                        prop_assert!(active_mode, "off mode must stamp nothing");
+                        prop_assert!(
+                            (lo..=hi).contains(&velocity),
+                            "velocity {} outside authored bounds {}..{}",
+                            velocity,
+                            lo,
+                            hi
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

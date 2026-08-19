@@ -14,7 +14,12 @@ import {
   leashBudget,
   type DumkaGridInsight,
 } from "../dumkaMetrics";
-import { compileDumkaPattern, type DumkaOpWeights } from "../dumkaPattern";
+import type { MetricTier, MetricVelocity } from "../bridge";
+import {
+  compileDumkaPattern,
+  type DumkaOpEnabled,
+  type DumkaOpWeights,
+} from "../dumkaPattern";
 import { NumericField } from "../NumericField";
 import { clamp } from "../patchIo";
 import { SliderField } from "../SliderField";
@@ -67,6 +72,8 @@ function WeightField({
   odds,
   disabled,
   onCommit,
+  enabled,
+  onEnabledChange,
 }: {
   label: string;
   ariaLabel: string;
@@ -74,20 +81,35 @@ function WeightField({
   odds: string;
   disabled: boolean;
   onCommit: (value: number) => void;
+  enabled: boolean;
+  onEnabledChange: (value: boolean) => void;
 }) {
+  // The checkbox is the track-wide master switch for this algorithm: off
+  // means it cannot affect the cycle through ANY evolution layer — the
+  // weighted draws and property-curve steering alike (steering ignores
+  // weights, so a zero weight alone is not "off").
   return (
-    <label className="evo-weight">
-      <span>{label}</span>
+    <div className={`evo-weight${enabled ? "" : " is-off"}`}>
+      <label className="evo-weight-switch">
+        <input
+          type="checkbox"
+          aria-label={`${ariaLabel.replace(/ weight$/, "")} enabled`}
+          checked={enabled}
+          disabled={disabled}
+          onChange={(event) => onEnabledChange(event.currentTarget.checked)}
+        />
+        <span>{label}</span>
+      </label>
       <NumericField
         aria-label={ariaLabel}
         min={0}
         max={100}
         value={value}
-        disabled={disabled}
+        disabled={disabled || !enabled}
         onValueCommit={onCommit}
       />
-      <em>{odds}</em>
-    </label>
+      <em>{enabled ? odds : "off"}</em>
+    </div>
   );
 }
 
@@ -229,6 +251,10 @@ export interface EvolutionPanelsProps {
   setEuclidRestPolicy: React.Dispatch<React.SetStateAction<"silent" | "tied">>;
   opWeights: DumkaOpWeights;
   setOpWeights: React.Dispatch<React.SetStateAction<DumkaOpWeights>>;
+  opEnabled: DumkaOpEnabled;
+  setOpEnabled: React.Dispatch<React.SetStateAction<DumkaOpEnabled>>;
+  metricVelocity: MetricVelocity;
+  setMetricVelocity: React.Dispatch<React.SetStateAction<MetricVelocity>>;
 }
 
 /**
@@ -262,6 +288,10 @@ export function EvolutionPanels({
   setEuclidRestPolicy,
   opWeights,
   setOpWeights,
+  opEnabled,
+  setOpEnabled,
+  metricVelocity,
+  setMetricVelocity,
 }: EvolutionPanelsProps) {
   const sliderDisabled = structureLocked || !enabled;
   const compiled = useMemo(() => compileDumkaPattern(pattern), [pattern]);
@@ -275,15 +305,19 @@ export function EvolutionPanels({
       ? Math.round((100 * insight.onsetSlots.length) / insight.slots)
       : null;
 
+  // Odds reflect the actual weighted draw: a switched-off family
+  // contributes nothing, exactly as in the engine.
+  const gated = (key: keyof DumkaOpWeights): number =>
+    opEnabled[key] ? opWeights[key] : 0;
   const total =
-    opWeights.barlowRemove +
-    opWeights.barlowAdd +
-    opWeights.rotate +
-    opWeights.syncopate +
-    opWeights.desyncopate +
-    opWeights.fragment +
-    opWeights.consolidate +
-    opWeights.euclid;
+    gated("barlowRemove") +
+    gated("barlowAdd") +
+    gated("rotate") +
+    gated("syncopate") +
+    gated("desyncopate") +
+    gated("fragment") +
+    gated("consolidate") +
+    gated("euclid");
   const figureCounts = compiled.ok
     ? figureCandidateCounts(compiled.compiled)
     : null;
@@ -295,6 +329,13 @@ export function EvolutionPanels({
       setOpWeights((weights) => ({
         ...weights,
         [key]: clamp(Math.round(value), 0, 100),
+      }));
+  const setEnabled =
+    (key: keyof DumkaOpWeights) =>
+    (value: boolean): void =>
+      setOpEnabled((enabled) => ({
+        ...enabled,
+        [key]: value,
       }));
 
   const budget = leashBudget(driftLeash, onsets);
@@ -408,17 +449,21 @@ export function EvolutionPanels({
             label="Remove"
             ariaLabel="Dum-Ka remove weight"
             value={opWeights.barlowRemove}
-            odds={odds(opWeights.barlowRemove)}
+            odds={odds(gated("barlowRemove"))}
             disabled={structureLocked}
             onCommit={setWeight("barlowRemove")}
+            enabled={opEnabled.barlowRemove}
+            onEnabledChange={setEnabled("barlowRemove")}
           />
           <WeightField
             label="Add"
             ariaLabel="Dum-Ka add weight"
             value={opWeights.barlowAdd}
-            odds={odds(opWeights.barlowAdd)}
+            odds={odds(gated("barlowAdd"))}
             disabled={structureLocked}
             onCommit={setWeight("barlowAdd")}
+            enabled={opEnabled.barlowAdd}
+            onEnabledChange={setEnabled("barlowAdd")}
           />
         </div>
         <label className="evo-slider">
@@ -543,17 +588,21 @@ export function EvolutionPanels({
             label="Syncopate"
             ariaLabel="Dum-Ka syncopate weight"
             value={opWeights.syncopate}
-            odds={odds(opWeights.syncopate)}
+            odds={odds(gated("syncopate"))}
             disabled={structureLocked}
             onCommit={setWeight("syncopate")}
+            enabled={opEnabled.syncopate}
+            onEnabledChange={setEnabled("syncopate")}
           />
           <WeightField
             label="Desyncopate"
             ariaLabel="Dum-Ka desyncopate weight"
             value={opWeights.desyncopate}
-            odds={odds(opWeights.desyncopate)}
+            odds={odds(gated("desyncopate"))}
             disabled={structureLocked}
             onCommit={setWeight("desyncopate")}
+            enabled={opEnabled.desyncopate}
+            onEnabledChange={setEnabled("desyncopate")}
           />
         </div>
         {insight && !lanesTooFine ? <LevelLane insight={insight} /> : null}
@@ -597,17 +646,21 @@ export function EvolutionPanels({
             label="Fragment"
             ariaLabel="Dum-Ka fragment weight"
             value={opWeights.fragment}
-            odds={odds(opWeights.fragment)}
+            odds={odds(gated("fragment"))}
             disabled={structureLocked}
             onCommit={setWeight("fragment")}
+            enabled={opEnabled.fragment}
+            onEnabledChange={setEnabled("fragment")}
           />
           <WeightField
             label="Consolidate"
             ariaLabel="Dum-Ka consolidate weight"
             value={opWeights.consolidate}
-            odds={odds(opWeights.consolidate)}
+            odds={odds(gated("consolidate"))}
             disabled={structureLocked}
             onCommit={setWeight("consolidate")}
+            enabled={opEnabled.consolidate}
+            onEnabledChange={setEnabled("consolidate")}
           />
         </div>
         <label className="evo-slider">
@@ -676,9 +729,11 @@ export function EvolutionPanels({
             label="Reshape"
             ariaLabel="Dum-Ka euclid weight"
             value={opWeights.euclid}
-            odds={odds(opWeights.euclid)}
+            odds={odds(gated("euclid"))}
             disabled={structureLocked}
             onCommit={setWeight("euclid")}
+            enabled={opEnabled.euclid}
+            onEnabledChange={setEnabled("euclid")}
           />
           <label className="evo-weight">
             <span>Max run</span>
@@ -755,9 +810,11 @@ export function EvolutionPanels({
             label="Rotate"
             ariaLabel="Dum-Ka rotate weight"
             value={opWeights.rotate}
-            odds={odds(opWeights.rotate)}
+            odds={odds(gated("rotate"))}
             disabled={structureLocked}
             onCommit={setWeight("rotate")}
+            enabled={opEnabled.rotate}
+            onEnabledChange={setEnabled("rotate")}
           />
         </div>
       </InsightCard>
@@ -811,6 +868,221 @@ export function EvolutionPanels({
             ? `Budget: ⌈${Math.round(driftLeash)}% × ${onsets} seed onsets⌉ = ${budget} ${budget === 1 ? "slot" : "slots"} of drift from the seed.`
             : "Fix the pattern to compute the leash budget."}
         </p>
+      </InsightCard>
+
+      <InsightCard
+        title="Dynamics — metric velocity"
+        helpLabel="metric velocity reference"
+        help={
+          <>
+            <p>
+              Every generated note-on is classified as a <b>strong</b>,{" "}
+              <b>medium</b>, or <b>weak</b> position and draws its MIDI
+              velocity from that tier's range — deterministically seeded per
+              (seed, cycle, slot), so replay is byte-identical. Off keeps the
+              flat authored-accent output.
+            </p>
+            <p>
+              <b>Auto</b> scores each note by a composite of the grid's
+              Barlow rank, its tuplet-run's own accent profile (a group of 5
+              carries the quintuplet ordering, 7 the septuplet, …), and the
+              underlying beat accents at the moment the note actually falls —
+              so a phrase spanning beats gets a shifting, metrically aware
+              line instead of one loud downbeat. The strongest N% of the
+              cycle's notes are strong, the next N% medium, the rest weak.{" "}
+              <b>Manual</b> lets you set a tier per seed-grid slot;
+              palette-refined slots between them are always weak.
+            </p>
+          </>
+        }
+      >
+        <label className="evo-weight-switch">
+          <span>Mode</span>
+          <select
+            aria-label="Dum-Ka metric velocity mode"
+            value={metricVelocity.mode}
+            disabled={structureLocked}
+            onChange={(event) => {
+              const mode = event.currentTarget
+                .value as MetricVelocity["mode"];
+              setMetricVelocity((current) => ({ ...current, mode }));
+            }}
+          >
+            <option value="off">Off (flat)</option>
+            <option value="auto">Auto (Barlow tiers)</option>
+            <option value="manual">Manual tiers</option>
+          </select>
+        </label>
+        {metricVelocity.mode !== "off" ? (
+          <>
+            <div
+              className="evo-weight-row"
+              role="group"
+              aria-label="Dum-Ka tier velocity ranges"
+            >
+              {(
+                [
+                  ["strong", "Strong"],
+                  ["medium", "Medium"],
+                  ["weak", "Weak"],
+                ] as const
+              ).map(([tier, label]) => (
+                <div className="evo-weight" key={tier}>
+                  <span>{label}</span>
+                  <NumericField
+                    aria-label={`Dum-Ka ${tier} velocity min`}
+                    min={1}
+                    max={metricVelocity[tier].max}
+                    value={metricVelocity[tier].min}
+                    disabled={structureLocked}
+                    onValueCommit={(value) =>
+                      setMetricVelocity((current) => ({
+                        ...current,
+                        [tier]: {
+                          min: clamp(Math.round(value), 1, current[tier].max),
+                          max: current[tier].max,
+                        },
+                      }))
+                    }
+                  />
+                  <NumericField
+                    aria-label={`Dum-Ka ${tier} velocity max`}
+                    min={metricVelocity[tier].min}
+                    max={127}
+                    value={metricVelocity[tier].max}
+                    disabled={structureLocked}
+                    onValueCommit={(value) =>
+                      setMetricVelocity((current) => ({
+                        ...current,
+                        [tier]: {
+                          min: current[tier].min,
+                          max: clamp(Math.round(value), current[tier].min, 127),
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="evo-live">
+              Each note-on draws uniformly inside its tier's range; a range of
+              one value plays that exact velocity every time.
+            </p>
+          </>
+        ) : null}
+        {metricVelocity.mode === "auto" ? (
+          <>
+            <label className="evo-slider">
+              <span>
+                <b>Strong notes</b>
+                <output>{Math.round(metricVelocity.autoStrongPercent)}%</output>
+              </span>
+              <SliderField
+                aria-label="Dum-Ka auto strong percent"
+                min={0}
+                max={100}
+                step={1}
+                railSize="full"
+                value={metricVelocity.autoStrongPercent}
+                disabled={structureLocked}
+                onChange={(event) => {
+                  const strong = clamp(
+                    event.currentTarget.valueAsNumber,
+                    0,
+                    100
+                  );
+                  setMetricVelocity((current) => ({
+                    ...current,
+                    autoStrongPercent: strong,
+                    autoMediumPercent: Math.min(
+                      current.autoMediumPercent,
+                      100 - strong
+                    ),
+                  }));
+                }}
+              />
+            </label>
+            <label className="evo-slider">
+              <span>
+                <b>Medium notes</b>
+                <output>{Math.round(metricVelocity.autoMediumPercent)}%</output>
+              </span>
+              <SliderField
+                aria-label="Dum-Ka auto medium percent"
+                min={0}
+                max={100 - metricVelocity.autoStrongPercent}
+                step={1}
+                railSize="full"
+                value={metricVelocity.autoMediumPercent}
+                disabled={structureLocked}
+                onChange={(event) =>
+                  setMetricVelocity((current) => ({
+                    ...current,
+                    autoMediumPercent: clamp(
+                      event.currentTarget.valueAsNumber,
+                      0,
+                      100 - current.autoStrongPercent
+                    ),
+                  }))
+                }
+              />
+            </label>
+          </>
+        ) : null}
+        {metricVelocity.mode === "manual" && compiled.ok ? (
+          <div
+            className="evo-tier-strip"
+            role="group"
+            aria-label="Dum-Ka manual tier per seed slot"
+          >
+            {Array.from(
+              {
+                length:
+                  compiled.compiled.totalBeats *
+                  compiled.compiled.requiredSubdivision,
+              },
+              (_, slot) => {
+                const tier: MetricTier =
+                  metricVelocity.manualTiers[slot] ?? "weak";
+                const next: MetricTier =
+                  tier === "weak"
+                    ? "medium"
+                    : tier === "medium"
+                      ? "strong"
+                      : "weak";
+                return (
+                  <button
+                    key={slot}
+                    type="button"
+                    className={`evo-tier-cell is-${tier}`}
+                    aria-label={`Seed slot ${slot + 1} tier: ${tier}. Set ${next}.`}
+                    disabled={structureLocked}
+                    onClick={() =>
+                      setMetricVelocity((current) => {
+                        const slots =
+                          compiled.ok
+                            ? compiled.compiled.totalBeats *
+                              compiled.compiled.requiredSubdivision
+                            : current.manualTiers.length;
+                        const manualTiers: MetricTier[] = Array.from(
+                          { length: slots },
+                          (_, index) => current.manualTiers[index] ?? "weak"
+                        );
+                        manualTiers[slot] = next;
+                        return { ...current, manualTiers };
+                      })
+                    }
+                  >
+                    {tier === "strong" ? "S" : tier === "medium" ? "M" : "w"}
+                  </button>
+                );
+              }
+            )}
+          </div>
+        ) : null}
+        {metricVelocity.mode === "manual" && !compiled.ok ? (
+          <p className="evo-live">Fix the pattern to author manual tiers.</p>
+        ) : null}
       </InsightCard>
     </div>
   );

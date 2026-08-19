@@ -2441,7 +2441,11 @@ fn stamp_preview_cell_velocities(
             continue;
         };
         for cell in &mut span.cells {
-            cell.velocity = authored_cell_velocity(velocities, cell.start);
+            // Generator-authored velocity (M4 metric dynamics) outranks the
+            // authored inheritance, mirroring transport realization exactly.
+            cell.velocity = cell
+                .generated_velocity
+                .or_else(|| authored_cell_velocity(velocities, cell.start));
         }
     }
 }
@@ -6329,6 +6333,7 @@ mod dto_fixtures {
                             tied_from_previous: false,
                             tied_to_next: false,
                             velocity: Some(125),
+                            generated_velocity: None,
                         },
                         cseq_rhythm::ResolvedRhythmCell {
                             index: 1,
@@ -6338,6 +6343,7 @@ mod dto_fixtures {
                             tied_from_previous: false,
                             tied_to_next: false,
                             velocity: Some(96),
+                            generated_velocity: None,
                         },
                     ],
                 },

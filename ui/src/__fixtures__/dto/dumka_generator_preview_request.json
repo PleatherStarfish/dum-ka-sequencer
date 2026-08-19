@@ -144,6 +144,32 @@
     "complexityCeiling": 60000,
     "placementBias": 50,
     "barlowTemperature": 0,
+    "metricVelocity": {
+      "mode": "off",
+      "strong": {
+        "min": 100,
+        "max": 116
+      },
+      "medium": {
+        "min": 76,
+        "max": 92
+      },
+      "weak": {
+        "min": 52,
+        "max": 68
+      },
+      "autoStrongPercent": 25,
+      "autoMediumPercent": 35,
+      "manualTiers": []
+    },
+    "enableBarlowRemove": true,
+    "enableBarlowAdd": true,
+    "enableRotate": true,
+    "enableSyncopate": true,
+    "enableDesyncopate": true,
+    "enableFragment": true,
+    "enableConsolidate": true,
+    "enableEuclid": true,
     "weightBarlowRemove": 3,
     "weightBarlowAdd": 3,
     "weightRotate": 2,

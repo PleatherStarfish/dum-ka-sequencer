@@ -29,6 +29,7 @@ pub mod reshape;
 pub mod sioros;
 pub mod spectrum;
 pub mod tree;
+pub mod velocity;
 
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,29 @@ pub struct DumkaGeneratorParams {
     /// Blend Barlow placement with the fixed-point geometric field.
     #[serde(default)]
     pub placement_bias: u32,
+    /// Track-wide per-family master switches. Unlike a zero weight — which
+    /// silences a family only in the weighted draws — a disabled family is
+    /// excluded from EVERY stochastic layer, including property-curve
+    /// steering (which deliberately ignores weights). The switch answers
+    /// "can this algorithm affect this track at all?"; authored directives
+    /// keep their own per-directive `enabled` flag and are not gated here.
+    /// All-on is the serde default and preserves history byte-for-byte.
+    #[serde(default = "default_true")]
+    pub enable_barlow_remove: bool,
+    #[serde(default = "default_true")]
+    pub enable_barlow_add: bool,
+    #[serde(default = "default_true")]
+    pub enable_rotate: bool,
+    #[serde(default = "default_true")]
+    pub enable_syncopate: bool,
+    #[serde(default = "default_true")]
+    pub enable_desyncopate: bool,
+    #[serde(default = "default_true")]
+    pub enable_fragment: bool,
+    #[serde(default = "default_true")]
+    pub enable_consolidate: bool,
+    #[serde(default = "default_true")]
+    pub enable_euclid: bool,
     /// Per-family operator weights (authored only). The defaults reproduce
     /// the historical Remove 3 / Add 3 / Rotate 2 draw exactly; the Sioros
     /// displacement pair is opt-in at weight 0.
@@ -158,6 +182,12 @@ pub struct DumkaGeneratorParams {
     /// default) or hit for one slot (silent) — Caesura's rest policy.
     #[serde(default)]
     pub euclid_rest_policy: reshape::EuclidRestPolicy,
+    /// Metric velocity: strong/medium/weak tiers mapped to authored MIDI
+    /// velocity ranges, stamped per generated onset (identity-seeded). The
+    /// default `off` mode preserves the authored-accent inheritance
+    /// byte-for-byte. See velocity.rs.
+    #[serde(default)]
+    pub metric_velocity: velocity::MetricVelocity,
     /// Authored evolution score. An empty plan preserves the legacy fold
     /// byte-for-byte.
     #[serde(default)]
@@ -180,6 +210,10 @@ pub struct DumkaGeneratorParams {
 
 fn default_pattern() -> String {
     DEFAULT_DUMKA_PATTERN.to_string()
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 const fn default_drift_leash() -> u32 {
@@ -223,6 +257,14 @@ impl Default for DumkaGeneratorParams {
             complexity_ceiling: default_complexity_ceiling(),
             barlow_temperature: 0,
             placement_bias: 0,
+            enable_barlow_remove: true,
+            enable_barlow_add: true,
+            enable_rotate: true,
+            enable_syncopate: true,
+            enable_desyncopate: true,
+            enable_fragment: true,
+            enable_consolidate: true,
+            enable_euclid: true,
             weight_barlow_remove: default_weight_barlow_remove(),
             weight_barlow_add: default_weight_barlow_add(),
             weight_rotate: default_weight_rotate(),
@@ -235,6 +277,7 @@ impl Default for DumkaGeneratorParams {
             euclid_max_run: default_euclid_max_run(),
             euclid_invert: 0,
             euclid_rest_policy: reshape::EuclidRestPolicy::default(),
+            metric_velocity: velocity::MetricVelocity::default(),
             plan: Vec::new(),
             plan_length_cycles: 0,
             evolution_curve: plan::EvolutionCurve::default(),
@@ -290,6 +333,32 @@ impl DumkaGeneratorParams {
                 message: format!(
                     "densityFloor must be at most densityCeiling, got {} > {}",
                     self.density_floor, self.density_ceiling
+                ),
+            });
+        }
+        for (name, range) in [
+            ("strong", self.metric_velocity.strong),
+            ("medium", self.metric_velocity.medium),
+            ("weak", self.metric_velocity.weak),
+        ] {
+            if range.min == 0 || range.max > 127 || range.min > range.max {
+                return Err(GeneratorError::DumkaMetricVelocity {
+                    message: format!(
+                        "{name} range must be 1-127 with min at most max, got {}..{}",
+                        range.min, range.max
+                    ),
+                });
+            }
+        }
+        let strong_percent = self.metric_velocity.auto_strong_percent;
+        let medium_percent = self.metric_velocity.auto_medium_percent;
+        if strong_percent > 100
+            || medium_percent > 100
+            || strong_percent.saturating_add(medium_percent) > 100
+        {
+            return Err(GeneratorError::DumkaMetricVelocity {
+                message: format!(
+                    "autoStrongPercent + autoMediumPercent must be at most 100, got {strong_percent} + {medium_percent}"
                 ),
             });
         }
@@ -354,15 +423,32 @@ impl DumkaGeneratorParams {
     }
 
     fn op_weights(&self) -> evolve::OpWeights {
+        // A disabled family draws with weight 0 in every weighted layer; the
+        // steering walk (which ignores weights by design) is gated separately
+        // through `op_enabled`.
+        let gate = |enabled: bool, weight: u32| if enabled { weight } else { 0 };
         evolve::OpWeights {
-            barlow_remove: self.weight_barlow_remove,
-            barlow_add: self.weight_barlow_add,
-            rotate: self.weight_rotate,
-            syncopate: self.weight_syncopate,
-            desyncopate: self.weight_desyncopate,
-            fragment: self.weight_fragment,
-            consolidate: self.weight_consolidate,
-            euclid: self.weight_euclid,
+            barlow_remove: gate(self.enable_barlow_remove, self.weight_barlow_remove),
+            barlow_add: gate(self.enable_barlow_add, self.weight_barlow_add),
+            rotate: gate(self.enable_rotate, self.weight_rotate),
+            syncopate: gate(self.enable_syncopate, self.weight_syncopate),
+            desyncopate: gate(self.enable_desyncopate, self.weight_desyncopate),
+            fragment: gate(self.enable_fragment, self.weight_fragment),
+            consolidate: gate(self.enable_consolidate, self.weight_consolidate),
+            euclid: gate(self.enable_euclid, self.weight_euclid),
+        }
+    }
+
+    fn op_enabled(&self) -> evolve::OpEnabled {
+        evolve::OpEnabled {
+            barlow_remove: self.enable_barlow_remove,
+            barlow_add: self.enable_barlow_add,
+            rotate: self.enable_rotate,
+            syncopate: self.enable_syncopate,
+            desyncopate: self.enable_desyncopate,
+            fragment: self.enable_fragment,
+            consolidate: self.enable_consolidate,
+            euclid: self.enable_euclid,
         }
     }
 
@@ -521,6 +607,7 @@ impl DumkaGeneratorParams {
             curve: &self.evolution_curve,
             property_curves: &self.property_curves,
             op_weights: self.op_weights(),
+            op_enabled: self.op_enabled(),
             automation: context.automation,
             spans: context.spans,
             cycle_beats: context.cycle_beats,
@@ -601,10 +688,50 @@ impl DumkaGeneratorParams {
                 Vec::new(),
             ),
         };
-        let spans = tree::resolve_seed_cells(&evolved, context.cycle_beats, context.spans)
+        let mut spans = tree::resolve_seed_cells(&evolved, context.cycle_beats, context.spans)
             .map_err(|error| GeneratorError::DumkaStructure {
                 message: error.to_string(),
             })?;
+        // Metric velocity (M4 metric dynamics): grid-dependent validation,
+        // then stamp identity-seeded per-onset velocities. Off is a no-op and
+        // leaves every cell's generatedVelocity absent — the byte-compat
+        // anchor realization relies on.
+        if self.metric_velocity.is_active() {
+            let metric_ranks =
+                barlow::stratification(evolved.total_beats, evolved.required_subdivision)
+                    .map(|strata| barlow::indispensability(&strata));
+            let seed_subdivision = self.compile()?.required_subdivision;
+            match self.metric_velocity.mode {
+                velocity::MetricVelocityMode::Auto if metric_ranks.is_none() => {
+                    return Err(GeneratorError::DumkaMetricVelocity {
+                        message: "auto mode requires a Barlow-supported beat/subdivision grid"
+                            .to_string(),
+                    });
+                }
+                velocity::MetricVelocityMode::Manual => {
+                    let expected = (evolved.total_beats * seed_subdivision) as usize;
+                    if self.metric_velocity.manual_tiers.len() != expected {
+                        return Err(GeneratorError::DumkaMetricVelocity {
+                            message: format!(
+                                "manualTiers must cover {expected} seed slots, got {}",
+                                self.metric_velocity.manual_tiers.len()
+                            ),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            velocity::stamp_metric_velocities(
+                &mut spans,
+                &self.metric_velocity,
+                context.seed,
+                context.cycle,
+                evolved.total_beats,
+                evolved.required_subdivision,
+                seed_subdivision,
+                metric_ranks.as_deref(),
+            );
+        }
         // The read-only per-state property profile the calibration UI plots
         // per cycle (M3.97 §1). Whole-beat rotation leaves all six functionals
         // invariant, so computing on the rotation-applied `evolved` state
@@ -875,6 +1002,14 @@ mod tests {
             density_ceiling: 50,
             complexity_floor: 0,
             complexity_ceiling: 100_000,
+            enable_barlow_remove: true,
+            enable_barlow_add: true,
+            enable_rotate: true,
+            enable_syncopate: true,
+            enable_desyncopate: true,
+            enable_fragment: true,
+            enable_consolidate: true,
+            enable_euclid: true,
             barlow_temperature: 0,
             placement_bias: 0,
             weight_barlow_remove: 37,
@@ -891,6 +1026,7 @@ mod tests {
             euclid_rest_policy: reshape::EuclidRestPolicy::Tied,
             plan: Vec::new(),
             plan_length_cycles: 0,
+            metric_velocity: velocity::MetricVelocity::default(),
             evolution_curve: plan::EvolutionCurve::default(),
             property_curves: Vec::new(),
             seed_mode: GeneratorSeedMode::History {
@@ -1630,6 +1766,108 @@ mod operator_liveness_tests {
                 p.weight_euclid = 100;
             },
         );
+    }
+
+    /// The track-wide switch must beat the weights in every weighted layer:
+    /// a soloed, fully-weighted family that is switched OFF leaves the seed
+    /// repeating verbatim, with nothing applied and nothing silently mutated.
+    #[test]
+    fn a_disabled_family_never_applies_through_the_weighted_layers() {
+        let params = DumkaGeneratorParams {
+            pattern: "[x . x .] [x _ . x] [. x x .] [x . . x]".to_string(),
+            evolution_rate: 100,
+            drift_leash: 100,
+            weight_barlow_remove: 0,
+            weight_barlow_add: 0,
+            weight_rotate: 0,
+            weight_fragment: 100,
+            fill_complexity: 50,
+            enable_fragment: false,
+            seed_mode: GeneratorSeedMode::Locked { seed: 5 },
+            ..Default::default()
+        };
+        let config = GeneratorConfig::Dumka(params);
+        let spans = spans_for(4, 4);
+        let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        let shape = |cycle: u64| {
+            let context = GeneratorCycleContext {
+                track_id: None,
+                cycle,
+                cycle_beats: 4,
+                spans: &spans,
+                seed: 5,
+                automation: sampler,
+            };
+            let resolution = resolve_generator_cycle_with_trace(&config, &context).unwrap();
+            assert!(
+                resolution.trace.iter().all(|entry| entry.applied == 0),
+                "cycle {cycle} applied a disabled family"
+            );
+            resolution
+                .spans
+                .iter()
+                .flat_map(|span| span.cells.iter().map(|cell| (cell.start, cell.rest)))
+                .collect::<Vec<_>>()
+        };
+        let seed_shape = shape(0);
+        for cycle in 1u64..=12 {
+            assert_eq!(shape(cycle), seed_shape, "cycle {cycle} drifted");
+        }
+    }
+
+    /// Steering deliberately ignores weights, so the switch must gate it
+    /// explicitly: with Fragment switched off, a drawn Complexity curve may
+    /// steer through other families but must never choose Fragment.
+    #[test]
+    fn a_disabled_family_never_applies_through_steering() {
+        let params = DumkaGeneratorParams {
+            pattern: "[x . x .] [x _ . x] [. x x .] [x . . x]".to_string(),
+            subdivision_palette: vec![3],
+            enable_fragment: false,
+            seed_mode: GeneratorSeedMode::Locked { seed: 11 },
+            property_curves: vec![plan::PropertyCurve {
+                property: plan::CurveProperty::Complexity,
+                enabled: true,
+                tolerance_milli: 5_000,
+                weight: 70,
+                points: vec![
+                    plan::CurvePoint {
+                        cycle: 1,
+                        target_milli: 20_000,
+                    },
+                    plan::CurvePoint {
+                        cycle: 16,
+                        target_milli: 70_000,
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+        let config = GeneratorConfig::Dumka(params);
+        let spans = spans_for(4, 12);
+        let sampler: &crate::generators::GeneratorAutomationSampler<'_> = &|_, _, _| None;
+        for seed in 1u64..=4 {
+            for cycle in 1u64..=16 {
+                let context = GeneratorCycleContext {
+                    track_id: None,
+                    cycle,
+                    cycle_beats: 4,
+                    spans: &spans,
+                    seed,
+                    automation: sampler,
+                };
+                let resolution = resolve_generator_cycle_with_trace(&config, &context).unwrap();
+                for entry in &resolution.trace {
+                    assert!(
+                        entry
+                            .steering_choices
+                            .iter()
+                            .all(|choice| choice.family != plan::DirectiveFamily::Fragment),
+                        "seed {seed} cycle {cycle} steered through disabled Fragment"
+                    );
+                }
+            }
+        }
     }
 
     /// A scoped Rotate directive at full intensity over tie-heavy material:

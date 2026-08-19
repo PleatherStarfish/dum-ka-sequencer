@@ -1594,6 +1594,30 @@ export interface PropertyCurve {
   points: CurvePoint[];
 }
 
+export type MetricVelocityMode = "off" | "auto" | "manual";
+
+export type MetricTier = "strong" | "medium" | "weak";
+
+/** Inclusive MIDI velocity range for one tier (1-127, min ≤ max). */
+export interface VelocityRange {
+  min: number;
+  max: number;
+}
+
+/** Metric velocity config; mirrors dumka/velocity.rs exactly. */
+export interface MetricVelocity {
+  mode: MetricVelocityMode;
+  strong: VelocityRange;
+  medium: VelocityRange;
+  weak: VelocityRange;
+  /** Auto mode: strongest N% of working-grid slots are Strong. */
+  autoStrongPercent: number;
+  /** Auto mode: next N% are Medium; the rest Weak. */
+  autoMediumPercent: number;
+  /** Manual mode: one tier per seed-grid slot. */
+  manualTiers: MetricTier[];
+}
+
 export interface DumkaGeneratorParams {
   /** Dum-Ka seed-notation text, sent and persisted verbatim. */
   pattern: string;
@@ -1615,6 +1639,18 @@ export interface DumkaGeneratorParams {
   placementBias: number;
   /** Barlow candidate-pool temperature: 0 strict rank order, 100 uniform. */
   barlowTemperature: number;
+  /** Track-wide per-family master switches. Unlike a zero weight — which
+   * silences a family only in the weighted draws — a disabled family is
+   * excluded from every stochastic layer, including property-curve steering
+   * (which ignores weights by design). Defaults all-on. */
+  enableBarlowRemove: boolean;
+  enableBarlowAdd: boolean;
+  enableRotate: boolean;
+  enableSyncopate: boolean;
+  enableDesyncopate: boolean;
+  enableFragment: boolean;
+  enableConsolidate: boolean;
+  enableEuclid: boolean;
   /** Per-family operator weights; defaults 3/3/2/0/0 keep the historical
    * draw, the Sioros displacement pair is opt-in. */
   weightBarlowRemove: number;
@@ -1635,6 +1671,10 @@ export interface DumkaGeneratorParams {
   euclidInvert: number;
   /** Whether reshaped onsets sustain to the next onset or hit one slot. */
   euclidRestPolicy: "silent" | "tied";
+  /** Metric velocity (M4 metric dynamics): strong/medium/weak tiers mapped
+   * to authored velocity ranges, stamped per generated onset. Mode "off"
+   * (the default) preserves the authored-accent inheritance byte-for-byte. */
+  metricVelocity: MetricVelocity;
   /** Authored deterministic evolution score. Empty preserves legacy replay. */
   plan: EvolutionDirective[];
   /** Editor canvas extent only. The engine does not use this value. */

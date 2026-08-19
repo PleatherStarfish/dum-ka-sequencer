@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import type { MetricVelocity } from "../bridge";
 import type { EvolutionDirective, GeneratorConfig } from "../bridge";
 import {
   DUMKA_COMPLEXITY_CEILING_AUTOMATION_TARGET,
@@ -14,6 +15,7 @@ import {
   DUMKA_SUBDIVISION_LEVELS,
   normalizeDumkaSubdivisionPalette,
   workingDumkaSubdivision,
+  type DumkaOpEnabled,
   type DumkaOpWeights,
   type DumkaRequiredStructure,
 } from "../dumkaPattern";
@@ -110,6 +112,10 @@ export interface GeneratorEditorProps {
   >;
   dumkaOpWeights: DumkaOpWeights;
   setDumkaOpWeights: React.Dispatch<React.SetStateAction<DumkaOpWeights>>;
+  dumkaOpEnabled: DumkaOpEnabled;
+  setDumkaOpEnabled: React.Dispatch<React.SetStateAction<DumkaOpEnabled>>;
+  dumkaMetricVelocity: MetricVelocity;
+  setDumkaMetricVelocity: React.Dispatch<React.SetStateAction<MetricVelocity>>;
   setSeedMode: React.Dispatch<
     React.SetStateAction<GeneratorConfig["seedMode"]["type"]>
   >;
@@ -220,6 +226,10 @@ export function GeneratorEditor({
   setDumkaEuclidRestPolicy,
   dumkaOpWeights,
   setDumkaOpWeights,
+  dumkaOpEnabled,
+  setDumkaOpEnabled,
+  dumkaMetricVelocity,
+  setDumkaMetricVelocity,
   setSeedMode,
   setSeed,
 }: GeneratorEditorProps) {
@@ -761,6 +771,10 @@ export function GeneratorEditor({
                 setEuclidRestPolicy={setDumkaEuclidRestPolicy}
                 opWeights={dumkaOpWeights}
                 setOpWeights={setDumkaOpWeights}
+                opEnabled={dumkaOpEnabled}
+                setOpEnabled={setDumkaOpEnabled}
+                metricVelocity={dumkaMetricVelocity}
+                setMetricVelocity={setDumkaMetricVelocity}
               />
             </div>
           )}

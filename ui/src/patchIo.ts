@@ -156,6 +156,8 @@ import type {
   WeightedMidiPitch,
   WeightedPitchInterval,
   WeightedSubdivisionTarget,
+  MetricTier,
+  MetricVelocity,
 } from "./bridge";
 
 import {
@@ -1209,6 +1211,15 @@ export type PatchGeneratorConfig =
       complexityCeiling: number;
       placementBias: number;
       barlowTemperature: number;
+      metricVelocity: MetricVelocity;
+      enableBarlowRemove: boolean;
+      enableBarlowAdd: boolean;
+      enableRotate: boolean;
+      enableSyncopate: boolean;
+      enableDesyncopate: boolean;
+      enableFragment: boolean;
+      enableConsolidate: boolean;
+      enableEuclid: boolean;
       weightBarlowRemove: number;
       weightBarlowAdd: number;
       weightRotate: number;
@@ -1233,6 +1244,46 @@ export type PatchGeneratorConfig =
  * disabled with a warning, never silently execute as a known variant.
  */
 export const KNOWN_GENERATOR_KINDS: readonly string[] = ["example", "dumka"];
+
+/** Fail-open metric-velocity normalization: junk loads as the off-mode
+ * defaults, ranges clamp into 1-127 with min ≤ max, tier lists keep only
+ * valid entries. Loading can warn, never brick. */
+export function normalizeMetricVelocity(candidate: unknown): MetricVelocity {
+  const record = isRecord(candidate) ? candidate : {};
+  const mode =
+    record.mode === "auto" || record.mode === "manual" ? record.mode : "off";
+  const range = (value: unknown, fallback: { min: number; max: number }) => {
+    const raw = isRecord(value) ? value : {};
+    const min = clamp(Math.round(numberValue(raw.min, fallback.min)), 1, 127);
+    const max = clamp(Math.round(numberValue(raw.max, fallback.max)), min, 127);
+    return { min, max };
+  };
+  const strongPercent = clamp(
+    Math.round(numberValue(record.autoStrongPercent, 25)),
+    0,
+    100
+  );
+  const mediumPercent = clamp(
+    Math.round(numberValue(record.autoMediumPercent, 35)),
+    0,
+    100 - strongPercent
+  );
+  const manualTiers: MetricTier[] = Array.isArray(record.manualTiers)
+    ? record.manualTiers.filter(
+        (tier): tier is MetricTier =>
+          tier === "strong" || tier === "medium" || tier === "weak"
+      )
+    : [];
+  return {
+    mode,
+    strong: range(record.strong, { min: 100, max: 116 }),
+    medium: range(record.medium, { min: 76, max: 92 }),
+    weak: range(record.weak, { min: 52, max: 68 }),
+    autoStrongPercent: strongPercent,
+    autoMediumPercent: mediumPercent,
+    manualTiers,
+  };
+}
 
 export function hasUnknownGeneratorKind(candidate: unknown): boolean {
   return (
@@ -2244,6 +2295,15 @@ export function normalizePatchGeneratorConfig(
         0,
         100
       ),
+      metricVelocity: normalizeMetricVelocity(candidate.metricVelocity),
+      enableBarlowRemove: candidate.enableBarlowRemove !== false,
+      enableBarlowAdd: candidate.enableBarlowAdd !== false,
+      enableRotate: candidate.enableRotate !== false,
+      enableSyncopate: candidate.enableSyncopate !== false,
+      enableDesyncopate: candidate.enableDesyncopate !== false,
+      enableFragment: candidate.enableFragment !== false,
+      enableConsolidate: candidate.enableConsolidate !== false,
+      enableEuclid: candidate.enableEuclid !== false,
       weightBarlowRemove: clamp(
         Math.round(numberValue(candidate.weightBarlowRemove, 3)),
         0,

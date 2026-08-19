@@ -12,6 +12,7 @@ import {
 } from "../../../src/dumkaPattern";
 import {
   type DumkaStateProfile,
+  indispensability,
   stateComplexityMilli,
   stateDepthDiversityMilli,
   stateProperties,
@@ -73,6 +74,7 @@ type DumkaMockEntry =
   | {
       compiled: DumkaCompiled;
       gridSupported: boolean;
+      barlowRanks: Record<string, number[]>;
       depthMetrics: Record<
         string,
         {
@@ -122,6 +124,22 @@ function buildDumkaMockTable(): Record<string, DumkaMockEntry> {
               result.compiled.totalBeats,
               result.compiled.requiredSubdivision
             ) !== null,
+          // Barlow permutation per working grid, for the metric-velocity
+          // stamping mirror (page scripts cannot import the src mirror).
+          barlowRanks: Object.fromEntries(
+            dumkaMockWorkingSubdivisions(result.compiled.requiredSubdivision)
+              .map((workingSubdivision) => {
+                const strata = stratification(
+                  result.compiled.totalBeats,
+                  workingSubdivision
+                );
+                return [
+                  String(workingSubdivision),
+                  strata ? indispensability(strata) : null,
+                ];
+              })
+              .filter(([, ranks]) => ranks !== null)
+          ) as Record<string, number[]>,
           depthMetrics: Object.fromEntries(
             dumkaMockWorkingSubdivisions(
               result.compiled.requiredSubdivision
@@ -235,6 +253,9 @@ type MockTauriInit = MockTauriOptions & {
   snapshotTemplate: typeof transportSnapshotFixture;
   subdivisionPreviewTemplate: typeof subdivisionSwitchPreviewFixture;
   dumkaMockTable: Record<string, DumkaMockEntry>;
+  /** Barlow ordering of k top-level beats (metric-velocity run profiles),
+   * k = 2..64; descending fallback where the strata are unsupported. */
+  dumkaRunProfiles: Record<string, number[]>;
 };
 
 export async function installMockTauri(
@@ -246,6 +267,18 @@ export async function installMockTauri(
     snapshotTemplate: transportSnapshotFixture,
     subdivisionPreviewTemplate: subdivisionSwitchPreviewFixture,
     dumkaMockTable: buildDumkaMockTable(),
+    dumkaRunProfiles: Object.fromEntries(
+      Array.from({ length: 63 }, (_, index) => {
+        const k = index + 2;
+        const strata = stratification(k, 1);
+        return [
+          String(k),
+          strata
+            ? indispensability(strata)
+            : Array.from({ length: k }, (_, i) => k - 1 - i),
+        ];
+      })
+    ),
   };
   await page.addInitScript((driverOptions: MockTauriInit) => {
     window.__CAESURA_E2E__ = true;
@@ -1434,6 +1467,7 @@ export async function installMockTauri(
           cells: span.cells.map((cell) => ({
             ...cell,
             velocity:
+              (cell as Record<string, unknown>).generatedVelocity ??
               velocities[Math.min(Number(cell.start), velocities.length - 1)],
           })),
         };
@@ -1488,6 +1522,53 @@ export async function installMockTauri(
         if (complexityFloor > complexityCeiling) {
           throw new Error(
             `dumka plan invalid: complexityFloor must be at most complexityCeiling, got ${complexityFloor} > ${complexityCeiling}`
+          );
+        }
+        // Metric velocity validation, mirrored byte-for-byte from
+        // DumkaGeneratorParams::validate + the resolver's grid checks.
+        const metricVelocity = (generator.metricVelocity ?? {
+          mode: "off",
+        }) as {
+          mode?: unknown;
+          strong?: { min?: unknown; max?: unknown };
+          medium?: { min?: unknown; max?: unknown };
+          weak?: { min?: unknown; max?: unknown };
+          autoStrongPercent?: unknown;
+          autoMediumPercent?: unknown;
+          manualTiers?: unknown[];
+        };
+        const metricMode =
+          metricVelocity.mode === "auto" || metricVelocity.mode === "manual"
+            ? metricVelocity.mode
+            : "off";
+        const metricRange = (name: string, raw?: { min?: unknown; max?: unknown }) => {
+          const min = Number(raw?.min ?? 0);
+          const max = Number(raw?.max ?? 0);
+          if (min === 0 || max > 127 || min > max) {
+            throw new Error(
+              `dumka metricVelocity invalid: ${name} range must be 1-127 with min at most max, got ${min}..${max}`
+            );
+          }
+          return { min, max };
+        };
+        const metricRanges =
+          metricMode === "off"
+            ? null
+            : {
+                strong: metricRange("strong", metricVelocity.strong),
+                medium: metricRange("medium", metricVelocity.medium),
+                weak: metricRange("weak", metricVelocity.weak),
+              };
+        const metricStrongPercent = Number(metricVelocity.autoStrongPercent ?? 25);
+        const metricMediumPercent = Number(metricVelocity.autoMediumPercent ?? 35);
+        if (
+          metricMode !== "off" &&
+          (metricStrongPercent > 100 ||
+            metricMediumPercent > 100 ||
+            metricStrongPercent + metricMediumPercent > 100)
+        ) {
+          throw new Error(
+            `dumka metricVelocity invalid: autoStrongPercent + autoMediumPercent must be at most 100, got ${metricStrongPercent} + ${metricMediumPercent}`
           );
         }
         dumkaPercent("driftLeash", generator.driftLeash, 25);
@@ -2427,6 +2508,158 @@ export async function installMockTauri(
           throw new Error(
             `mock dumka preview has no precomputed depth metrics for working Subdivision ${workingSubdivision}`
           );
+        }
+        // Metric velocity stamping, mirrored bit-exactly from velocity.rs
+        // (SALT_METRIC_VELOCITY, mix_seed, SplitMix64 % width+1). Cells sit
+        // on the structural span grid; onsets convert to working-grid slots
+        // through the integer multiplier exactly as the resolver does.
+        if (metricMode !== "off" && metricRanges) {
+          const workingSlots = compiledSeed.totalBeats * workingSubdivision;
+          const spanSlots = outSpans.reduce((sum, span) => sum + span.spanLen, 0);
+          const seedGridRefine = Math.max(
+            1,
+            workingSubdivision / compiledSeed.requiredSubdivision
+          );
+          const manualTiers = Array.isArray(metricVelocity.manualTiers)
+            ? metricVelocity.manualTiers
+            : [];
+          if (metricMode === "manual") {
+            const expected = compiledSeed.totalBeats * compiledSeed.requiredSubdivision;
+            if (manualTiers.length !== expected) {
+              throw new Error(
+                `dumka metricVelocity invalid: manualTiers must cover ${expected} seed slots, got ${manualTiers.length}`
+              );
+            }
+          }
+          const ranks = entry.barlowRanks[String(workingSubdivision)];
+          if (metricMode === "auto" && !ranks) {
+            throw new Error(
+              "dumka metricVelocity invalid: auto mode requires a Barlow-supported beat/subdivision grid"
+            );
+          }
+          if (
+            workingSlots > 0 &&
+            spanSlots > 0 &&
+            spanSlots % workingSlots === 0
+          ) {
+            const multiplier = Math.max(1, spanSlots / workingSlots);
+            const SALT_METRIC_VELOCITY = 0xd0a1_5eed_0012_0012n;
+            // Pass 1: the cycle's stampable note-ons in temporal order.
+            const onsets: Array<{
+              cell: Record<string, unknown>;
+              slot: number;
+            }> = [];
+            let base = 0;
+            for (const span of outSpans) {
+              for (const cell of span.cells) {
+                if (cell.rest || cell.tiedFromPrevious) continue;
+                const spanPosition = base + Number(cell.start);
+                if (spanPosition % multiplier !== 0) continue;
+                const slot = spanPosition / multiplier;
+                if (ranks && slot >= ranks.length) continue;
+                onsets.push({ cell: cell as Record<string, unknown>, slot });
+              }
+              base += span.spanLen;
+            }
+            // Pass 2: tiers — the composite auto strength (bit-exact mirror
+            // of velocity.rs composite_strengths/auto_tiers) or the manual
+            // seed-grid map.
+            const tiers: Array<"strong" | "medium" | "weak"> = onsets.map(
+              () => "weak"
+            );
+            if (metricMode === "auto" && ranks) {
+              const slotCount = ranks.length;
+              const norm = (rank: number, count: number) =>
+                count <= 1 ? 100000 : Math.floor((rank * 100000) / (count - 1));
+              const baseOf = (slot: number) => norm(ranks[slot] ?? 0, slotCount);
+              const beatNorm = (beat: number) =>
+                baseOf(
+                  (beat % Math.max(1, compiledSeed.totalBeats)) *
+                    workingSubdivision
+                );
+              const runComponent: Array<number | null> = onsets.map(() => null);
+              let runStart = 0;
+              while (runStart + 1 < onsets.length) {
+                const gap = onsets[runStart + 1].slot - onsets[runStart].slot;
+                let runEnd = runStart + 1;
+                while (
+                  runEnd + 1 < onsets.length &&
+                  onsets[runEnd + 1].slot - onsets[runEnd].slot === gap
+                ) {
+                  runEnd += 1;
+                }
+                const length = runEnd - runStart + 1;
+                if (gap > 0 && length >= 3) {
+                  const profile = driverOptions.dumkaRunProfiles[String(length)] ?? [];
+                  for (let position = 0; position < length; position += 1) {
+                    runComponent[runStart + position] = norm(
+                      profile[position] ?? 0,
+                      length
+                    );
+                  }
+                  runStart = runEnd;
+                } else {
+                  runStart += 1;
+                }
+              }
+              const strengths = onsets.map(({ slot }, index) => {
+                const baseMilli = baseOf(slot);
+                const runMilli = runComponent[index] ?? baseMilli;
+                const width = Math.max(1, workingSubdivision);
+                const beat = Math.floor(slot / width);
+                const offset = slot % width;
+                const contextMilli = Math.floor(
+                  (beatNorm(beat) * (width - offset) +
+                    beatNorm(beat + 1) * offset) /
+                    width
+                );
+                return Math.floor(
+                  (40 * baseMilli + 30 * runMilli + 30 * contextMilli) / 100
+                );
+              });
+              const order = onsets.map((_, index) => index);
+              order.sort(
+                (left, right) =>
+                  strengths[right] - strengths[left] ||
+                  onsets[left].slot - onsets[right].slot
+              );
+              const strongCount = Math.ceil(
+                (metricStrongPercent * onsets.length) / 100
+              );
+              const mediumCount = Math.ceil(
+                (metricMediumPercent * onsets.length) / 100
+              );
+              order.forEach((index, position) => {
+                tiers[index] =
+                  position < strongCount
+                    ? "strong"
+                    : position < strongCount + mediumCount
+                      ? "medium"
+                      : "weak";
+              });
+            } else if (metricMode === "manual") {
+              onsets.forEach(({ slot }, index) => {
+                tiers[index] =
+                  slot % seedGridRefine === 0
+                    ? ((manualTiers[slot / seedGridRefine] as
+                        | "strong"
+                        | "medium"
+                        | "weak") ?? "weak")
+                    : "weak";
+              });
+            }
+            // Pass 3: the identity-seeded draw per note.
+            onsets.forEach(({ cell, slot }, index) => {
+              const range = metricRanges[tiers[index]];
+              const width = BigInt(Math.max(0, range.max - range.min));
+              const state = mixSeed(
+                u64(seed.seed ^ SALT_METRIC_VELOCITY ^ BigInt(slot)),
+                BigInt(cycle)
+              );
+              const drawn = splitMix64Next(state).value % (width + 1n);
+              cell.generatedVelocity = range.min + Number(drawn);
+            });
+          }
         }
         return {
           seed: seedDto,

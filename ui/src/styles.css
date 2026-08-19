@@ -10065,6 +10065,72 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   text-transform: uppercase;
 }
 
+/* Track-wide algorithm switch: the checkbox + name share the label column. */
+.evo-weight-switch {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.evo-weight-switch input[type="checkbox"] {
+  flex: none;
+  margin: 0;
+  accent-color: var(--violet);
+}
+
+.evo-weight-switch span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Manual metric-velocity tiers: one cell per seed slot, cycling w→M→S. */
+.evo-tier-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.evo-tier-cell {
+  min-width: 24px;
+  padding: 3px 0;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--faint);
+  font-size: 0.66rem;
+  font-weight: 850;
+  text-align: center;
+  cursor: pointer;
+}
+
+.evo-tier-cell.is-medium {
+  border-color: var(--violet);
+  color: var(--muted);
+}
+
+.evo-tier-cell.is-strong {
+  border-color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 28%, var(--panel));
+  color: var(--ink);
+}
+
+/* A switched-off algorithm stays readable but visibly inert. */
+.evo-weight.is-off .evo-weight-switch span,
+.evo-weight.is-off em {
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.evo-weight.is-off em {
+  text-decoration: none;
+}
+
 .evo-weight .numeric-field {
   --numeric-input-w: 52px;
   min-height: 26px;
@@ -11543,7 +11609,7 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   }
 }
 
-.boundary-rail-rail {
+.boundary-rail {
   position: relative;
   display: grid;
   height: 43px;
@@ -11555,16 +11621,16 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   border-radius: 7px;
 }
 
-.boundary-rail-rail.is-editable {
+.boundary-rail.is-editable {
   cursor: crosshair;
   touch-action: none;
 }
 
-.boundary-rail-rail.is-editable:hover {
+.boundary-rail.is-editable:hover {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
 }
 
-.boundary-rail-rail.is-editable::after {
+.boundary-rail.is-editable::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -11575,7 +11641,7 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   pointer-events: none;
 }
 
-.boundary-rail-rail.is-disabled {
+.boundary-rail.is-disabled {
   cursor: not-allowed;
   opacity: 0.72;
 }
@@ -11606,7 +11672,7 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   font-variant-numeric: tabular-nums;
 }
 
-.boundary-rail-rail.is-editable .boundary-rail-beat {
+.boundary-rail.is-editable .boundary-rail-beat {
   pointer-events: none;
   user-select: none;
 }
@@ -11629,7 +11695,7 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   user-select: none;
 }
 
-.boundary-rail-rail.is-editable .boundary-rail-marker {
+.boundary-rail.is-editable .boundary-rail-marker {
   cursor: ns-resize;
 }
 
@@ -11956,17 +12022,30 @@ button.evolve-plan-property-handle:hover:not(:disabled),
 /* The one visible label rail, outside the sections grid: section tracks
    keep uniform beat widths and the playhead's parent measures pure track
    width. Cell heights and borders mirror each row's track exactly. */
+/* Caesura parity: the timeline runs the full panel width and the lane
+   labels FLOAT over its left edge as translucent pills — no reserved
+   gutter column, no dead space. The labels stay hoisted into their own
+   column (the playhead-repaint isolation the hoist bought) but the column
+   is an absolutely positioned overlay above the lanes (z 6: above cells,
+   below the z-24 playhead) and never intercepts pointer input. */
 .timeline-lane-frame {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--timeline-label-gutter, clamp(96px, 11vw, 152px)) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   min-width: 0;
 }
 
 .timeline-lane-labels {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
   display: grid;
   align-content: start;
+  width: var(--timeline-label-gutter, clamp(96px, 11vw, 152px));
   min-width: 0;
+  pointer-events: none;
 }
 
 .timeline-lane-labels-spacer {
@@ -11982,19 +12061,25 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   border-bottom: 1px solid transparent;
 }
 
-.timeline-lane-label-cell b {
-  max-width: calc(100% - 8px);
-  padding: 1px 6px;
+/* Small, semi-transparent overlay pills so the timeline reads through them:
+   a faint tint (not an opaque cover) plus a shadow that keeps the small caps
+   legible over whatever lane cell sits beneath. Scoped under
+   .timeline-lane-labels (specificity 0,2,1) so it wins over the shared
+   opaque theme rules that also target `.timeline-lane-label-cell b`. */
+.timeline-lane-labels .timeline-lane-label-cell b {
+  max-width: calc(100% - 6px);
+  padding: 0 4px;
   overflow: hidden;
-  color: var(--faint);
-  background: color-mix(in srgb, var(--surface-0) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  color: color-mix(in srgb, var(--faint) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-0) 32%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 30%, transparent);
   border-radius: 999px;
-  font-size: 0.58rem;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  line-height: 1.2;
+  font-size: 0.5rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--surface-0) 72%, transparent);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -12311,7 +12396,20 @@ button.evolve-plan-property-handle:hover:not(:disabled),
   /* Ink mirrors the background's velocity mix: bright cells keep dark
      ink, velocity-dimmed cells flip to light ink instead of vanishing. */
   color: color-mix(in srgb, var(--base03) var(--velocity-mix, 72%), var(--text));
-  background: color-mix(in srgb, var(--cyan) var(--velocity-mix, 72%), var(--base3));
+  /* Velocity meter: the lane colour fills from the bottom up to
+     --velocity-fill (per-note height), over a faint base of the same hue so
+     the note's shape is always visible. A loud note is filled tall and
+     bright; a soft note shows only a low sliver — velocity you can see at a
+     glance. --velocity-fill defaults to 100% so velocity-less legacy cells
+     stay fully filled, exactly as before. */
+  background:
+    linear-gradient(
+      to top,
+      color-mix(in srgb, var(--cyan) var(--velocity-mix, 72%), var(--base3)) 0%,
+      color-mix(in srgb, var(--cyan) var(--velocity-mix, 72%), var(--base3))
+        var(--velocity-fill, 100%),
+      color-mix(in srgb, var(--cyan) 16%, var(--base3)) var(--velocity-fill, 100%)
+    );
   border: 1px solid transparent;
   border-radius: 4px;
   font-size: 0.56rem;
@@ -12345,7 +12443,14 @@ button.evolve-plan-property-handle:hover:not(:disabled),
 }
 
 .rhythm-layer-span.is-jathiPulse i {
-  background: color-mix(in srgb, var(--magenta) var(--velocity-mix, 78%), var(--base3));
+  background:
+    linear-gradient(
+      to top,
+      color-mix(in srgb, var(--magenta) var(--velocity-mix, 78%), var(--base3)) 0%,
+      color-mix(in srgb, var(--magenta) var(--velocity-mix, 78%), var(--base3))
+        var(--velocity-fill, 100%),
+      color-mix(in srgb, var(--magenta) 16%, var(--base3)) var(--velocity-fill, 100%)
+    );
 }
 
 .rhythm-layer-span i.is-rest {
@@ -22404,7 +22509,7 @@ input[type="checkbox"]::before,
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-.boundary-rail-rail,
+.boundary-rail,
 .cycle-flux-timeline-track,
 .aligned-timeline-track,
 .aligned-timeline-row.is-beat-ruler .aligned-timeline-track,
@@ -22432,9 +22537,15 @@ input[type="checkbox"]::before,
    aid over the continuous grid — the musical content, gridlines, and lane
    order are untouched; even rows just get a slightly deeper wash. The
    label rail mirrors the same rhythm so rows and their names read as one. */
-.section-timeline-grid .aligned-timeline-row:nth-child(even) .aligned-timeline-track,
-.timeline-lane-labels .timeline-lane-label-cell:nth-child(odd) {
+.section-timeline-grid .aligned-timeline-row:nth-child(even) .aligned-timeline-track {
   background: color-mix(in srgb, var(--line) 12%, var(--timeline-lane));
+}
+
+/* The floating label column is an overlay above the lanes now, so it takes
+   no zebra wash of its own — the lanes underneath already carry it, and an
+   opaque band here would cover the timeline the labels sit over. */
+.timeline-lane-labels .timeline-lane-label-cell {
+  background: transparent;
 }
 
 .timeline-lane-label-cell b,
@@ -22544,9 +22655,26 @@ input[type="checkbox"]::before,
   box-shadow: none;
 }
 
-.rhythm-layer-span i,
+/* Velocity meter (the winning background rule — an earlier flat override
+   here is what hid velocity entirely): fill the lane colour from the bottom
+   to --velocity-fill so loud notes read tall/bright and soft notes show a
+   low sliver, over a faint base of the same hue. --velocity-fill defaults to
+   100% so velocity-less legacy cells stay fully filled. `is-active` is split
+   out so the playhead highlight keeps its own look. */
+.rhythm-layer-span i {
+  background:
+    linear-gradient(
+      to top,
+      color-mix(in srgb, var(--cyan) var(--velocity-mix, 72%), var(--base3)) 0%,
+      color-mix(in srgb, var(--cyan) var(--velocity-mix, 72%), var(--base3))
+        var(--velocity-fill, 100%),
+      color-mix(in srgb, var(--cyan) 16%, var(--base3)) var(--velocity-fill, 100%)
+    );
+  border-radius: 2px;
+  box-shadow: none;
+}
+
 .rhythm-layer-span i.is-active {
-  background: color-mix(in srgb, var(--cyan) 72%, var(--base3));
   border-radius: 2px;
   box-shadow: none;
 }

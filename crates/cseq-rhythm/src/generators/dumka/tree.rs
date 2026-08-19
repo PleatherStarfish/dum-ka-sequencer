@@ -357,6 +357,7 @@ fn push_cell(
         tied_from_previous,
         tied_to_next,
         velocity: None,
+        generated_velocity: None,
     });
 }
 

@@ -76,6 +76,7 @@ impl CycleGenerator for ExampleGeneratorParams {
                             tied_from_previous: false,
                             tied_to_next: false,
                             velocity: None,
+                            generated_velocity: None,
                         }
                     })
                     .collect();

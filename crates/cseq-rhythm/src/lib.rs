@@ -397,6 +397,14 @@ pub struct ResolvedRhythmCell {
     /// preview seams, not generation identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity: Option<u8>,
+    /// Generator-authored MIDI velocity for this cell's note-on (M4 metric
+    /// dynamics). Unlike `velocity` this IS generation identity: it is
+    /// identity-seeded, byte-replayed, and honored by transport realization
+    /// and preview display in place of the authored-leaf inheritance. `None`
+    /// (the default, and the only value when the feature is off) preserves
+    /// the historical authored-accent path byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_velocity: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

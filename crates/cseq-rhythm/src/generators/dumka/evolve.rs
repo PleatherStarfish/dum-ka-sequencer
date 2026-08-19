@@ -143,6 +143,55 @@ impl Default for OpWeights {
     }
 }
 
+/// Track-wide per-family master switches. Weighted draws are gated by
+/// zeroing weights upstream; this struct exists because property-curve
+/// steering deliberately ignores weights and must be gated explicitly, or
+/// "weight 0" silently fails to mean "off" the moment a curve is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpEnabled {
+    pub barlow_remove: bool,
+    pub barlow_add: bool,
+    pub rotate: bool,
+    pub syncopate: bool,
+    pub desyncopate: bool,
+    pub fragment: bool,
+    pub consolidate: bool,
+    pub euclid: bool,
+}
+
+impl Default for OpEnabled {
+    fn default() -> Self {
+        Self {
+            barlow_remove: true,
+            barlow_add: true,
+            rotate: true,
+            syncopate: true,
+            desyncopate: true,
+            fragment: true,
+            consolidate: true,
+            euclid: true,
+        }
+    }
+}
+
+impl OpEnabled {
+    /// Whether the stochastic layers may apply this operator family. Families
+    /// outside the eight switchable ops (Stochastic, Morph) are not gated.
+    fn allows(self, family: DirectiveFamily) -> bool {
+        match family {
+            DirectiveFamily::BarlowRemove => self.barlow_remove,
+            DirectiveFamily::BarlowAdd => self.barlow_add,
+            DirectiveFamily::Rotate => self.rotate,
+            DirectiveFamily::Syncopate => self.syncopate,
+            DirectiveFamily::Desyncopate => self.desyncopate,
+            DirectiveFamily::Fragment => self.fragment,
+            DirectiveFamily::Consolidate => self.consolidate,
+            DirectiveFamily::Euclid => self.euclid,
+            _ => true,
+        }
+    }
+}
+
 impl OpWeights {
     fn total(&self) -> u64 {
         u64::from(self.barlow_remove)
@@ -209,6 +258,9 @@ pub struct EvolutionInputs<'a> {
     pub property_curves: &'a [PropertyCurve],
     /// Authored only (no automation lane yet, documented).
     pub op_weights: OpWeights,
+    /// Track-wide per-family switches; gates the steering walk, which
+    /// ignores `op_weights` by design.
+    pub op_enabled: OpEnabled,
     pub automation: &'a GeneratorAutomationSampler<'a>,
     pub spans: &'a [GeneratorSpanInput],
     pub cycle_beats: u32,
@@ -1195,6 +1247,7 @@ fn step(
         state,
         &leash_anchor,
         seed_slots.len(),
+        seed_slots.len(),
         ranks,
         template,
         beat_level,
@@ -1211,6 +1264,7 @@ fn step_with_corridor(
     state: &EvolutionState,
     leash_anchor: &EvolutionState,
     seed_onset_count: usize,
+    authored_count_anchor: usize,
     ranks: &[u32],
     template: &[u32],
     beat_level: u32,
@@ -1223,6 +1277,7 @@ fn step_with_corridor(
         seed,
         leash_anchor,
         seed_onset_count,
+        authored_count_anchor,
         state,
         ranks,
         template,
@@ -1240,6 +1295,7 @@ fn step_scoped(
     seed: &CompiledSeed,
     leash_anchor: &EvolutionState,
     seed_onset_count: usize,
+    authored_count_anchor: usize,
     state: &EvolutionState,
     ranks: &[u32],
     template: &[u32],
@@ -1669,6 +1725,31 @@ fn step_scoped(
                     .or(normalization_complexity_clamp),
             )),
         );
+    }
+
+    // The anchored count floor closes the last collapse ratchet: steered and
+    // curve cycles legitimately move `leash_anchor`, so successive classic
+    // cycles could otherwise walk density down one budget per re-anchor. The
+    // corridor already attributed its own rejections above; this fence is
+    // ONLY the leash component (authored anchor − budget), and — like the
+    // walks — it lets an inherited below-floor state approach the floor.
+    {
+        let anchor_floor =
+            authored_count_anchor.saturating_sub(usize::try_from(budget).unwrap_or(usize::MAX));
+        let candidate_short = anchor_floor.saturating_sub(candidate.onsets.len());
+        let current_short = anchor_floor.saturating_sub(current.onsets.len());
+        if candidate_short > 0 && candidate_short >= current_short {
+            return (
+                current,
+                Some(trace(
+                    1,
+                    0,
+                    DirectiveSkip::Exhausted,
+                    normalization_clamp,
+                    normalization_complexity_clamp,
+                )),
+            );
+        }
     }
 
     // Every applied stochastic operation traces `requested 1, applied 1`.
@@ -3576,6 +3657,11 @@ fn apply_property_steering(
         let mut step_projection = false;
         let mut step_failure: Option<DirectiveApplyFailure> = None;
         for family in families {
+            if !inputs.op_enabled.allows(family) {
+                // Track-wide switch: a disabled algorithm must not affect the
+                // cycle through steering either.
+                continue;
+            }
             trace.requested = trace.requested.saturating_add(1);
             let synthetic = EvolutionDirective {
                 id: EVOLUTION_CURVE_TRACE_ID,
@@ -4670,6 +4756,7 @@ pub fn evolved_seed_with_trace(
                     &state,
                     &leash_anchor,
                     seed_onset_count,
+                    authored_count_anchor,
                     &ranks,
                     &template,
                     beat_level,
@@ -4782,6 +4869,7 @@ pub fn evolved_seed_with_trace(
                     &state,
                     &leash_anchor,
                     seed_onset_count,
+                    authored_count_anchor,
                     &ranks,
                     &template,
                     beat_level,
@@ -4882,6 +4970,7 @@ mod tests {
             curve: &CURVE_OFF,
             property_curves: &[],
             op_weights: OpWeights::default(),
+            op_enabled: OpEnabled::default(),
             automation: &no_automation,
             spans,
             cycle_beats: 4,
@@ -4915,6 +5004,7 @@ mod tests {
             curve: &CURVE_OFF,
             property_curves: &[],
             op_weights: OpWeights::default(),
+            op_enabled: OpEnabled::default(),
             automation,
             spans,
             cycle_beats: 4,

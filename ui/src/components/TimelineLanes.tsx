@@ -1396,13 +1396,18 @@ export function RhythmLayerLane({
                         : cell.continues
                           ? " · sustain continues beyond this row"
                           : "";
-                // Accent shading: sounding cells tint by their inherited
-                // authored velocity (the same value realized MIDI gets).
-                // Velocity-less cells (legacy payloads) keep the default look.
+                // Velocity visualization: a sounding cell fills from the
+                // bottom to a height set by its velocity (the same value
+                // realized MIDI gets), like a per-note velocity meter, plus a
+                // matching tint. `--velocity-fill` is the fill height (min 12%
+                // so even the quietest note reads as a note); `--velocity-mix`
+                // still drives the color intensity. Velocity-less cells
+                // (legacy payloads) keep the default flat look.
                 const velocityStyle =
                   renderedVelocity !== null
                     ? ({
                         "--velocity-mix": `${Math.round((renderedVelocity / 127) * 95)}%`,
+                        "--velocity-fill": `${Math.round(12 + (renderedVelocity / 127) * 88)}%`,
                       } as CSSProperties)
                     : undefined;
                 const velocityTitle =

@@ -497,6 +497,8 @@ pub enum GeneratorError {
     DumkaDepth { message: String },
     #[error("dumka euclidMaxRun must be 1-8, got {value}")]
     DumkaMaxRun { value: u32 },
+    #[error("dumka metricVelocity invalid: {message}")]
+    DumkaMetricVelocity { message: String },
     #[error("dumka plan invalid: {message}")]
     DumkaPlanInvalid { message: String },
     #[error(
@@ -556,6 +558,7 @@ mod tests {
             tied_from_previous,
             tied_to_next,
             velocity: None,
+            generated_velocity: None,
         }
     }
 

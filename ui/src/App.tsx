@@ -65,6 +65,7 @@ import {
   type GeneratorPreview,
   type GeneratorPreviewRequest,
   type EvolutionCurve,
+  type MetricVelocity,
   type PropertyCurve,
   type EvolutionDirective,
   type TrackPlaybackRequest,
@@ -155,8 +156,11 @@ import {
   NEUTRAL_PITCH,
 } from "./patchIo";
 import {
+  DEFAULT_DUMKA_OP_ENABLED,
   DEFAULT_DUMKA_OP_WEIGHTS,
+  DEFAULT_METRIC_VELOCITY,
   DEFAULT_DUMKA_PATTERN,
+  type DumkaOpEnabled,
   type DumkaOpWeights,
   analyzeDumkaPattern,
   dumkaStructureMatches,
@@ -938,6 +942,12 @@ export default function App() {
   const [dumkaOpWeights, setDumkaOpWeights] = useState<DumkaOpWeights>(
     () => ({ ...DEFAULT_DUMKA_OP_WEIGHTS })
   );
+  const [dumkaOpEnabled, setDumkaOpEnabled] = useState<DumkaOpEnabled>(
+    () => ({ ...DEFAULT_DUMKA_OP_ENABLED })
+  );
+  const [dumkaMetricVelocity, setDumkaMetricVelocity] = useState<MetricVelocity>(
+    () => ({ ...DEFAULT_METRIC_VELOCITY })
+  );
   const [dumkaPlan, setDumkaPlan] = useState<EvolutionDirective[]>([]);
   const [dumkaEvolutionCurve, setDumkaEvolutionCurve] = useState<EvolutionCurve>(
     () => ({ ...DEFAULT_EVOLUTION_CURVE, points: [] })
@@ -1245,6 +1255,15 @@ export default function App() {
           complexityCeiling: dumkaComplexityCeiling,
           placementBias: dumkaPlacementBias,
           barlowTemperature: dumkaBarlowTemperature,
+          metricVelocity: dumkaMetricVelocity,
+          enableBarlowRemove: dumkaOpEnabled.barlowRemove,
+          enableBarlowAdd: dumkaOpEnabled.barlowAdd,
+          enableRotate: dumkaOpEnabled.rotate,
+          enableSyncopate: dumkaOpEnabled.syncopate,
+          enableDesyncopate: dumkaOpEnabled.desyncopate,
+          enableFragment: dumkaOpEnabled.fragment,
+          enableConsolidate: dumkaOpEnabled.consolidate,
+          enableEuclid: dumkaOpEnabled.euclid,
           weightBarlowRemove: dumkaOpWeights.barlowRemove,
           weightBarlowAdd: dumkaOpWeights.barlowAdd,
           weightRotate: dumkaOpWeights.rotate,
@@ -1286,6 +1305,8 @@ export default function App() {
     dumkaFillComplexity,
     dumkaEvolutionRate,
     dumkaOpWeights,
+    dumkaOpEnabled,
+    dumkaMetricVelocity,
     dumkaPlan,
     dumkaEvolutionCurve,
     dumkaPropertyCurves,
@@ -4481,6 +4502,17 @@ export default function App() {
       setDumkaPattern(patch.generator.pattern);
       setDumkaEvolutionRate(patch.generator.evolutionRate);
       setDumkaBarlowTemperature(patch.generator.barlowTemperature);
+      setDumkaMetricVelocity(patch.generator.metricVelocity);
+      setDumkaOpEnabled({
+        barlowRemove: patch.generator.enableBarlowRemove,
+        barlowAdd: patch.generator.enableBarlowAdd,
+        rotate: patch.generator.enableRotate,
+        syncopate: patch.generator.enableSyncopate,
+        desyncopate: patch.generator.enableDesyncopate,
+        fragment: patch.generator.enableFragment,
+        consolidate: patch.generator.enableConsolidate,
+        euclid: patch.generator.enableEuclid,
+      });
       setDumkaOpWeights({
         barlowRemove: patch.generator.weightBarlowRemove,
         barlowAdd: patch.generator.weightBarlowAdd,
@@ -8948,6 +8980,10 @@ export default function App() {
           setDumkaEuclidRestPolicy={setDumkaEuclidRestPolicy}
           setDumkaBarlowTemperature={setDumkaBarlowTemperature}
           dumkaOpWeights={dumkaOpWeights}
+          dumkaOpEnabled={dumkaOpEnabled}
+          setDumkaOpEnabled={setDumkaOpEnabled}
+          dumkaMetricVelocity={dumkaMetricVelocity}
+          setDumkaMetricVelocity={setDumkaMetricVelocity}
           setDumkaOpWeights={setDumkaOpWeights}
           setSeedMode={setGeneratorSeedMode}
           setSeed={setGeneratorSeed}

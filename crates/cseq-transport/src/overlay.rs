@@ -442,16 +442,19 @@ pub(crate) fn append_rhythm_cells(
             continue;
         }
         let source = note_leaf_for_offset(span_leaves, start).unwrap_or(&span_leaves[0]);
-        // Record the inherited authored velocity on the resolved cell itself, so
-        // the surfaced realized spans (and the timeline rows they feed) carry
-        // the exact accent the queued MIDI got from this leaf.
-        cell.velocity = Some(source.velocity);
+        // A generator-authored velocity (M4 metric dynamics) outranks the
+        // authored-leaf inheritance for this note-on; absent — the default
+        // and the only value when the feature is off — keeps the historical
+        // accent path byte-for-byte. Either way the resolved cell records the
+        // exact velocity the queued MIDI gets, so timeline rows stay truthful.
+        let velocity = cell.generated_velocity.unwrap_or(source.velocity);
+        cell.velocity = Some(velocity);
 
         out.push(RhythmPlaybackCell {
             start,
             end,
             pitch: source.pitch,
-            velocity: source.velocity,
+            velocity,
             rest: cell.rest,
             tied_from_previous: cell.tied_from_previous,
             tied_to_next: cell.tied_to_next,

@@ -280,6 +280,177 @@ fn dumka_tied_quintuplet_rhythm() -> cseq_transport::RhythmPlaybackConfig {
     }
 }
 
+/// M4 metric-dynamics golden: auto tiers over a dense 4×2 grid with
+/// singleton tier ranges, so each ledger velocity IS its slot's tier —
+/// 112 strong, 88 medium, 60 weak. The flat authored velocity (96) never
+/// appears on a note-on: every generated onset is shaded by metric depth.
+fn dumka_metric_velocity_score() -> cseq_model::Score {
+    cseq_model::Score::subdivision_switch(
+        "golden-dumka-metric-velocity",
+        cseq_model::SubdivisionSwitchSpec {
+            cycle_beats: 4,
+            initial_weights: vec![cseq_model::WeightedSubdivisionChoice {
+                subdivision: 2,
+                weight: 1.0,
+            }],
+            initial_jathi_weights: vec![],
+            initial_custom_subdivision: None,
+            automation: None,
+            inflections: vec![],
+            switch_count_weights: vec![cseq_model::WeightedSwitchCount {
+                count: 0,
+                weight: 1.0,
+            }],
+            seed_mode: cseq_model::SwitchSeedMode::Locked { seed: 20260818 },
+            accent: cseq_model::GatiAccentSpec::default(),
+            pitch: 45,
+            velocity: 96,
+        },
+    )
+}
+
+fn dumka_metric_velocity_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    use cseq_rhythm::generators::dumka::velocity as dyn_velocity;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "[x x] [x x] [x x] [x x]".to_string(),
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 20260818 },
+            metric_velocity: dyn_velocity::MetricVelocity {
+                mode: dyn_velocity::MetricVelocityMode::Auto,
+                strong: dyn_velocity::VelocityRange { min: 112, max: 112 },
+                medium: dyn_velocity::VelocityRange { min: 88, max: 88 },
+                weak: dyn_velocity::VelocityRange { min: 60, max: 60 },
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+/// The beat-spanning tuplet acceptance: five equal notes across two beats
+/// with auto tiers and singleton ranges. Before the composite strength this
+/// played one loud downbeat over four identical notes; now the quintuplet's
+/// own profile and the underlying beat accents shape a shifting line
+/// (pinned tiers: S M S w M → 112 88 112 60 88).
+fn dumka_metric_velocity_tuplet_score() -> cseq_model::Score {
+    cseq_model::Score::subdivision_switch(
+        "golden-dumka-metric-velocity-tuplet",
+        cseq_model::SubdivisionSwitchSpec {
+            cycle_beats: 2,
+            initial_weights: vec![cseq_model::WeightedSubdivisionChoice {
+                subdivision: 5,
+                weight: 1.0,
+            }],
+            initial_jathi_weights: vec![],
+            initial_custom_subdivision: None,
+            automation: None,
+            inflections: vec![],
+            switch_count_weights: vec![cseq_model::WeightedSwitchCount {
+                count: 0,
+                weight: 1.0,
+            }],
+            seed_mode: cseq_model::SwitchSeedMode::Locked { seed: 20260819 },
+            accent: cseq_model::GatiAccentSpec::default(),
+            pitch: 45,
+            velocity: 96,
+        },
+    )
+}
+
+fn dumka_metric_velocity_tuplet_rhythm() -> cseq_transport::RhythmPlaybackConfig {
+    use cseq_rhythm as rhythm;
+    use cseq_rhythm::generators::dumka::velocity as dyn_velocity;
+    cseq_transport::RhythmPlaybackConfig {
+        generator_enabled: true,
+        generator: rhythm::GeneratorConfig::Dumka(rhythm::DumkaGeneratorParams {
+            pattern: "[x x x x x]@2".to_string(),
+            seed_mode: rhythm::GeneratorSeedMode::Locked { seed: 20260819 },
+            metric_velocity: dyn_velocity::MetricVelocity {
+                mode: dyn_velocity::MetricVelocityMode::Auto,
+                strong: dyn_velocity::VelocityRange { min: 112, max: 112 },
+                medium: dyn_velocity::VelocityRange { min: 88, max: 88 },
+                weak: dyn_velocity::VelocityRange { min: 60, max: 60 },
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        midi_output_channel: 1,
+        automation: None,
+        channel_hocket_enabled: false,
+        channel_hocket: None,
+        seed_path: None,
+    }
+}
+
+#[test]
+fn golden_dumka_metric_velocity_tuplet() {
+    let rendered = render_ledger_for_score(
+        "dumka_metric_velocity_tuplet",
+        dumka_metric_velocity_tuplet_score(),
+        Some(dumka_metric_velocity_tuplet_rhythm()),
+    );
+    // The five note-ons per cycle must NOT be one loud downbeat over a flat
+    // floor: at least three distinct tier velocities appear.
+    let mut velocities = Vec::new();
+    for line in rendered.lines() {
+        let mut columns = line.split('\t');
+        let _tick = columns.next();
+        let _channel = columns.next();
+        let bytes = columns.next().unwrap_or_default();
+        if let Some(rest) = bytes.strip_prefix("90 ") {
+            if let Some(velocity) = rest
+                .split(' ')
+                .nth(1)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
+                velocities.push(velocity);
+            }
+        }
+    }
+    let distinct: std::collections::BTreeSet<u8> = velocities.iter().copied().collect();
+    assert!(
+        distinct.len() >= 3,
+        "beat-spanning tuplet flattened to velocities {distinct:?}"
+    );
+    assert_golden_rendered("dumka_metric_velocity_tuplet", rendered);
+}
+
+#[test]
+fn golden_dumka_metric_velocity() {
+    let rendered = render_ledger_for_score(
+        "dumka_metric_velocity",
+        dumka_metric_velocity_score(),
+        Some(dumka_metric_velocity_rhythm()),
+    );
+    // Every note-on velocity is one of the three authored tier values; the
+    // flat authored default (0x60 = 96) never reaches a generated note-on.
+    for line in rendered.lines() {
+        let mut columns = line.split('\t');
+        let _tick = columns.next();
+        let _channel = columns.next();
+        let bytes = columns.next().unwrap_or_default();
+        if let Some(rest) = bytes.strip_prefix("90 ") {
+            let velocity = rest
+                .split(' ')
+                .nth(1)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .unwrap_or(0);
+            assert!(
+                [112u8, 88, 60].contains(&velocity),
+                "note-on velocity {velocity} is not an authored tier value"
+            );
+        }
+    }
+    assert_golden_rendered("dumka_metric_velocity", rendered);
+}
+
 #[test]
 fn golden_dumka_tied_quintuplet() {
     assert_golden_rendered(
